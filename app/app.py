@@ -1,16 +1,24 @@
 # -*- coding: utf-8 -*-
 """缺陷图片分析平台 — Flask 后端"""
 import os
-import sqlite3
 import hashlib
 import functools
 import random
 from datetime import datetime, timedelta
+import pymysql
+from pymysql.cursors import DictCursor
+from pymysql.err import IntegrityError
 from flask import (Flask, g, render_template, request, redirect, url_for,
                    session, flash, jsonify, abort)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "platform.db")
+
+# MySQL 连接配置（可用环境变量覆盖）
+DB_HOST = os.environ.get("DB_HOST", "127.0.0.1")
+DB_PORT = int(os.environ.get("DB_PORT", "3307"))
+DB_USER = os.environ.get("DB_USER", "root")
+DB_PASSWORD = os.environ.get("DB_PASSWORD", "123456")
+DB_NAME = os.environ.get("DB_NAME", "analyse_platform")
 
 app = Flask(__name__)
 app.secret_key = "yancao-analyse-platform-secret-2026"
@@ -20,11 +28,38 @@ DETECT_ITEMS = ["烟支外观", "五轮成像", "小包CCD", "散包检测", "�
 
 
 # ---------------------------------------------------------------- 数据库
+def _connect():
+    return pymysql.connect(host=DB_HOST, port=DB_PORT, user=DB_USER,
+                           password=DB_PASSWORD, database=DB_NAME,
+                           charset="utf8mb4", cursorclass=DictCursor,
+                           autocommit=False)
+
+
+class _DB:
+    """兼容原 sqlite3 写法的薄封装：db.execute(sql, params) 返回游标，
+    自动把 ? 占位符转换为 MySQL 的 %s。"""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def execute(self, sql, params=()):
+        cur = self._conn.cursor()
+        if params:
+            cur.execute(sql.replace("?", "%s"), params)
+        else:
+            cur.execute(sql.replace("?", "%s"))
+        return cur
+
+    def commit(self):
+        self._conn.commit()
+
+    def close(self):
+        self._conn.close()
+
+
 def get_db():
     if "db" not in g:
-        g.db = sqlite3.connect(DB_PATH)
-        g.db.row_factory = sqlite3.Row
-        g.db.execute("PRAGMA foreign_keys = ON")
+        g.db = _DB(_connect())
     return g.db
 
 
@@ -40,65 +75,68 @@ def md5(s):
 
 
 def init_db():
-    db = sqlite3.connect(DB_PATH)
-    db.executescript("""
-    CREATE TABLE IF NOT EXISTS users(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE NOT NULL,
-        password TEXT NOT NULL,
-        realname TEXT DEFAULT '',
-        role TEXT DEFAULT 'user',          -- admin / user
-        status INTEGER DEFAULT 1,          -- 1 启用 0 停用
-        created_at TEXT DEFAULT (datetime('now','localtime'))
-    );
-    CREATE TABLE IF NOT EXISTS detect_items(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        code TEXT NOT NULL, name TEXT NOT NULL, short_name TEXT DEFAULT '',
-        status INTEGER DEFAULT 1
-    );
-    CREATE TABLE IF NOT EXISTS lines(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        code TEXT NOT NULL, name TEXT NOT NULL,
-        workshop TEXT DEFAULT '', area TEXT DEFAULT '',
-        status INTEGER DEFAULT 1
-    );
-    CREATE TABLE IF NOT EXISTS brands(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        code TEXT NOT NULL, spec TEXT NOT NULL,
-        status INTEGER DEFAULT 1
-    );
-    CREATE TABLE IF NOT EXISTS storage_config(
-        id INTEGER PRIMARY KEY CHECK (id=1),
-        server_addr TEXT, in_bucket TEXT, username TEXT, password TEXT,
-        out_bucket TEXT
-    );
-    CREATE TABLE IF NOT EXISTS terminal_config(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        line_id INTEGER, sys_addr TEXT, ng_dir TEXT,
-        date_dir TEXT DEFAULT 'YYYYMMDD', str_pos TEXT DEFAULT '1,8',
-        shift_dir TEXT DEFAULT '早、中、晚', cam_count INTEGER DEFAULT 4,
-        cam_dirs TEXT DEFAULT '1#,2#,3#,4#', brand_dirs TEXT DEFAULT ''
-    );
-    CREATE TABLE IF NOT EXISTS label_classes(
-        id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS label_tasks(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        brand TEXT NOT NULL, total INTEGER, labeling INTEGER,
-        unlabeled INTEGER, exported INTEGER DEFAULT 0
-    );
-    CREATE TABLE IF NOT EXISTS model_versions(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        brand TEXT NOT NULL, version TEXT NOT NULL, pub_date TEXT,
-        note TEXT DEFAULT '', status TEXT DEFAULT '停用'  -- 测试/推理/停用
-    );
-    CREATE TABLE IF NOT EXISTS collect_history(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        line TEXT, date TEXT, shift TEXT, brand TEXT, img_count INTEGER
-    );
-    """)
-    cur = db.execute("SELECT COUNT(*) FROM users")
-    if cur.fetchone()[0] == 0:
+    db = _DB(_connect())
+    ddl = [
+        """CREATE TABLE IF NOT EXISTS users(
+            id INT PRIMARY KEY AUTO_INCREMENT,
+            username VARCHAR(64) UNIQUE NOT NULL,
+            password VARCHAR(64) NOT NULL,
+            realname VARCHAR(64) DEFAULT '',
+            role VARCHAR(16) DEFAULT 'user',
+            status INT DEFAULT 1,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        ) DEFAULT CHARSET=utf8mb4""",
+        """CREATE TABLE IF NOT EXISTS detect_items(
+            id INT PRIMARY KEY AUTO_INCREMENT,
+            code VARCHAR(64) NOT NULL, name VARCHAR(128) NOT NULL,
+            short_name VARCHAR(64) DEFAULT '', status INT DEFAULT 1
+        ) DEFAULT CHARSET=utf8mb4""",
+        """CREATE TABLE IF NOT EXISTS prod_lines(
+            id INT PRIMARY KEY AUTO_INCREMENT,
+            code VARCHAR(64) NOT NULL, name VARCHAR(64) NOT NULL,
+            workshop VARCHAR(64) DEFAULT '', area VARCHAR(64) DEFAULT '',
+            status INT DEFAULT 1
+        ) DEFAULT CHARSET=utf8mb4""",
+        """CREATE TABLE IF NOT EXISTS brands(
+            id INT PRIMARY KEY AUTO_INCREMENT,
+            code VARCHAR(64) NOT NULL, spec VARCHAR(128) NOT NULL,
+            status INT DEFAULT 1
+        ) DEFAULT CHARSET=utf8mb4""",
+        """CREATE TABLE IF NOT EXISTS storage_config(
+            id INT PRIMARY KEY,
+            server_addr VARCHAR(128), in_bucket VARCHAR(64),
+            username VARCHAR(64), password VARCHAR(128), out_bucket VARCHAR(64)
+        ) DEFAULT CHARSET=utf8mb4""",
+        """CREATE TABLE IF NOT EXISTS terminal_config(
+            id INT PRIMARY KEY AUTO_INCREMENT,
+            line_id INT, sys_addr VARCHAR(128), ng_dir VARCHAR(255),
+            date_dir VARCHAR(32) DEFAULT 'YYYYMMDD', str_pos VARCHAR(32) DEFAULT '1,8',
+            shift_dir VARCHAR(64) DEFAULT '早、中、晚', cam_count INT DEFAULT 4,
+            cam_dirs VARCHAR(64) DEFAULT '1#,2#,3#,4#', brand_dirs VARCHAR(255) DEFAULT ''
+        ) DEFAULT CHARSET=utf8mb4""",
+        """CREATE TABLE IF NOT EXISTS label_classes(
+            id INT PRIMARY KEY AUTO_INCREMENT, name VARCHAR(64) NOT NULL
+        ) DEFAULT CHARSET=utf8mb4""",
+        """CREATE TABLE IF NOT EXISTS label_tasks(
+            id INT PRIMARY KEY AUTO_INCREMENT,
+            brand VARCHAR(64) NOT NULL, total INT, labeling INT,
+            unlabeled INT, exported INT DEFAULT 0
+        ) DEFAULT CHARSET=utf8mb4""",
+        """CREATE TABLE IF NOT EXISTS model_versions(
+            id INT PRIMARY KEY AUTO_INCREMENT,
+            brand VARCHAR(64) NOT NULL, version VARCHAR(32) NOT NULL, pub_date VARCHAR(32),
+            note VARCHAR(255) DEFAULT '', status VARCHAR(16) DEFAULT '停用'
+        ) DEFAULT CHARSET=utf8mb4""",
+        """CREATE TABLE IF NOT EXISTS collect_history(
+            id INT PRIMARY KEY AUTO_INCREMENT,
+            line VARCHAR(32), date VARCHAR(32), shift VARCHAR(16),
+            brand VARCHAR(64), img_count INT
+        ) DEFAULT CHARSET=utf8mb4""",
+    ]
+    for stmt in ddl:
+        db.execute(stmt)
+    db.commit()
+    if db.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"] == 0:
         db.execute("INSERT INTO users(username,password,realname,role) VALUES(?,?,?,?)",
                    ("admin", md5("admin123"), "管理员", "admin"))
         db.execute("INSERT INTO users(username,password,realname,role) VALUES(?,?,?,?)",
@@ -111,7 +149,7 @@ def init_db():
                        ("JC%03d" % i, name, short))
         # 产线
         for i in range(1, 9):
-            db.execute("INSERT INTO lines(code,name,workshop,area) VALUES(?,?,?,?)",
+            db.execute("INSERT INTO prod_lines(code,name,workshop,area) VALUES(?,?,?,?)",
                        ("Y2045864%02d" % (74 + i), "A%02d" % i, "卷包车间", "一区" if i <= 4 else "二区"))
         # 牌号
         for code, spec in [("3301231", "中华（软）"), ("3301232", "中华（硬）"),
@@ -239,7 +277,7 @@ def users_save():
         try:
             db.execute("INSERT INTO users(username,password,realname,role) VALUES(?,?,?,?)",
                        (username, md5(password or "123456"), realname, role))
-        except sqlite3.IntegrityError:
+        except IntegrityError:
             flash("用户名已存在", "error")
             return redirect(url_for("users"))
     db.commit()
@@ -280,7 +318,7 @@ def config(tab):
     db = get_db()
     data = {
         "items": db.execute("SELECT * FROM detect_items ORDER BY id").fetchall(),
-        "lines": db.execute("SELECT * FROM lines ORDER BY id").fetchall(),
+        "lines": db.execute("SELECT * FROM prod_lines ORDER BY id").fetchall(),
         "brands": db.execute("SELECT * FROM brands ORDER BY id").fetchall(),
     }[tab]
     return render_template("config.html", tab=tab, tabs=CONFIG_TABS,
@@ -302,10 +340,10 @@ def config_save(tab):
                        (f["code"], f["name"], f.get("short_name", "")))
     elif tab == "lines":
         if rid:
-            db.execute("UPDATE lines SET code=?,name=?,workshop=?,area=? WHERE id=?",
+            db.execute("UPDATE prod_lines SET code=?,name=?,workshop=?,area=? WHERE id=?",
                        (f["code"], f["name"], f.get("workshop", ""), f.get("area", ""), rid))
         else:
-            db.execute("INSERT INTO lines(code,name,workshop,area) VALUES(?,?,?,?)",
+            db.execute("INSERT INTO prod_lines(code,name,workshop,area) VALUES(?,?,?,?)",
                        (f["code"], f["name"], f.get("workshop", ""), f.get("area", "")))
     elif tab == "brands":
         if rid:
@@ -320,7 +358,7 @@ def config_save(tab):
 @app.route("/config/<tab>/delete/<int:rid>", methods=["POST"])
 @login_required
 def config_delete(tab, rid):
-    table = {"items": "detect_items", "lines": "lines", "brands": "brands"}.get(tab)
+    table = {"items": "detect_items", "lines": "prod_lines", "brands": "brands"}.get(tab)
     if not table:
         abort(404)
     db = get_db()
@@ -333,7 +371,7 @@ def config_delete(tab, rid):
 @app.route("/config/<tab>/toggle/<int:rid>", methods=["POST"])
 @login_required
 def config_toggle(tab, rid):
-    table = {"items": "detect_items", "lines": "lines", "brands": "brands"}.get(tab)
+    table = {"items": "detect_items", "lines": "prod_lines", "brands": "brands"}.get(tab)
     if not table:
         abort(404)
     db = get_db()
@@ -354,7 +392,7 @@ def collect(tab):
         abort(404)
     db = get_db()
     ctx = dict(tab=tab, tabs=COLLECT_TABS, active="collect")
-    lines = db.execute("SELECT * FROM lines WHERE status=1 ORDER BY id").fetchall()
+    lines = db.execute("SELECT * FROM prod_lines WHERE status=1 ORDER BY id").fetchall()
     ctx["lines"] = lines
     cur_line = request.args.get("line") or (lines[0]["name"] if lines else "A01")
     ctx["cur_line"] = cur_line
@@ -473,7 +511,7 @@ def analysis(tab):
     if tab not in dict(ANALYSIS_TABS):
         abort(404)
     db = get_db()
-    lines = db.execute("SELECT * FROM lines WHERE status=1 ORDER BY id").fetchall()
+    lines = db.execute("SELECT * FROM prod_lines WHERE status=1 ORDER BY id").fetchall()
     cur_line = request.args.get("line") or (lines[0]["name"] if lines else "A01")
     return render_template("analysis.html", tab=tab, tabs=ANALYSIS_TABS,
                            lines=lines, cur_line=cur_line, active="analysis",
