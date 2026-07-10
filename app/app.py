@@ -78,60 +78,83 @@ def init_db():
     db = _DB(_connect())
     ddl = [
         """CREATE TABLE IF NOT EXISTS users(
-            id INT PRIMARY KEY AUTO_INCREMENT,
-            username VARCHAR(64) UNIQUE NOT NULL,
-            password VARCHAR(64) NOT NULL,
-            realname VARCHAR(64) DEFAULT '',
-            role VARCHAR(16) DEFAULT 'user',
-            status INT DEFAULT 1,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        ) DEFAULT CHARSET=utf8mb4""",
+            id INT PRIMARY KEY AUTO_INCREMENT COMMENT '用户ID',
+            username VARCHAR(64) UNIQUE NOT NULL COMMENT '登录用户名',
+            password VARCHAR(64) NOT NULL COMMENT '密码(MD5)',
+            realname VARCHAR(64) DEFAULT '' COMMENT '真实姓名',
+            role VARCHAR(16) DEFAULT 'user' COMMENT '角色: admin管理员 / user普通用户',
+            status INT DEFAULT 1 COMMENT '状态: 1启用 0停用',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间'
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='用户表'""",
         """CREATE TABLE IF NOT EXISTS detect_items(
-            id INT PRIMARY KEY AUTO_INCREMENT,
-            code VARCHAR(64) NOT NULL, name VARCHAR(128) NOT NULL,
-            short_name VARCHAR(64) DEFAULT '', status INT DEFAULT 1
-        ) DEFAULT CHARSET=utf8mb4""",
+            id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+            code VARCHAR(64) NOT NULL COMMENT '项目编码',
+            name VARCHAR(128) NOT NULL COMMENT '项目名称',
+            short_name VARCHAR(64) DEFAULT '' COMMENT '简称',
+            status INT DEFAULT 1 COMMENT '状态: 1启用 0停用'
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='检测项目表'""",
         """CREATE TABLE IF NOT EXISTS prod_lines(
-            id INT PRIMARY KEY AUTO_INCREMENT,
-            code VARCHAR(64) NOT NULL, name VARCHAR(64) NOT NULL,
-            workshop VARCHAR(64) DEFAULT '', area VARCHAR(64) DEFAULT '',
-            status INT DEFAULT 1
-        ) DEFAULT CHARSET=utf8mb4""",
+            id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+            code VARCHAR(64) NOT NULL COMMENT '产线编码',
+            name VARCHAR(64) NOT NULL COMMENT '产线名称',
+            workshop VARCHAR(64) DEFAULT '' COMMENT '所属车间',
+            area VARCHAR(64) DEFAULT '' COMMENT '所属区域',
+            status INT DEFAULT 1 COMMENT '状态: 1启用 0停用'
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='机组/产线表'""",
         """CREATE TABLE IF NOT EXISTS brands(
-            id INT PRIMARY KEY AUTO_INCREMENT,
-            code VARCHAR(64) NOT NULL, spec VARCHAR(128) NOT NULL,
-            status INT DEFAULT 1
-        ) DEFAULT CHARSET=utf8mb4""",
+            id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+            code VARCHAR(64) NOT NULL COMMENT '牌号编码',
+            spec VARCHAR(128) NOT NULL COMMENT '品规/规格',
+            status INT DEFAULT 1 COMMENT '状态: 1启用 0停用'
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='牌号/品规表'""",
         """CREATE TABLE IF NOT EXISTS storage_config(
-            id INT PRIMARY KEY,
-            server_addr VARCHAR(128), in_bucket VARCHAR(64),
-            username VARCHAR(64), password VARCHAR(128), out_bucket VARCHAR(64)
-        ) DEFAULT CHARSET=utf8mb4""",
+            id INT PRIMARY KEY COMMENT '主键(固定为1，单条配置)',
+            server_addr VARCHAR(128) COMMENT '存储服务地址',
+            in_bucket VARCHAR(64) COMMENT '输入桶名',
+            username VARCHAR(64) COMMENT '存储服务用户名',
+            password VARCHAR(128) COMMENT '存储服务密码',
+            out_bucket VARCHAR(64) COMMENT '输出桶名'
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='存储服务配置表'""",
         """CREATE TABLE IF NOT EXISTS terminal_config(
-            id INT PRIMARY KEY AUTO_INCREMENT,
-            line_id INT, sys_addr VARCHAR(128), ng_dir VARCHAR(255),
-            date_dir VARCHAR(32) DEFAULT 'YYYYMMDD', str_pos VARCHAR(32) DEFAULT '1,8',
-            shift_dir VARCHAR(64) DEFAULT '早、中、晚', cam_count INT DEFAULT 4,
-            cam_dirs VARCHAR(64) DEFAULT '1#,2#,3#,4#', brand_dirs VARCHAR(255) DEFAULT ''
-        ) DEFAULT CHARSET=utf8mb4""",
+            id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+            line_id INT COMMENT '关联产线ID(prod_lines.id)',
+            sys_addr VARCHAR(128) COMMENT '终端系统地址',
+            ng_dir VARCHAR(255) COMMENT 'NG图片目录',
+            date_dir VARCHAR(32) DEFAULT 'YYYYMMDD' COMMENT '日期目录格式',
+            str_pos VARCHAR(32) DEFAULT '1,8' COMMENT '字符串截取位置',
+            shift_dir VARCHAR(64) DEFAULT '早、中、晚' COMMENT '班次目录名',
+            cam_count INT DEFAULT 4 COMMENT '相机数量',
+            cam_dirs VARCHAR(64) DEFAULT '1#,2#,3#,4#' COMMENT '相机目录名',
+            brand_dirs VARCHAR(255) DEFAULT '' COMMENT '牌号目录名'
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='终端采集配置表'""",
         """CREATE TABLE IF NOT EXISTS label_classes(
-            id INT PRIMARY KEY AUTO_INCREMENT, name VARCHAR(64) NOT NULL
-        ) DEFAULT CHARSET=utf8mb4""",
+            id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+            name VARCHAR(64) NOT NULL COMMENT '缺陷分类名称'
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='缺陷标注分类表'""",
         """CREATE TABLE IF NOT EXISTS label_tasks(
-            id INT PRIMARY KEY AUTO_INCREMENT,
-            brand VARCHAR(64) NOT NULL, total INT, labeling INT,
-            unlabeled INT, exported INT DEFAULT 0
-        ) DEFAULT CHARSET=utf8mb4""",
+            id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+            brand VARCHAR(64) NOT NULL COMMENT '牌号',
+            total INT COMMENT '图片总数',
+            labeling INT COMMENT '标注中数量',
+            unlabeled INT COMMENT '未标注数量',
+            exported INT DEFAULT 0 COMMENT '是否已导出: 1是 0否'
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='缺陷标注任务表'""",
         """CREATE TABLE IF NOT EXISTS model_versions(
-            id INT PRIMARY KEY AUTO_INCREMENT,
-            brand VARCHAR(64) NOT NULL, version VARCHAR(32) NOT NULL, pub_date VARCHAR(32),
-            note VARCHAR(255) DEFAULT '', status VARCHAR(16) DEFAULT '停用'
-        ) DEFAULT CHARSET=utf8mb4""",
+            id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+            brand VARCHAR(64) NOT NULL COMMENT '牌号',
+            version VARCHAR(32) NOT NULL COMMENT '版本号',
+            pub_date VARCHAR(32) COMMENT '发布日期',
+            note VARCHAR(255) DEFAULT '' COMMENT '备注说明',
+            status VARCHAR(16) DEFAULT '停用' COMMENT '状态: 测试/推理/停用'
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='模型版本表'""",
         """CREATE TABLE IF NOT EXISTS collect_history(
-            id INT PRIMARY KEY AUTO_INCREMENT,
-            line VARCHAR(32), date VARCHAR(32), shift VARCHAR(16),
-            brand VARCHAR(64), img_count INT
-        ) DEFAULT CHARSET=utf8mb4""",
+            id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+            line VARCHAR(32) COMMENT '产线名称',
+            date VARCHAR(32) COMMENT '采集日期',
+            shift VARCHAR(16) COMMENT '班次',
+            brand VARCHAR(64) COMMENT '牌号',
+            img_count INT COMMENT '采集图片数量'
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='历史采集记录表'""",
     ]
     for stmt in ddl:
         db.execute(stmt)
