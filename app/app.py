@@ -1,0 +1,511 @@
+# -*- coding: utf-8 -*-
+"""缺陷图片分析平台 — Flask 后端"""
+import os
+import sqlite3
+import hashlib
+import functools
+import random
+from datetime import datetime, timedelta
+from flask import (Flask, g, render_template, request, redirect, url_for,
+                   session, flash, jsonify, abort)
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "platform.db")
+
+app = Flask(__name__)
+app.secret_key = "yancao-analyse-platform-secret-2026"
+
+# 检测项目（顶部导航）
+DETECT_ITEMS = ["烟支外观", "五轮成像", "小包CCD", "散包检测", "条外观"]
+
+
+# ---------------------------------------------------------------- 数据库
+def get_db():
+    if "db" not in g:
+        g.db = sqlite3.connect(DB_PATH)
+        g.db.row_factory = sqlite3.Row
+        g.db.execute("PRAGMA foreign_keys = ON")
+    return g.db
+
+
+@app.teardown_appcontext
+def close_db(exc=None):
+    db = g.pop("db", None)
+    if db is not None:
+        db.close()
+
+
+def md5(s):
+    return hashlib.md5(s.encode("utf-8")).hexdigest()
+
+
+def init_db():
+    db = sqlite3.connect(DB_PATH)
+    db.executescript("""
+    CREATE TABLE IF NOT EXISTS users(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT UNIQUE NOT NULL,
+        password TEXT NOT NULL,
+        realname TEXT DEFAULT '',
+        role TEXT DEFAULT 'user',          -- admin / user
+        status INTEGER DEFAULT 1,          -- 1 启用 0 停用
+        created_at TEXT DEFAULT (datetime('now','localtime'))
+    );
+    CREATE TABLE IF NOT EXISTS detect_items(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        code TEXT NOT NULL, name TEXT NOT NULL, short_name TEXT DEFAULT '',
+        status INTEGER DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS lines(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        code TEXT NOT NULL, name TEXT NOT NULL,
+        workshop TEXT DEFAULT '', area TEXT DEFAULT '',
+        status INTEGER DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS brands(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        code TEXT NOT NULL, spec TEXT NOT NULL,
+        status INTEGER DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS storage_config(
+        id INTEGER PRIMARY KEY CHECK (id=1),
+        server_addr TEXT, in_bucket TEXT, username TEXT, password TEXT,
+        out_bucket TEXT
+    );
+    CREATE TABLE IF NOT EXISTS terminal_config(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        line_id INTEGER, sys_addr TEXT, ng_dir TEXT,
+        date_dir TEXT DEFAULT 'YYYYMMDD', str_pos TEXT DEFAULT '1,8',
+        shift_dir TEXT DEFAULT '早、中、晚', cam_count INTEGER DEFAULT 4,
+        cam_dirs TEXT DEFAULT '1#,2#,3#,4#', brand_dirs TEXT DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS label_classes(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS label_tasks(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        brand TEXT NOT NULL, total INTEGER, labeling INTEGER,
+        unlabeled INTEGER, exported INTEGER DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS model_versions(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        brand TEXT NOT NULL, version TEXT NOT NULL, pub_date TEXT,
+        note TEXT DEFAULT '', status TEXT DEFAULT '停用'  -- 测试/推理/停用
+    );
+    CREATE TABLE IF NOT EXISTS collect_history(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        line TEXT, date TEXT, shift TEXT, brand TEXT, img_count INTEGER
+    );
+    """)
+    cur = db.execute("SELECT COUNT(*) FROM users")
+    if cur.fetchone()[0] == 0:
+        db.execute("INSERT INTO users(username,password,realname,role) VALUES(?,?,?,?)",
+                   ("admin", md5("admin123"), "管理员", "admin"))
+        db.execute("INSERT INTO users(username,password,realname,role) VALUES(?,?,?,?)",
+                   ("zhangsan", md5("123456"), "张三", "user"))
+        # 检测项目
+        for i, (name, short) in enumerate([("烟支外观检测", "烟支外观"), ("五轮成像检测", "五轮成像"),
+                                           ("小包CCD检测", "小包CCD"), ("散包检测", "散包检测"),
+                                           ("条外观检测", "条外观")], 1):
+            db.execute("INSERT INTO detect_items(code,name,short_name) VALUES(?,?,?)",
+                       ("JC%03d" % i, name, short))
+        # 产线
+        for i in range(1, 9):
+            db.execute("INSERT INTO lines(code,name,workshop,area) VALUES(?,?,?,?)",
+                       ("Y2045864%02d" % (74 + i), "A%02d" % i, "卷包车间", "一区" if i <= 4 else "二区"))
+        # 牌号
+        for code, spec in [("3301231", "中华（软）"), ("3301232", "中华（硬）"),
+                           ("3302101", "玉溪（软）"), ("3302102", "玉溪（创客）"),
+                           ("3302103", "玉溪（缤果爆）"), ("3303001", "云烟（紫）")]:
+            db.execute("INSERT INTO brands(code,spec) VALUES(?,?)", (code, spec))
+        db.execute("INSERT INTO storage_config(id,server_addr,in_bucket,username,password,out_bucket) "
+                   "VALUES(1,?,?,?,?,?)",
+                   ("127.0.0.1:23456", "ng_yzwg", "S*****B", "", "ng_yzwg_out"))
+        for c in ["污渍", "翘边", "封签歪斜", "印刷错误", "刺破", "缺支"]:
+            db.execute("INSERT INTO label_classes(name) VALUES(?)", (c,))
+        for b in ["中华（软）", "玉溪（软）", "玉溪（创客）", "云烟（紫）"]:
+            db.execute("INSERT INTO label_tasks(brand,total,labeling,unlabeled) VALUES(?,?,?,?)",
+                       (b, 98, 59, 39))
+        seed_models = [
+            ("V1.3", "2026-06-30", "在前一版本基础上调整学习率与数据增强", "测试"),
+            ("V1.2", "2026-05-31", "在前一版本基础上补充翘边样本", "推理"),
+            ("V1.1", "2026-04-30", "在前一版本基础上调整置信度阈值", "停用"),
+            ("V1.0", "2026-03-31", "在前一版本基础上扩充训练集", "停用"),
+            ("V0.5", "2026-02-28", "在前一版本基础上调整骨干网络", "停用"),
+            ("V0.1", "2026-01-31", "对10种缺陷识别准确率90%", "停用"),
+        ]
+        for v, d, n, s in seed_models:
+            db.execute("INSERT INTO model_versions(brand,version,pub_date,note,status) VALUES(?,?,?,?,?)",
+                       ("中华（软）", v, d, n, s))
+        # 历史采集记录
+        rnd = random.Random(42)
+        brands = ["中华（软）", "玉溪（软）", "玉溪（创客）", "云烟（紫）"]
+        today = datetime.now()
+        for d in range(14):
+            day = (today - timedelta(days=d)).strftime("%Y/%m/%d")
+            for shift in ["早班", "中班", "晚班"]:
+                db.execute("INSERT INTO collect_history(line,date,shift,brand,img_count) VALUES(?,?,?,?,?)",
+                           ("A%02d" % rnd.randint(1, 8), day, shift,
+                            rnd.choice(brands), rnd.randint(80, 420)))
+        db.commit()
+    db.close()
+
+
+# ---------------------------------------------------------------- 登录
+def login_required(fn):
+    @functools.wraps(fn)
+    def wrapper(*a, **kw):
+        if not session.get("uid"):
+            return redirect(url_for("login", next=request.path))
+        return fn(*a, **kw)
+    return wrapper
+
+
+def admin_required(fn):
+    @functools.wraps(fn)
+    def wrapper(*a, **kw):
+        if session.get("role") != "admin":
+            abort(403)
+        return fn(*a, **kw)
+    return wrapper
+
+
+@app.context_processor
+def inject_globals():
+    return dict(DETECT_ITEMS=DETECT_ITEMS,
+                cur_item=request.args.get("item", DETECT_ITEMS[0]))
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        row = get_db().execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+        if row and row["password"] == md5(password):
+            if not row["status"]:
+                flash("账号已停用，请联系管理员", "error")
+            else:
+                session["uid"] = row["id"]
+                session["username"] = row["username"]
+                session["realname"] = row["realname"] or row["username"]
+                session["role"] = row["role"]
+                return redirect(request.args.get("next") or url_for("index"))
+        else:
+            flash("用户名或密码错误", "error")
+    return render_template("login.html")
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+
+# ---------------------------------------------------------------- 首页
+@app.route("/")
+@login_required
+def index():
+    return render_template("index.html", active="home")
+
+
+# ---------------------------------------------------------------- 用户管理
+@app.route("/users")
+@login_required
+@admin_required
+def users():
+    rows = get_db().execute("SELECT * FROM users ORDER BY id").fetchall()
+    return render_template("users.html", rows=rows, active="users")
+
+
+@app.route("/users/save", methods=["POST"])
+@login_required
+@admin_required
+def users_save():
+    db = get_db()
+    uid = request.form.get("id")
+    username = request.form.get("username", "").strip()
+    realname = request.form.get("realname", "").strip()
+    role = request.form.get("role", "user")
+    password = request.form.get("password", "")
+    if uid:
+        if password:
+            db.execute("UPDATE users SET username=?,realname=?,role=?,password=? WHERE id=?",
+                       (username, realname, role, md5(password), uid))
+        else:
+            db.execute("UPDATE users SET username=?,realname=?,role=? WHERE id=?",
+                       (username, realname, role, uid))
+    else:
+        try:
+            db.execute("INSERT INTO users(username,password,realname,role) VALUES(?,?,?,?)",
+                       (username, md5(password or "123456"), realname, role))
+        except sqlite3.IntegrityError:
+            flash("用户名已存在", "error")
+            return redirect(url_for("users"))
+    db.commit()
+    flash("保存成功", "success")
+    return redirect(url_for("users"))
+
+
+@app.route("/users/toggle/<int:uid>", methods=["POST"])
+@login_required
+@admin_required
+def users_toggle(uid):
+    db = get_db()
+    db.execute("UPDATE users SET status=1-status WHERE id=? AND username<>'admin'", (uid,))
+    db.commit()
+    return redirect(url_for("users"))
+
+
+@app.route("/users/delete/<int:uid>", methods=["POST"])
+@login_required
+@admin_required
+def users_delete(uid):
+    db = get_db()
+    db.execute("DELETE FROM users WHERE id=? AND username<>'admin'", (uid,))
+    db.commit()
+    flash("已删除", "success")
+    return redirect(url_for("users"))
+
+
+# ---------------------------------------------------------------- 基础配置
+CONFIG_TABS = [("items", "检测项目"), ("lines", "机组/产线"), ("brands", "牌号/品规")]
+
+
+@app.route("/config/<tab>")
+@login_required
+def config(tab):
+    if tab not in dict(CONFIG_TABS):
+        abort(404)
+    db = get_db()
+    data = {
+        "items": db.execute("SELECT * FROM detect_items ORDER BY id").fetchall(),
+        "lines": db.execute("SELECT * FROM lines ORDER BY id").fetchall(),
+        "brands": db.execute("SELECT * FROM brands ORDER BY id").fetchall(),
+    }[tab]
+    return render_template("config.html", tab=tab, tabs=CONFIG_TABS,
+                           rows=data, active="config")
+
+
+@app.route("/config/<tab>/save", methods=["POST"])
+@login_required
+def config_save(tab):
+    db = get_db()
+    f = request.form
+    rid = f.get("id")
+    if tab == "items":
+        if rid:
+            db.execute("UPDATE detect_items SET code=?,name=?,short_name=? WHERE id=?",
+                       (f["code"], f["name"], f.get("short_name", ""), rid))
+        else:
+            db.execute("INSERT INTO detect_items(code,name,short_name) VALUES(?,?,?)",
+                       (f["code"], f["name"], f.get("short_name", "")))
+    elif tab == "lines":
+        if rid:
+            db.execute("UPDATE lines SET code=?,name=?,workshop=?,area=? WHERE id=?",
+                       (f["code"], f["name"], f.get("workshop", ""), f.get("area", ""), rid))
+        else:
+            db.execute("INSERT INTO lines(code,name,workshop,area) VALUES(?,?,?,?)",
+                       (f["code"], f["name"], f.get("workshop", ""), f.get("area", "")))
+    elif tab == "brands":
+        if rid:
+            db.execute("UPDATE brands SET code=?,spec=? WHERE id=?", (f["code"], f["spec"], rid))
+        else:
+            db.execute("INSERT INTO brands(code,spec) VALUES(?,?)", (f["code"], f["spec"]))
+    db.commit()
+    flash("保存成功", "success")
+    return redirect(url_for("config", tab=tab))
+
+
+@app.route("/config/<tab>/delete/<int:rid>", methods=["POST"])
+@login_required
+def config_delete(tab, rid):
+    table = {"items": "detect_items", "lines": "lines", "brands": "brands"}.get(tab)
+    if not table:
+        abort(404)
+    db = get_db()
+    db.execute("DELETE FROM %s WHERE id=?" % table, (rid,))
+    db.commit()
+    flash("已删除", "success")
+    return redirect(url_for("config", tab=tab))
+
+
+@app.route("/config/<tab>/toggle/<int:rid>", methods=["POST"])
+@login_required
+def config_toggle(tab, rid):
+    table = {"items": "detect_items", "lines": "lines", "brands": "brands"}.get(tab)
+    if not table:
+        abort(404)
+    db = get_db()
+    db.execute("UPDATE %s SET status=1-status WHERE id=?" % table, (rid,))
+    db.commit()
+    return redirect(url_for("config", tab=tab))
+
+
+# ---------------------------------------------------------------- 图像采集
+COLLECT_TABS = [("mode", "采集模式"), ("storage", "服务配置"), ("terminal", "终端配置"),
+                ("monitor", "采集监控"), ("history", "历史采集"), ("images", "图片查询")]
+
+
+@app.route("/collect/<tab>", methods=["GET", "POST"])
+@login_required
+def collect(tab):
+    if tab not in dict(COLLECT_TABS):
+        abort(404)
+    db = get_db()
+    ctx = dict(tab=tab, tabs=COLLECT_TABS, active="collect")
+    lines = db.execute("SELECT * FROM lines WHERE status=1 ORDER BY id").fetchall()
+    ctx["lines"] = lines
+    cur_line = request.args.get("line") or (lines[0]["name"] if lines else "A01")
+    ctx["cur_line"] = cur_line
+
+    if tab == "storage":
+        if request.method == "POST":
+            f = request.form
+            db.execute("UPDATE storage_config SET server_addr=?,in_bucket=?,username=?,password=?,out_bucket=? WHERE id=1",
+                       (f["server_addr"], f["in_bucket"], f["username"], f["password"], f["out_bucket"]))
+            db.commit()
+            flash("服务配置已保存", "success")
+            return redirect(url_for("collect", tab="storage"))
+        ctx["cfg"] = db.execute("SELECT * FROM storage_config WHERE id=1").fetchone()
+    elif tab == "terminal":
+        if request.method == "POST":
+            f = request.form
+            db.execute("DELETE FROM terminal_config WHERE line_id=?", (f["line_id"],))
+            db.execute("INSERT INTO terminal_config(line_id,sys_addr,ng_dir,date_dir,str_pos,shift_dir,cam_count,cam_dirs,brand_dirs) "
+                       "VALUES(?,?,?,?,?,?,?,?,?)",
+                       (f["line_id"], f["sys_addr"], f["ng_dir"], f["date_dir"], f["str_pos"],
+                        f["shift_dir"], f["cam_count"], f["cam_dirs"], f["brand_dirs"]))
+            db.commit()
+            flash("终端配置已保存", "success")
+            return redirect(url_for("collect", tab="terminal", line=cur_line))
+        line_row = next((l for l in lines if l["name"] == cur_line), None)
+        ctx["line_row"] = line_row
+        ctx["tcfg"] = db.execute("SELECT * FROM terminal_config WHERE line_id=?",
+                                 (line_row["id"] if line_row else -1,)).fetchone()
+    elif tab == "monitor":
+        rnd = random.Random(hash(cur_line) & 0xffff)
+        ctx["cams"] = [{"name": "%d#相机" % i, "count": rnd.randint(5, 30)} for i in range(1, 7)]
+    elif tab == "history":
+        ctx["records"] = db.execute(
+            "SELECT * FROM collect_history WHERE line=? ORDER BY date DESC, shift", (cur_line,)).fetchall() \
+            or db.execute("SELECT * FROM collect_history ORDER BY date DESC LIMIT 20").fetchall()
+    elif tab == "images":
+        rnd = random.Random(7)
+        ctx["total"] = 324
+        ctx["pics"] = [{"idx": i, "hue": rnd.randint(0, 360)} for i in range(1, 13)]
+    return render_template("collect.html", **ctx)
+
+
+# ---------------------------------------------------------------- 缺陷标注
+@app.route("/label")
+@login_required
+def label():
+    db = get_db()
+    tasks = db.execute("SELECT * FROM label_tasks ORDER BY id").fetchall()
+    classes = db.execute("SELECT * FROM label_classes ORDER BY id").fetchall()
+    return render_template("label.html", tasks=tasks, classes=classes, active="label")
+
+
+@app.route("/label/class/add", methods=["POST"])
+@login_required
+def label_class_add():
+    name = request.form.get("name", "").strip()
+    if name:
+        db = get_db()
+        db.execute("INSERT INTO label_classes(name) VALUES(?)", (name,))
+        db.commit()
+        flash("分类已添加", "success")
+    return redirect(url_for("label"))
+
+
+@app.route("/label/class/delete/<int:cid>", methods=["POST"])
+@login_required
+def label_class_delete(cid):
+    db = get_db()
+    db.execute("DELETE FROM label_classes WHERE id=?", (cid,))
+    db.commit()
+    return redirect(url_for("label"))
+
+
+@app.route("/label/anno/<int:tid>")
+@login_required
+def label_anno(tid):
+    db = get_db()
+    task = db.execute("SELECT * FROM label_tasks WHERE id=?", (tid,)).fetchone()
+    classes = db.execute("SELECT * FROM label_classes ORDER BY id").fetchall()
+    if not task:
+        abort(404)
+    return render_template("label_anno.html", task=task, classes=classes, active="label")
+
+
+# ---------------------------------------------------------------- 模型版本
+@app.route("/model")
+@login_required
+def model():
+    db = get_db()
+    brands = [r["spec"] for r in db.execute("SELECT spec FROM brands WHERE status=1").fetchall()]
+    cur_brand = request.args.get("brand") or (brands[0] if brands else "")
+    rows = db.execute("SELECT * FROM model_versions WHERE brand=? ORDER BY id DESC", (cur_brand,)).fetchall()
+    if not rows:
+        rows = db.execute("SELECT * FROM model_versions ORDER BY id DESC").fetchall()
+    return render_template("model.html", brands=brands, cur_brand=cur_brand,
+                           rows=rows, active="model")
+
+
+@app.route("/model/status/<int:mid>", methods=["POST"])
+@login_required
+def model_status(mid):
+    st = request.form.get("status", "停用")
+    db = get_db()
+    db.execute("UPDATE model_versions SET status=? WHERE id=?", (st, mid))
+    db.commit()
+    return redirect(request.referrer or url_for("model"))
+
+
+# ---------------------------------------------------------------- 分析结果
+ANALYSIS_TABS = [("shift", "当班统计"), ("history", "历史统计"), ("trend", "趋势分析")]
+
+
+@app.route("/analysis/<tab>")
+@login_required
+def analysis(tab):
+    if tab not in dict(ANALYSIS_TABS):
+        abort(404)
+    db = get_db()
+    lines = db.execute("SELECT * FROM lines WHERE status=1 ORDER BY id").fetchall()
+    cur_line = request.args.get("line") or (lines[0]["name"] if lines else "A01")
+    return render_template("analysis.html", tab=tab, tabs=ANALYSIS_TABS,
+                           lines=lines, cur_line=cur_line, active="analysis",
+                           today=datetime.now().strftime("%Y/%m/%d"))
+
+
+@app.route("/api/analysis/<tab>")
+@login_required
+def api_analysis(tab):
+    line = request.args.get("line", "A01")
+    rnd = random.Random(hash(line + tab) & 0xffff)
+    classes = ["污渍", "翘边", "封签歪斜", "印刷错误", "刺破", "缺支"]
+    if tab == "shift":
+        return jsonify({
+            "classes": classes,
+            "counts": [rnd.randint(5, 120) for _ in classes],
+        })
+    if tab == "history":
+        days = [(datetime.now() - timedelta(days=d)).strftime("%m/%d") for d in range(6, -1, -1)]
+        return jsonify({
+            "days": days,
+            "series": [{"name": c, "data": [rnd.randint(2, 60) for _ in days]} for c in classes[:4]],
+        })
+    days = [(datetime.now() - timedelta(days=d)).strftime("%m/%d") for d in range(13, -1, -1)]
+    return jsonify({
+        "days": days,
+        "series": [{"name": c, "data": [rnd.randint(10, 90) for _ in days]} for c in classes[:4]],
+    })
+
+
+# ----------------------------------------------------------------
+init_db()
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "9573")), debug=False)

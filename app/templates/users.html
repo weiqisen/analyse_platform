@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}用户管理 · 缺陷图片分析平台{% endblock %}
+{% block itemnav %}{% endblock %}
+{% block content %}
+<div class="toolbar">
+  <div class="page-title" style="margin:0">用户管理</div>
+  <button class="btn btn-primary" onclick="editUser()">+ 新增用户</button>
+</div>
+<div class="card"><div class="card-body" style="padding:0">
+<table class="table">
+  <thead><tr>
+    <th>序号</th><th>用户名</th><th>姓名</th><th>角色</th><th>状态</th><th>创建时间</th><th>操作</th>
+  </tr></thead>
+  <tbody>
+  {% for u in rows %}
+  <tr>
+    <td>{{ loop.index }}</td>
+    <td>{{ u.username }}</td>
+    <td>{{ u.realname }}</td>
+    <td>{% if u.role=='admin' %}<span class="tag">管理员</span>{% else %}<span class="tag-blue tag">普通用户</span>{% endif %}</td>
+    <td>{% if u.status %}<span class="tag">启用</span>{% else %}<span class="tag tag-gray">停用</span>{% endif %}</td>
+    <td>{{ u.created_at }}</td>
+    <td>
+      <button class="btn-link" onclick='editUser({{ {"id":u.id,"username":u.username,"realname":u.realname,"role":u.role}|tojson }})'>修改</button>
+      {% if u.username != 'admin' %}
+      <form method="post" action="{{ url_for('users_toggle', uid=u.id) }}" style="display:inline">
+        <button class="btn-link" type="submit">{{ '停用' if u.status else '启用' }}</button>
+      </form>
+      <form method="post" action="{{ url_for('users_delete', uid=u.id) }}" style="display:inline"
+            onsubmit="return confirm('确认删除用户 {{ u.username }} ？')">
+        <button class="btn-link danger" type="submit">删除</button>
+      </form>
+      {% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div></div>
+
+<div class="modal-mask" id="userModal">
+  <div class="modal">
+    <div class="modal-head"><span id="userModalTitle">新增用户</span>
+      <span class="close" onclick="closeModal('userModal')">×</span></div>
+    <form method="post" action="{{ url_for('users_save') }}">
+      <div class="modal-body">
+        <input type="hidden" name="id" id="f_id">
+        <div class="form-item"><label><span class="req">*</span>用户名</label>
+          <input class="input" name="username" id="f_username" required></div>
+        <div class="form-item"><label>姓名</label>
+          <input class="input" name="realname" id="f_realname"></div>
+        <div class="form-item"><label>角色</label>
+          <select class="select input" name="role" id="f_role">
+            <option value="user">普通用户</option><option value="admin">管理员</option>
+          </select></div>
+        <div class="form-item"><label>密码</label>
+          <input class="input" type="password" name="password" id="f_password"
+                 placeholder="新增默认 123456，修改留空则不变"></div>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn" onclick="closeModal('userModal')">取消</button>
+        <button type="submit" class="btn btn-primary">确定</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+{% block script %}
+<script>
+function editUser(u){
+  u = u || {};
+  document.getElementById('userModalTitle').textContent = u.id ? '修改用户' : '新增用户';
+  document.getElementById('f_id').value = u.id || '';
+  document.getElementById('f_username').value = u.username || '';
+  document.getElementById('f_realname').value = u.realname || '';
+  document.getElementById('f_role').value = u.role || 'user';
+  document.getElementById('f_password').value = '';
+  openModal('userModal');
+}
+</script>
+{% endblock %}

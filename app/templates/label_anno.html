@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}图片标注 · 缺陷图片分析平台{% endblock %}
+{% block content %}
+<div class="toolbar">
+  <div class="page-title" style="margin:0">图片标注 — {{ task.brand }}
+    <span style="font-size:13px;color:var(--text-secondary);font-weight:400">
+      （共 {{ task.total }} 张 · 未标注 {{ task.unlabeled }} 张）</span>
+  </div>
+  <a class="btn" href="{{ url_for('label') }}">« 返回任务列表</a>
+</div>
+<div style="display:flex;gap:16px;align-items:flex-start">
+  <div class="card" style="flex:1"><div class="card-body">
+    <div id="canvas" style="position:relative;height:480px;border-radius:8px;cursor:crosshair;
+         background:linear-gradient(135deg,hsl(150,18%,38%),hsl(150,22%,22%));
+         display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,.7)">
+      NG_0001.jpg — 在图片上拖拽框选缺陷区域
+    </div>
+    <div class="form-inline" style="margin-top:14px;justify-content:space-between">
+      <div>
+        <button class="btn" onclick="alert('上一张（演示）')">« 上一张</button>
+        <button class="btn" onclick="alert('下一张（演示）')">下一张 »</button>
+      </div>
+      <div>
+        <button class="btn" onclick="clearBoxes()">清除标注</button>
+        <button class="btn btn-primary" onclick="alert('已保存标注（演示）')">保存并下一张</button>
+      </div>
+    </div>
+  </div></div>
+  <div class="card" style="width:240px;flex-shrink:0"><div class="card-head">选择缺陷分类</div>
+    <div class="card-body class-list" id="clsList">
+      {% for c in classes %}
+      <div class="class-item" style="cursor:pointer" onclick="pickCls(this)">
+        <span>{{ c.name }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block script %}
+<script>
+var curCls = null;
+function pickCls(el){
+  document.querySelectorAll('#clsList .class-item').forEach(function(i){
+    i.style.borderColor=''; i.style.background='#fafafa';
+  });
+  el.style.borderColor='var(--primary)'; el.style.background='var(--primary-bg)';
+  curCls = el.textContent.trim();
+}
+var canvas = document.getElementById('canvas'), startX, startY, box = null;
+canvas.addEventListener('mousedown', function(e){
+  if(!curCls){ alert('请先在右侧选择缺陷分类'); return; }
+  var r = canvas.getBoundingClientRect();
+  startX = e.clientX - r.left; startY = e.clientY - r.top;
+  box = document.createElement('div');
+  box.style.cssText = 'position:absolute;border:2px solid #ffd666;background:rgba(255,214,102,.15);' +
+    'left:'+startX+'px;top:'+startY+'px;color:#ffd666;font-size:12px;padding:1px 4px;';
+  box.textContent = curCls;
+  canvas.appendChild(box);
+});
+canvas.addEventListener('mousemove', function(e){
+  if(!box) return;
+  var r = canvas.getBoundingClientRect();
+  var x = e.clientX - r.left, y = e.clientY - r.top;
+  box.style.left = Math.min(x, startX)+'px'; box.style.top = Math.min(y, startY)+'px';
+  box.style.width = Math.abs(x - startX)+'px'; box.style.height = Math.abs(y - startY)+'px';
+});
+document.addEventListener('mouseup', function(){ box = null; });
+function clearBoxes(){
+  canvas.querySelectorAll('div').forEach(function(d){ d.remove(); });
+}
+</script>
+{% endblock %}

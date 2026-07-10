@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>登录 · 缺陷图片分析平台</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/antd.css') }}">
+</head>
+<body>
+<div class="login-page">
+  <div class="msg-wrap">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for cat, m in messages %}
+      <div class="msg {{ cat }}"><span class="dot"></span>{{ m }}</div>
+      {% endfor %}
+    {% endwith %}
+  </div>
+  <div class="login-card">
+    <div class="login-logo">
+      <svg width="64" height="64" viewBox="0 0 32 32">
+        <circle cx="16" cy="16" r="15" fill="none" stroke="#00923f" stroke-width="1.6"/>
+        <path d="M16 5 C9.5 11.5 8 18.5 16 27 C24 18.5 22.5 11.5 16 5 Z" fill="#00923f"/>
+        <path d="M16 8 L16 24 M16 13 L11.5 17 M16 13 L20.5 17" stroke="#fff" stroke-width="1.4" fill="none"/>
+      </svg>
+      <h1>缺陷图片分析平台</h1>
+      <div class="sub">图片采集 · 缺陷标注 · 模型训练 · 分析展示</div>
+    </div>
+    <form method="post">
+      <div class="form-item">
+        <label>用户名</label>
+        <input class="input" name="username" placeholder="请输入用户名" required autofocus>
+      </div>
+      <div class="form-item">
+        <label>密码</label>
+        <input class="input" type="password" name="password" placeholder="请输入密码" required>
+      </div>
+      <button class="btn btn-primary btn-lg btn-block" type="submit">登 录</button>
+    </form>
+    <p style="margin-top:16px;color:rgba(0,0,0,.4);font-size:12px;text-align:center">
+      默认账号：admin / admin123
+    </p>
+  </div>
+  <div class="login-foot">缺陷图片分析平台 · 卷包质量智能分析</div>
+</div>
+<script>
+setTimeout(function(){ document.querySelectorAll('.msg').forEach(function(m){ m.style.display='none'; }); }, 3000);
+</script>
+</body>
+</html>

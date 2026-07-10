@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}基础配置 · 缺陷图片分析平台{% endblock %}
+{% block sider %}
+<aside class="layout-sider">
+  <div class="sider-title">基础数据维护</div>
+  <nav class="sider-menu">
+    {% for key, name in tabs %}
+    <a href="{{ url_for('config', tab=key) }}" class="{{ 'active' if tab==key }}">{{ name }}</a>
+    {% endfor %}
+  </nav>
+</aside>
+{% endblock %}
+{% block content %}
+{% set tabname = dict(tabs)[tab] %}
+{% if tab == 'items' and not rows %}
+<div class="hint">请先维护检测项 !!!</div>
+{% endif %}
+<div class="toolbar">
+  <div class="page-title" style="margin:0">{{ tabname }}</div>
+  <button class="btn btn-primary" onclick="editRow()">+ 新增</button>
+</div>
+<div class="card"><div class="card-body" style="padding:0">
+<table class="table">
+  <thead>
+  {% if tab == 'items' %}
+    <tr><th>序号</th><th>代码</th><th>名称</th><th>简称</th><th>状态</th><th>操作</th></tr>
+  {% elif tab == 'lines' %}
+    <tr><th>序号</th><th>产线编码</th><th>名称</th><th>车间</th><th>区域</th><th>状态</th><th>操作</th></tr>
+  {% else %}
+    <tr><th>序号</th><th>产品代码</th><th>产品规格</th><th>状态</th><th>操作</th></tr>
+  {% endif %}
+  </thead>
+  <tbody>
+  {% for r in rows %}
+  <tr>
+    <td>{{ '%02d' % loop.index }}</td>
+    {% if tab == 'items' %}
+      <td>{{ r.code }}</td><td>{{ r.name }}</td><td>{{ r.short_name }}</td>
+    {% elif tab == 'lines' %}
+      <td>{{ r.code }}</td><td>{{ r.name }}</td><td>{{ r.workshop }}</td><td>{{ r.area }}</td>
+    {% else %}
+      <td>{{ r.code }}</td><td>{{ r.spec }}</td>
+    {% endif %}
+    <td>{% if r.status %}<span class="tag">启用</span>{% else %}<span class="tag tag-gray">停用</span>{% endif %}</td>
+    <td>
+      <button class="btn-link" onclick='editRow({{ dict(r)|tojson }})'>修改</button>
+      <form method="post" action="{{ url_for('config_toggle', tab=tab, rid=r.id) }}" style="display:inline">
+        <button class="btn-link" type="submit">{{ '停用' if r.status else '启用' }}</button>
+      </form>
+      <form method="post" action="{{ url_for('config_delete', tab=tab, rid=r.id) }}" style="display:inline"
+            onsubmit="return confirm('确认删除？')">
+        <button class="btn-link danger" type="submit">删除</button>
+      </form>
+    </td>
+  </tr>
+  {% else %}
+  <tr><td colspan="7" class="empty">暂无数据，请点击右上角「新增」</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div></div>
+
+<div class="modal-mask" id="rowModal">
+  <div class="modal">
+    <div class="modal-head"><span id="rowModalTitle">新增{{ tabname }}</span>
+      <span class="close" onclick="closeModal('rowModal')">×</span></div>
+    <form method="post" action="{{ url_for('config_save', tab=tab) }}">
+      <div class="modal-body">
+        <input type="hidden" name="id" id="c_id">
+        {% if tab == 'items' %}
+        <div class="form-item"><label><span class="req">*</span>代码</label><input class="input" name="code" id="c_code" required></div>
+        <div class="form-item"><label><span class="req">*</span>名称</label><input class="input" name="name" id="c_name" required></div>
+        <div class="form-item"><label>简称</label><input class="input" name="short_name" id="c_short_name"></div>
+        {% elif tab == 'lines' %}
+        <div class="form-item"><label><span class="req">*</span>产线编码</label><input class="input" name="code" id="c_code" required></div>
+        <div class="form-item"><label><span class="req">*</span>名称</label><input class="input" name="name" id="c_name" required></div>
+        <div class="form-item"><label>车间</label><input class="input" name="workshop" id="c_workshop"></div>
+        <div class="form-item"><label>区域</label><input class="input" name="area" id="c_area"></div>
+        {% else %}
+        <div class="form-item"><label><span class="req">*</span>产品代码</label><input class="input" name="code" id="c_code" required></div>
+        <div class="form-item"><label><span class="req">*</span>产品规格</label><input class="input" name="spec" id="c_spec" required></div>
+        {% endif %}
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn" onclick="closeModal('rowModal')">取消</button>
+        <button type="submit" class="btn btn-primary">确定</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+{% block script %}
+<script>
+function editRow(r){
+  r = r || {};
+  document.getElementById('rowModalTitle').textContent = (r.id ? '修改' : '新增') + '{{ tabname }}';
+  ['id','code','name','short_name','workshop','area','spec'].forEach(function(k){
+    var el = document.getElementById('c_' + k);
+    if (el) el.value = r[k] || '';
+  });
+  openModal('rowModal');
+}
+</script>
+{% endblock %}

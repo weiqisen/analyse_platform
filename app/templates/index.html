@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-title">工作台</div>
+<div class="hint">欢迎使用缺陷图片分析平台，请先在「基础配置」中维护检测项、机组/产线与牌号/品规！</div>
+<div class="home-grid">
+  <a class="home-card" href="{{ url_for('collect', tab='mode') }}">
+    <div class="step">STEP ①</div>
+    <h3>图片采集 & 集成</h3>
+    <p>对象存储 / 产线工控机 NG 图片自动采集，采集监控与历史查询</p>
+  </a>
+  <a class="home-card" href="{{ url_for('label') }}">
+    <div class="step">STEP ②</div>
+    <h3>缺陷分类 & 标注</h3>
+    <p>缺陷分类维护，按牌号组织样本集并进行图片标注与导出</p>
+  </a>
+  <a class="home-card" href="{{ url_for('model') }}">
+    <div class="step">STEP ③</div>
+    <h3>模型训练 & 版本</h3>
+    <p>按牌号管理模型版本，支持调参、导出与测试 / 推理 / 停用状态切换</p>
+  </a>
+  <a class="home-card" href="{{ url_for('analysis', tab='shift') }}">
+    <div class="step">STEP ④</div>
+    <h3>分析结果 & 展示</h3>
+    <p>当班统计、历史统计与分类剔除数趋势分析</p>
+  </a>
+</div>
+<div class="card" style="margin-top:20px">
+  <div class="card-head">快捷入口</div>
+  <div class="card-body form-inline">
+    <a class="btn" href="{{ url_for('config', tab='items') }}">检测项目维护</a>
+    <a class="btn" href="{{ url_for('config', tab='lines') }}">机组/产线维护</a>
+    <a class="btn" href="{{ url_for('config', tab='brands') }}">牌号/品规维护</a>
+    {% if session.role == 'admin' %}<a class="btn" href="{{ url_for('users') }}">用户管理</a>{% endif %}
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+{% block title %}图片采集&集成 · 缺陷图片分析平台{% endblock %}
+{% block sider %}
+<aside class="layout-sider">
+  <div class="sider-title">① 图片采集 & 集成</div>
+  <nav class="sider-menu">
+    {% for key, name in tabs %}
+    <a href="{{ url_for('collect', tab=key, item=cur_item) }}" class="{{ 'active' if tab==key }}">{{ name }}</a>
+    {% endfor %}
+  </nav>
+  {% if tab in ['terminal', 'monitor', 'history', 'images'] %}
+  <div class="sider-title" style="margin-top:16px">选择产线</div>
+  <nav class="sider-menu">
+    {% for l in lines %}
+    <a href="{{ url_for('collect', tab=tab, line=l.name, item=cur_item) }}"
+       class="{{ 'active' if cur_line==l.name }}">{{ l.name }}</a>
+    {% endfor %}
+  </nav>
+  {% endif %}
+</aside>
+{% endblock %}
+
+{% block content %}
+{# ---------------- 采集模式 ---------------- #}
+{% if tab == 'mode' %}
+<div class="page-title">选择 NG 图片来源</div>
+<div class="stat-grid" style="grid-template-columns:repeat(2,1fr);max-width:900px">
+  <a class="home-card" href="{{ url_for('collect', tab='storage', item=cur_item) }}">
+    <div class="step">模式一</div>
+    <h3>对象存储系统读取图片</h3>
+    <p>连接对象存储服务（MinIO / S3 兼容），从指定存储库定时拉取 NG 图片</p>
+  </a>
+  <a class="home-card" href="{{ url_for('collect', tab='terminal', item=cur_item) }}">
+    <div class="step">模式二</div>
+    <h3>产线工控机采集图片</h3>
+    <p>按检测系统目录结构（日期 / 班次 / 相机 / 牌号）从工控机共享目录采集</p>
+  </a>
+</div>
+
+{# ---------------- 服务配置（对象存储） ---------------- #}
+{% elif tab == 'storage' %}
+<div class="page-title">服务配置 — 对象存储系统读取图片</div>
+<div class="card" style="max-width:680px"><div class="card-body">
+<form method="post">
+  <div class="form-item"><label><span class="req">*</span>输入服务器地址</label>
+    <input class="input" name="server_addr" value="{{ cfg.server_addr or '' }}" placeholder="127.0.0.1:23456" required></div>
+  <div class="form-item"><label><span class="req">*</span>输入对象存储库名</label>
+    <input class="input" name="in_bucket" value="{{ cfg.in_bucket or '' }}" placeholder="ng_yzwg" required></div>
+  <div class="form-item"><label>用户名</label>
+    <input class="input" name="username" value="{{ cfg.username or '' }}" placeholder="S*****B"></div>
+  <div class="form-item"><label>密码</label>
+    <input class="input" type="password" name="password" value="{{ cfg.password or '' }}" placeholder="*************"></div>
+  <div class="form-item"><label><span class="req">*</span>输出图片存储库名</label>
+    <input class="input" name="out_bucket" value="{{ cfg.out_bucket or '' }}" placeholder="ng_yzwg_out" required></div>
+  <button class="btn btn-primary" type="submit">保存配置</button>
+  <button class="btn" type="button" onclick="alert('连接测试成功（演示）')">测试连接</button>
+</form>
+</div></div>
+
+{# ---------------- 终端配置（工控机） ---------------- #}
+{% elif tab == 'terminal' %}
+<div class="page-title">终端配置 — {{ cur_line }} 产线工控机采集图片</div>
+<div class="card" style="max-width:920px"><div class="card-body">
+<form method="post">
+  <input type="hidden" name="line_id" value="{{ line_row.id if line_row else '' }}">
+  <div class="form-grid">
+    <div class="form-item"><label><span class="req">*</span>检测系统地址</label>
+      <input class="input" name="sys_addr" value="{{ tcfg.sys_addr if tcfg else '' }}" placeholder="\\192.168.1.10\NG" required></div>
+    <div class="form-item"><label><span class="req">*</span>NG 图片文件目录名</label>
+      <input class="input" name="ng_dir" value="{{ tcfg.ng_dir if tcfg else '' }}" placeholder="NG_IMG" required></div>
+    <div class="form-item"><label>日期目录名</label>
+      <select class="select input" name="date_dir">
+        {% for opt in ['YYYYMMDD', 'YYYY-MM-DD', '年月日分三级目录'] %}
+        <option {{ 'selected' if tcfg and tcfg.date_dir==opt }}>{{ opt }}</option>
+        {% endfor %}
+      </select></div>
+    <div class="form-item"><label>字符串位置</label>
+      <input class="input" name="str_pos" value="{{ tcfg.str_pos if tcfg else '1,8' }}"></div>
+    <div class="form-item"><label>班次目录</label>
+      <select class="select input" name="shift_dir">
+        {% for opt in ['早、中、晚', '班次无目录'] %}
+        <option {{ 'selected' if tcfg and tcfg.shift_dir==opt }}>{{ opt }}</option>
+        {% endfor %}
+      </select></div>
+    <div class="form-item"><label>相机个数 / 图像面数</label>
+      <input class="input" name="cam_count" type="number" min="1" max="12"
+             value="{{ tcfg.cam_count if tcfg else 4 }}"></div>
+    <div class="form-item"><label>目录名</label>
+      <input class="input" name="cam_dirs" value="{{ tcfg.cam_dirs if tcfg else '1#,2#,3#,4#' }}"></div>
+    <div class="form-item"><label>品规/牌号目录名（牌号在日期上一级）</label>
+      <input class="input" name="brand_dirs"
+             value="{{ tcfg.brand_dirs if tcfg else '' }}" placeholder="玉溪（缤果爆），玉溪（创客）"></div>
+  </div>
+  <button class="btn btn-primary" type="submit">保存配置</button>
+  <button class="btn" type="button" onclick="alert('目录扫描测试成功（演示）')">测试</button>
+</form>
+</div></div>
+
+{# ---------------- 采集监控 ---------------- #}
+{% elif tab == 'monitor' %}
+<div class="toolbar">
+  <div class="page-title" style="margin:0">{{ cur_line }} 机台 {{ cur_item }} 当前共有 {{ cams|length }} 个相机</div>
+  <a class="btn" href="{{ url_for('collect', tab='history', line=cur_line, item=cur_item) }}">查看历史图片 »</a>
+</div>
+<div class="stat-grid">
+  {% for c in cams %}
+  <div class="cam-card">
+    <div class="num">{{ c.count }}</div>
+    <div class="label">{{ c.name }} · 今日已采集（张）</div>
+  </div>
+  {% endfor %}
+</div>
+
+{# ---------------- 历史采集 ---------------- #}
+{% elif tab == 'history' %}
+<div class="page-title">{{ cur_line }} 机台 {{ cur_item }} 历史采集记录</div>
+<div class="card"><div class="card-body" style="padding:0">
+<table class="table">
+  <thead><tr><th>日期</th><th>班次</th><th>牌号</th><th>图片数量（张）</th><th>操作</th></tr></thead>
+  <tbody>
+  {% for r in records %}
+  <tr>
+    <td>{{ r.date }}</td><td>{{ r.shift }}</td><td>{{ r.brand }}</td><td>{{ r.img_count }}</td>
+    <td><a href="{{ url_for('collect', tab='images', line=r.line, item=cur_item) }}">查看图片</a></td>
+  </tr>
+  {% else %}
+  <tr><td colspan="5" class="empty">暂无采集记录</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div></div>
+
+{# ---------------- 图片查询 ---------------- #}
+{% elif tab == 'images' %}
+<div class="page-title">{{ cur_line }} 产线 {{ cur_item }} 缺陷图片</div>
+<div class="card"><div class="card-body">
+  <div class="form-inline" style="margin-bottom:16px">
+    <input class="input" type="date" value="{{ '' }}">
+    <span>至</span>
+    <input class="input" type="date">
+    <select class="select input"><option>班 次</option><option>早班</option><option>中班</option><option>晚班</option></select>
+    <button class="btn btn-primary">查 询</button>
+    <span style="color:var(--text-secondary)">满足条件图片共有 {{ total }} 张</span>
+  </div>
+  <div class="pic-grid">
+    {% for p in pics %}
+    <div class="pic-cell" style="background:linear-gradient(135deg,hsl({{ p.hue }},32%,42%),hsl({{ p.hue }},30%,26%))"
+         onclick="alert('图片预览（演示）：NG_{{ '%04d' % p.idx }}.jpg')">
+      NG_{{ '%04d' % p.idx }}.jpg
+    </div>
+    {% endfor %}
+  </div>
+  <div class="pagination">
+    <span>每页 12 张 / 共 27 页</span>
+    <a class="cur" href="javascript:;">1</a><a href="javascript:;">2</a>
+    <a href="javascript:;">3</a><a href="javascript:;">4</a><span>…</span>
+  </div>
+</div></div>
+{% endif %}
+{% endblock %}

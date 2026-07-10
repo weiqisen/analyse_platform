@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}缺陷分类&标注 · 缺陷图片分析平台{% endblock %}
+{% block content %}
+<div style="display:flex;gap:16px;align-items:flex-start">
+  <div style="flex:1">
+    <div class="page-title">② 缺陷分类 & 标注 — 标注任务（按牌号）</div>
+    <div class="card"><div class="card-body" style="padding:0">
+    <table class="table">
+      <thead><tr>
+        <th>品规</th><th>样本数量</th><th>标注中数量</th><th>未标注数量</th><th>导出数量</th><th>操作</th>
+      </tr></thead>
+      <tbody>
+      {% for t in tasks %}
+      <tr>
+        <td>{{ t.brand }}</td><td>{{ t.total }}</td><td>{{ t.labeling }}</td>
+        <td>{{ t.unlabeled }}</td><td>{{ t.exported }}</td>
+        <td>
+          <a href="{{ url_for('label_anno', tid=t.id) }}">继续标注</a>
+          <button class="btn-link" onclick="alert('已导出标注数据（演示）')">导出</button>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="empty">暂无标注任务</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div></div>
+  </div>
+
+  <div style="width:280px;flex-shrink:0">
+    <div class="page-title">缺陷分类</div>
+    <div class="card"><div class="card-body">
+      <form method="post" action="{{ url_for('label_class_add') }}" class="form-inline" style="margin-bottom:14px">
+        <input class="input" name="name" placeholder="输入分类名称" required style="flex:1">
+        <button class="btn btn-primary btn-sm" type="submit">增加分类</button>
+      </form>
+      <div class="class-list">
+        {% for c in classes %}
+        <div class="class-item">
+          <span>{{ c.name }}</span>
+          <form method="post" action="{{ url_for('label_class_delete', cid=c.id) }}"
+                onsubmit="return confirm('删除分类「{{ c.name }}」？')">
+            <button class="btn-link danger" type="submit">删除</button>
+          </form>
+        </div>
+        {% endfor %}
+      </div>
+    </div></div>
+  </div>
+</div>
+{% endblock %}

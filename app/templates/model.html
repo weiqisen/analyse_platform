@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}模型训练&版本 · 缺陷图片分析平台{% endblock %}
+{% block sider %}
+<aside class="layout-sider">
+  <div class="sider-title">选择牌号</div>
+  <nav class="sider-menu">
+    {% for b in brands %}
+    <a href="{{ url_for('model', brand=b, item=cur_item) }}" class="{{ 'active' if cur_brand==b }}">{{ b }}</a>
+    {% endfor %}
+  </nav>
+</aside>
+{% endblock %}
+{% block content %}
+<div class="toolbar">
+  <div class="page-title" style="margin:0">③ 模型训练 & 版本 — {{ cur_brand }}</div>
+  <button class="btn btn-primary" onclick="alert('已发起新一轮训练（演示）')">+ 发起训练</button>
+</div>
+<div class="card"><div class="card-body" style="padding:0">
+<table class="table">
+  <thead><tr><th>版本号</th><th>发布时间</th><th>说明</th><th>当前状态</th><th>操作</th></tr></thead>
+  <tbody>
+  {% for m in rows %}
+  <tr>
+    <td><strong>{{ m.version }}</strong></td>
+    <td>{{ m.pub_date }}</td>
+    <td>{{ m.note }}</td>
+    <td>
+      {% if m.status == '推理' %}<span class="tag">推理</span>
+      {% elif m.status == '测试' %}<span class="tag tag-orange">测试</span>
+      {% else %}<span class="tag tag-gray">停用</span>{% endif %}
+    </td>
+    <td>
+      <button class="btn-link" onclick="alert('打开调参面板（演示）')">调参</button>
+      <button class="btn-link" onclick="alert('模型导出成功（演示）')">导出</button>
+      <form method="post" action="{{ url_for('model_status', mid=m.id) }}" style="display:inline">
+        <select class="select input btn-sm" name="status" onchange="this.form.submit()"
+                style="width:auto;height:26px;padding:0 6px;font-size:13px">
+          {% for st in ['测试','推理','停用'] %}
+          <option {{ 'selected' if m.status==st }}>{{ st }}</option>
+          {% endfor %}
+        </select>
+      </form>
+    </td>
+  </tr>
+  {% else %}
+  <tr><td colspan="5" class="empty">该牌号暂无模型版本</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div></div>
+{% endblock %}
