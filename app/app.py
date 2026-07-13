@@ -20,6 +20,10 @@ DB_USER = os.environ.get("DB_USER", "root")
 DB_PASSWORD = os.environ.get("DB_PASSWORD", "123456")
 DB_NAME = os.environ.get("DB_NAME", "analyse_platform")
 
+# 工控机（模式二）SFTP 凭据（三台模拟环境统一，生产应存 terminal_config）
+WS_USER = os.environ.get("WS_USER", "root")
+WS_PASS = os.environ.get("WS_PASS", "hlxd@123")
+
 app = Flask(__name__)
 app.secret_key = "yancao-analyse-platform-secret-2026"
 
@@ -448,6 +452,45 @@ def line_terminal_cfg(line_row):
                             (line_row["id"],)).fetchone()
 
 
+def _ws_sftp(tcfg):
+    """按 terminal_config.sys_addr(host:port) 建到工控机的 SFTP 连接。"""
+    import paramiko
+    host, _, port = (tcfg["sys_addr"] or "").partition(":")
+    t = paramiko.Transport((host, int(port or 22)))
+    t.connect(username=WS_USER, password=WS_PASS)
+    return t, paramiko.SFTPClient.from_transport(t)
+
+
+def sftp_list_images(tcfg, max_n=500):
+    """递归列工控机 ng_dir 下的图片，返回 [{path, rel, name}, ...]。"""
+    import stat
+    root = (tcfg["ng_dir"] or "/").rstrip("/") or "/"
+    t, sftp = _ws_sftp(tcfg)
+    out = []
+
+    def walk(p):
+        if len(out) >= max_n:
+            return
+        try:
+            entries = sftp.listdir_attr(p)
+        except IOError:
+            return
+        for e in sorted(entries, key=lambda x: x.filename):
+            if len(out) >= max_n:
+                return
+            full = p + "/" + e.filename
+            if stat.S_ISDIR(e.st_mode):
+                walk(full)
+            elif e.filename.lower().endswith((".jpg", ".jpeg", ".png")):
+                out.append({"path": full, "rel": full[len(root):].lstrip("/"), "name": e.filename})
+
+    try:
+        walk(root)
+    finally:
+        t.close()
+    return out
+
+
 @app.route("/collect/<tab>", methods=["GET", "POST"])
 @login_required
 def collect(tab):
@@ -494,21 +537,22 @@ def collect(tab):
         line_row = next((l for l in lines if l["name"] == cur_line), None)
         tcfg = line_terminal_cfg(line_row)
         ctx["src"] = "terminal" if tcfg else "minio"
-        ctx["tcfg"] = tcfg
-        ctx["cams"] = []
-        if not tcfg:
-            try:
+        ctx["cams"] = []; ctx["err"] = None
+        from collections import Counter
+        cnt = Counter()
+        try:
+            if tcfg:
+                for im in sftp_list_images(tcfg, max_n=3000):
+                    parts = im["rel"].split("/")
+                    cnt[parts[3] if len(parts) >= 4 else (parts[-2] if len(parts) >= 2 else "未分类")] += 1
+            else:
                 s3, cfg = get_s3()
-                objs = s3.list_objects_v2(Bucket=cfg["in_bucket"], MaxKeys=2000).get("Contents", [])
-                from collections import Counter
-                cnt = Counter()
-                for o in objs:
+                for o in s3.list_objects_v2(Bucket=cfg["in_bucket"], MaxKeys=2000).get("Contents", []):
                     parts = o["Key"].split("/")
                     cnt[parts[3] if len(parts) >= 4 else "未分类"] += 1
-                ctx["cams"] = [{"name": k, "count": v} for k, v in sorted(cnt.items())]
-                ctx["err"] = None
-            except Exception as e:
-                ctx["err"] = str(e)[:140]
+            ctx["cams"] = [{"name": k, "count": v} for k, v in sorted(cnt.items())]
+        except Exception as e:
+            ctx["err"] = str(e)[:140]
     elif tab == "history":
         ctx["records"] = db.execute(
             "SELECT * FROM collect_history WHERE line=? ORDER BY date DESC, shift", (cur_line,)).fetchall() \
@@ -517,21 +561,50 @@ def collect(tab):
         line_row = next((l for l in lines if l["name"] == cur_line), None)
         tcfg = line_terminal_cfg(line_row)
         ctx["src"] = "terminal" if tcfg else "minio"
-        ctx["tcfg"] = tcfg
-        ctx["pics"] = []; ctx["total"] = 0
-        if not tcfg:
-            try:
+        ctx["pics"] = []; ctx["total"] = 0; ctx["err"] = None
+        try:
+            if tcfg:
+                ctx["pics"] = [{"key": im["rel"], "name": im["name"],
+                                "url": url_for("collect_wsimg", line=cur_line, path=im["path"])}
+                               for im in sftp_list_images(tcfg, max_n=500)]
+            else:
                 s3, cfg = get_s3()
-                objs = s3.list_objects_v2(Bucket=cfg["in_bucket"], MaxKeys=500).get("Contents", [])
-                pics = []
-                for o in objs:
-                    url = s3.generate_presigned_url(
-                        "get_object", Params={"Bucket": cfg["in_bucket"], "Key": o["Key"]}, ExpiresIn=7200)
-                    pics.append({"key": o["Key"], "name": o["Key"].split("/")[-1], "url": url})
-                ctx["pics"] = pics; ctx["total"] = len(pics); ctx["err"] = None
-            except Exception as e:
-                ctx["err"] = str(e)[:140]
+                for o in s3.list_objects_v2(Bucket=cfg["in_bucket"], MaxKeys=500).get("Contents", []):
+                    ctx["pics"].append({"key": o["Key"], "name": o["Key"].split("/")[-1],
+                        "url": s3.generate_presigned_url("get_object",
+                            Params={"Bucket": cfg["in_bucket"], "Key": o["Key"]}, ExpiresIn=7200)})
+            ctx["total"] = len(ctx["pics"])
+        except Exception as e:
+            ctx["err"] = str(e)[:140]
     return render_template("collect.html", **ctx)
+
+
+@app.route("/collect/wsimg")
+@login_required
+def collect_wsimg():
+    """代理读取工控机（SFTP）上的一张图片并返回给浏览器。"""
+    from flask import Response
+    line = request.args.get("line", "")
+    path = request.args.get("path", "")
+    line_row = get_db().execute("SELECT * FROM prod_lines WHERE name=?", (line,)).fetchone()
+    tcfg = line_terminal_cfg(line_row)
+    if not tcfg or not path:
+        abort(404)
+    root = (tcfg["ng_dir"] or "").rstrip("/")
+    # 安全：只允许 ng_dir 目录下、禁止路径穿越
+    if ".." in path or (root and not (path == root or path.startswith(root + "/"))):
+        abort(403)
+    try:
+        t, sftp = _ws_sftp(tcfg)
+        try:
+            with sftp.open(path, "rb") as f:
+                data = f.read()
+        finally:
+            t.close()
+    except Exception:
+        abort(404)
+    mime = "image/png" if path.lower().endswith(".png") else "image/jpeg"
+    return Response(data, mimetype=mime, headers={"Cache-Control": "max-age=300"})
 
 
 # ---------------------------------------------------------------- 缺陷标注

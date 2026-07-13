@@ -109,16 +109,14 @@
   <div class="page-title" style="margin:0">{{ cur_line }} 机台 {{ cur_item }} 共 {{ cams|length }} 个相机</div>
   <a class="btn" href="{{ url_for('collect', tab='history', line=cur_line, item=cur_item) }}">查看历史图片 »</a>
 </div>
-{% if src == 'terminal' %}
-<div class="hint">产线「{{ cur_line }}」为<b>工控机采集模式</b>，NG 图位于 {{ tcfg.sys_addr }} 的 {{ tcfg.ng_dir }}（平台直读工控机目录待接入）。</div>
-{% elif err %}
-<div class="hint">连接 MinIO 失败：{{ err }}</div>
+{% if err %}
+<div class="hint">读取失败：{{ err }}</div>
 {% endif %}
 <div class="stat-grid">
   {% for c in cams %}
   <div class="cam-card">
     <div class="num">{{ c.count }}</div>
-    <div class="label">{{ c.name }} 相机 · 桶内图片（张）</div>
+    <div class="label">{{ c.name }} 相机 · {{ '工控机' if src=='terminal' else '桶内' }}图片（张）</div>
   </div>
   {% endfor %}
 </div>
@@ -146,13 +144,11 @@
 {% elif tab == 'images' %}
 <div class="page-title">{{ cur_line }} 产线 {{ cur_item }} 缺陷图片</div>
 <div class="card"><div class="card-body">
-  {% if src == 'terminal' %}
-  <div class="hint">产线「{{ cur_line }}」为<b>工控机采集模式</b>，NG 图位于 {{ tcfg.sys_addr }} 的 {{ tcfg.ng_dir }}（平台直读工控机目录待接入）。</div>
-  {% elif err %}
-  <div class="hint">连接 MinIO 失败：{{ err }}</div>
+  {% if err %}
+  <div class="hint">读取失败：{{ err }}</div>
   {% else %}
   <div class="form-inline" style="margin-bottom:14px">
-    <span style="color:var(--text-secondary)">来自 MinIO 桶实时读取，共 <b>{{ total }}</b> 张</span>
+    <span style="color:var(--text-secondary)">{{ '工控机 SFTP' if src=='terminal' else 'MinIO 桶' }}实时读取，共 <b>{{ total }}</b> 张</span>
   </div>
   <div class="pic-grid">
     {% for p in pics %}
@@ -163,7 +159,7 @@
     </a>
     {% endfor %}
   </div>
-  {% if not pics %}<div class="empty">桶内暂无图片</div>{% endif %}
+  {% if not pics %}<div class="empty">暂无图片</div>{% endif %}
   {% endif %}
 </div></div>
 {% endif %}
