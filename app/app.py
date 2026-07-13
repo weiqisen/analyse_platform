@@ -139,7 +139,8 @@ def init_db():
         ) DEFAULT CHARSET=utf8mb4 COMMENT='终端采集配置表'""",
         """CREATE TABLE IF NOT EXISTS label_classes(
             id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
-            name VARCHAR(64) NOT NULL COMMENT '缺陷分类名称'
+            name VARCHAR(64) NOT NULL COMMENT '缺陷分类名称',
+            status INT DEFAULT 1 COMMENT '状态: 1启用 0停用'
         ) DEFAULT CHARSET=utf8mb4 COMMENT='缺陷标注分类表'""",
         """CREATE TABLE IF NOT EXISTS label_tasks(
             id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',

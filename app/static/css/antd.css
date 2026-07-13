@@ -102,7 +102,7 @@ a:hover { color: var(--primary-hover); }
 .btn-danger:hover { background: #fff1f0; color: var(--error); border-color: var(--error); }
 .btn-sm { height: 26px; padding: 0 10px; font-size: 13px; }
 .btn-lg { height: 40px; padding: 0 24px; font-size: 16px; }
-.btn-link { border: none; background: none; color: var(--primary); padding: 0 6px; height: auto; cursor: pointer; font-size: 14px; }
+.btn-link { border: none; background: none; color: var(--primary); padding: 0 6px; height: auto; cursor: pointer; font-size: 14px; font-family: inherit; }
 .btn-link:hover { color: var(--primary-hover); }
 .btn-link.danger { color: var(--error); }
 .btn-block { width: 100%; }
