@@ -19,6 +19,7 @@
 <header class="layout-header">
   <div class="logo">{{ leaf_logo() }}<span>缺陷图片分析平台</span></div>
   <nav class="header-nav">
+    <a href="{{ url_for('index', item=cur_item) }}" class="{{ 'active' if active=='home' }}">首页</a>
     <a href="{{ url_for('config', tab='items', item=cur_item) }}" class="{{ 'active' if active=='config' }}">基础配置</a>
     {% for it in DETECT_ITEMS %}
     <a href="?item={{ it }}" class="{{ 'active' if cur_item==it }}">{{ it }}</a>
@@ -36,7 +37,6 @@
 
 {% block itemnav %}
 <div class="item-nav">
-  <a href="{{ url_for('index', item=cur_item) }}" class="{{ 'active' if active=='home' }}">首页</a>
   <a href="{{ url_for('collect', tab='mode', item=cur_item) }}" class="{{ 'active' if active=='collect' }}">① 图片采集&集成</a>
   <a href="{{ url_for('label', item=cur_item) }}" class="{{ 'active' if active=='label' }}">② 缺陷分类&标注</a>
   <a href="{{ url_for('model', item=cur_item) }}" class="{{ 'active' if active=='model' }}">③ 模型训练&版本</a>
