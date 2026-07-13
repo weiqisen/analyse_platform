@@ -1017,14 +1017,23 @@ def label_save(image_id):
     return jsonify({"ok": True})
 
 
-@app.route("/label/export/<brand>")
+@app.route("/label/export/<brand>", methods=["POST"])
 @login_required
 def label_export(brand):
-    from flask import Response
+    """持久化导出标注样本集到 defect-datasets 桶（算法训练流水线直接读取）。"""
     db = get_db()
     imgs = db.execute("SELECT * FROM label_images WHERE brand=? AND annotated=1 AND src_key LIKE ? ORDER BY id",
                       (brand, "%/正常/%")).fetchall()
+    if not imgs:
+        flash("该牌号暂无可导出的已标注样本", "error")
+        return redirect(url_for("label"))
     cats = db.execute("SELECT * FROM label_classes ORDER BY id").fetchall()
+    # 版本号：查询当前牌号已有版本数 +1
+    ver_n = db.execute("SELECT COUNT(*) c FROM model_versions WHERE brand=?", (brand,)).fetchone()["c"] + 1
+    version = "v%d" % ver_n
+    prefix = "%s/%s/" % (brand, version)
+
+    # 组装 COCO
     coco = {"images": [], "annotations": [],
             "categories": [{"id": c["id"], "name": c["name"]} for c in cats]}
     aid = 1
@@ -1041,9 +1050,36 @@ def label_export(brand):
                 "bbox": [a["bbox_x"], a["bbox_y"], a["bbox_w"], a["bbox_h"]],
                 "area": a["bbox_w"] * a["bbox_h"], "iscrowd": 0, "segmentation": seg})
             aid += 1
-    body = json.dumps(coco, ensure_ascii=False, indent=2)
-    return Response(body, mimetype="application/json",
-                    headers={"Content-Disposition": "attachment; filename=coco_annotations.json"})
+
+    # 写入 defect-datasets 桶（COCO json + 复制对应图片）
+    try:
+        scfg = db.execute("SELECT * FROM storage_config LIMIT 1").fetchone()
+        if not scfg:
+            flash("未找到对象存储配置", "error")
+            return redirect(url_for("label"))
+        import boto3
+        from botocore.client import Config
+        s3 = boto3.client("s3", endpoint_url="http://" + scfg["server_addr"],
+                          aws_access_key_id=scfg["username"], aws_secret_access_key=scfg["password"],
+                          region_name="us-east-1",
+                          config=Config(signature_version="s3v4", connect_timeout=10, read_timeout=30))
+        dst_bucket = "defect-datasets"
+        # COCO json
+        body = json.dumps(coco, ensure_ascii=False, indent=2).encode("utf-8")
+        s3.put_object(Bucket=dst_bucket, Key=prefix + "coco.json", Body=body, ContentType="application/json")
+        # 复制原图（从 defect-raw）
+        for im in imgs:
+            s3.copy_object(Bucket=dst_bucket, Key=prefix + im["src_key"],
+                           CopySource={"Bucket": "defect-raw", "Key": im["src_key"]})
+        # 注册模型版本
+        db.execute("INSERT INTO model_versions(brand,version,pub_date,note,status) VALUES(?,?,?,?,?)",
+                   (brand, version, datetime.now().strftime("%Y-%m-%d"),
+                    "从 %d 张已标注样本导出" % len(imgs), "测试"))
+        db.commit()
+        flash("样本集 %s%s 已发布到 defect-datasets，含 %d 张标注图" % (brand, version, len(imgs)), "success")
+    except Exception as e:
+        flash("导出失败: %s" % str(e)[:120], "error")
+    return redirect(url_for("label"))
 
 
 # ---------------------------------------------------------------- 模型版本
