@@ -6,6 +6,33 @@
 <title>{% block title %}缺陷图片分析平台{% endblock %}</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='css/antd.css') }}">
 <link rel="icon" href="data:image/svg+xml,{{ '<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22><circle cx=%2216%22 cy=%2216%22 r=%2216%22 fill=%22%2300923f%22/><path d=%22M4.5 16 C9 9.5 23 9.5 27.5 16 C23 22.5 9 22.5 4.5 16Z%22 fill=%22white%22/><circle cx=%2216%22 cy=%2216%22 r=%223.8%22 fill=%22%2300923f%22/></svg>' }}">
+<style>
+  .header-right { display: flex; align-items: center; gap: 14px; white-space: nowrap; }
+  .ctx-select { position: relative; display: flex; flex-direction: column; gap: 1px; padding: 5px 13px;
+    border-radius: 8px; background: rgba(255,255,255,.14); cursor: pointer; line-height: 1.25; }
+  .ctx-select:hover { background: rgba(255,255,255,.24); }
+  .ctx-select .ctx-label { font-size: 10.5px; color: rgba(255,255,255,.7); letter-spacing: .04em; }
+  .ctx-select .ctx-value { font-size: 13.5px; color: #fff; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .caret { font-size: 8px; opacity: .85; }
+  .ctx-menu, .dd-menu { position: absolute; top: calc(100% + 8px); right: 0; min-width: 170px;
+    background: #fff; border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,.16); padding: 6px; display: none; z-index: 200; }
+  .ctx-select.open .ctx-menu, .hdr-dd.open .dd-menu { display: block; }
+  .ctx-menu a, .dd-menu a { display: block; padding: 8px 12px; border-radius: 6px; color: var(--text); font-size: 13.5px; }
+  .ctx-menu a:hover, .dd-menu a:hover { background: var(--primary-bg); color: var(--primary); }
+  .ctx-menu a.on { background: var(--primary-bg); color: var(--primary); font-weight: 600; }
+  .hdr-dd { position: relative; }
+  .hdr-dd .dd-btn { display: flex; align-items: center; gap: 6px; padding: 7px 13px; border-radius: 8px;
+    background: transparent; border: none; color: rgba(255,255,255,.9); font-size: 13.5px; cursor: pointer; font-family: inherit; }
+  .hdr-dd .dd-btn:hover { background: rgba(255,255,255,.15); color: #fff; }
+  .breadcrumb { background: #fff; border-bottom: 1px solid var(--split); padding: 9px 24px;
+    display: flex; align-items: center; gap: 9px; font-size: 13px; box-shadow: var(--shadow); }
+  .breadcrumb .bc-home { color: var(--text-secondary); }
+  .breadcrumb .bc-ctx { color: var(--primary); font-weight: 600; background: var(--primary-bg); padding: 2px 11px; border-radius: 12px; }
+  .breadcrumb .sep { color: var(--text-secondary); }
+  .breadcrumb .bc-cur { color: var(--text); font-weight: 500; }
+  .breadcrumb .bc-line { margin-left: auto; color: var(--text-secondary); }
+  .breadcrumb .bc-line b { color: var(--primary); }
+</style>
 </head>
 <body>
 {% macro leaf_logo(size=28) %}
@@ -23,29 +50,45 @@
   <div class="logo">{{ leaf_logo() }}<span>缺陷图片分析平台</span></div>
   <nav class="header-nav">
     <a href="{{ url_for('index', item=cur_item) }}" class="{{ 'active' if active=='home' }}">首页</a>
-    <a href="{{ url_for('config', tab='items', item=cur_item) }}" class="{{ 'active' if active=='config' }}">基础配置</a>
-    {% for it in DETECT_ITEMS %}
-    <a href="?item={{ it }}" class="{{ 'active' if cur_item==it }}">{{ it }}</a>
-    {% endfor %}
-    {% if session.role == 'admin' %}
-    <a href="{{ url_for('users', item=cur_item) }}" class="{{ 'active' if active=='users' }}">用户管理</a>
-    {% endif %}
+    <a href="{{ url_for('collect', tab='mode', item=cur_item) }}" class="{{ 'active' if active=='collect' }}">① 图片采集</a>
+    <a href="{{ url_for('label', item=cur_item) }}" class="{{ 'active' if active=='label' }}">② 缺陷标注</a>
+    <a href="{{ url_for('model', item=cur_item) }}" class="{{ 'active' if active=='model' }}">③ 模型版本</a>
+    <a href="{{ url_for('analysis', tab='shift', item=cur_item) }}" class="{{ 'active' if active=='analysis' }}">④ 分析结果</a>
   </nav>
-  <div class="header-user">
-    <span class="avatar">{{ (session.realname or '用')[0] }}</span>
-    <span>{{ session.realname }}{% if session.role=='admin' %}（管理员）{% endif %}</span>
-    <a href="{{ url_for('logout') }}">退出</a>
+  <div class="header-right">
+    <div class="ctx-select" id="ctxSel" onclick="toggleDD(event,'ctxSel')">
+      <span class="ctx-label">检测项目</span>
+      <span class="ctx-value">{{ cur_item }}<span class="caret">▼</span></span>
+      <div class="ctx-menu">
+        {% for it in DETECT_ITEMS %}
+        <a href="?item={{ it }}" class="{{ 'on' if cur_item==it }}">{{ it }}</a>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="hdr-dd" id="setDD" onclick="toggleDD(event,'setDD')">
+      <button class="dd-btn">⚙ 设置<span class="caret">▼</span></button>
+      <div class="dd-menu">
+        <a href="{{ url_for('config', tab='items', item=cur_item) }}">基础配置</a>
+        {% if session.role == 'admin' %}<a href="{{ url_for('users', item=cur_item) }}">用户管理</a>{% endif %}
+      </div>
+    </div>
+    <div class="header-user">
+      <span class="avatar">{{ (session.realname or '用')[0] }}</span>
+      <span>{{ session.realname }}{% if session.role=='admin' %}（管理员）{% endif %}</span>
+      <a href="{{ url_for('logout') }}">退出</a>
+    </div>
   </div>
 </header>
 
-{% block itemnav %}
-<div class="item-nav">
-  <a href="{{ url_for('collect', tab='mode', item=cur_item) }}" class="{{ 'active' if active=='collect' }}">① 图片采集&集成</a>
-  <a href="{{ url_for('label', item=cur_item) }}" class="{{ 'active' if active=='label' }}">② 缺陷分类&标注</a>
-  <a href="{{ url_for('model', item=cur_item) }}" class="{{ 'active' if active=='model' }}">③ 模型训练&版本</a>
-  <a href="{{ url_for('analysis', tab='shift', item=cur_item) }}" class="{{ 'active' if active=='analysis' }}">④ 分析结果&展示</a>
+{% set fnames = {'home':'首页','collect':'图片采集 & 集成','label':'缺陷分类 & 标注','model':'模型训练 & 版本','analysis':'分析结果 & 展示','config':'基础配置','users':'用户管理'} %}
+<div class="breadcrumb">
+  <a class="bc-home" href="{{ url_for('index', item=cur_item) }}">工作台</a>
+  <span class="sep">/</span>
+  <span class="bc-ctx">{{ cur_item }}</span>
+  <span class="sep">›</span>
+  <span class="bc-cur">{{ fnames.get(active, '') }}</span>
+  {% block crumb %}{% endblock %}
 </div>
-{% endblock %}
 
 <div class="msg-wrap">
   {% with messages = get_flashed_messages(with_categories=true) %}
@@ -66,6 +109,15 @@
 
 <script>
 setTimeout(function(){ document.querySelectorAll('.msg').forEach(function(m){ m.style.display='none'; }); }, 3000);
+function toggleDD(e, id){
+  e.stopPropagation();
+  var el = document.getElementById(id), open = el.classList.contains('open');
+  document.querySelectorAll('.ctx-select.open, .hdr-dd.open').forEach(function(x){ x.classList.remove('open'); });
+  if(!open) el.classList.add('open');
+}
+document.addEventListener('click', function(){
+  document.querySelectorAll('.ctx-select.open, .hdr-dd.open').forEach(function(x){ x.classList.remove('open'); });
+});
 function openModal(id){ document.getElementById(id).classList.add('open'); }
 function closeModal(id){ document.getElementById(id).classList.remove('open'); }
 document.querySelectorAll('.modal-mask').forEach(function(m){

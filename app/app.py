@@ -315,7 +315,26 @@ def logout():
 @app.route("/")
 @login_required
 def index():
-    return render_template("index.html", active="home")
+    db = get_db()
+    sync_label_images()
+    lines = db.execute("SELECT name FROM prod_lines WHERE status=1 ORDER BY id").fetchall()
+    line_stats = [{"name": l["name"],
+                   "count": db.execute("SELECT COUNT(*) AS c FROM label_images WHERE line_name=?",
+                                       (l["name"],)).fetchone()["c"]} for l in lines]
+    total_imgs = db.execute("SELECT COUNT(*) AS c FROM label_images").fetchone()["c"]
+    annotated = db.execute("SELECT COUNT(*) AS c FROM label_images WHERE annotated=1").fetchone()["c"]
+    infer = db.execute("SELECT COUNT(*) AS c FROM model_versions WHERE status='推理'").fetchone()["c"]
+    classes = db.execute("SELECT COUNT(*) AS c FROM label_classes").fetchone()["c"]
+    brand_prog = []
+    for b in db.execute("SELECT DISTINCT brand FROM label_images ORDER BY brand").fetchall():
+        r = db.execute("SELECT COUNT(*) AS t, COALESCE(SUM(annotated),0) AS d "
+                       "FROM label_images WHERE brand=?", (b["brand"],)).fetchone()
+        brand_prog.append({"brand": b["brand"], "total": r["t"] or 0, "done": int(r["d"] or 0)})
+    max_count = max([s["count"] for s in line_stats] + [1])
+    return render_template("index.html", active="home", line_stats=line_stats,
+                           total_imgs=total_imgs, annotated=annotated, infer=infer,
+                           classes=classes, lines_n=len(lines), brand_prog=brand_prog,
+                           max_count=max_count)
 
 
 # ---------------------------------------------------------------- 用户管理

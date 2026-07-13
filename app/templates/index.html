@@ -1,36 +1,68 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="page-title">工作台</div>
-<div class="hint">欢迎使用缺陷图片分析平台，请先在「基础配置」中维护检测项、机组/产线与牌号/品规！</div>
-<div class="home-grid">
-  <a class="home-card" href="{{ url_for('collect', tab='mode') }}">
-    <div class="step">STEP ①</div>
-    <h3>图片采集 & 集成</h3>
-    <p>对象存储 / 产线工控机 NG 图片自动采集，采集监控与历史查询</p>
-  </a>
-  <a class="home-card" href="{{ url_for('label') }}">
-    <div class="step">STEP ②</div>
-    <h3>缺陷分类 & 标注</h3>
-    <p>缺陷分类维护，按牌号组织样本集并进行图片标注与导出</p>
-  </a>
-  <a class="home-card" href="{{ url_for('model') }}">
-    <div class="step">STEP ③</div>
-    <h3>模型训练 & 版本</h3>
-    <p>按牌号管理模型版本，支持调参、导出与测试 / 推理 / 停用状态切换</p>
-  </a>
-  <a class="home-card" href="{{ url_for('analysis', tab='shift') }}">
-    <div class="step">STEP ④</div>
-    <h3>分析结果 & 展示</h3>
-    <p>当班统计、历史统计与分类剔除数趋势分析</p>
-  </a>
+<style>
+  .kpi-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 14px; margin-bottom: 16px; }
+  .kpi { background: #fff; border-radius: 10px; padding: 16px 18px; box-shadow: var(--shadow); border: 1px solid var(--split); }
+  .kpi-num { font-size: 28px; font-weight: 700; color: var(--primary); line-height: 1; font-variant-numeric: tabular-nums; }
+  .kpi-lbl { font-size: 12.5px; color: var(--text-secondary); margin-top: 8px; }
+  .dash-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .bar-row { display: flex; align-items: center; gap: 12px; padding: 7px 0; }
+  .bar-name { width: 46px; font-size: 13px; }
+  .bar-track { flex: 1; height: 16px; background: var(--split); border-radius: 8px; overflow: hidden; }
+  .bar-fill { height: 100%; background: linear-gradient(90deg, var(--primary), var(--primary-hover)); border-radius: 8px; }
+  .bar-val { width: 42px; text-align: right; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .prog-row { padding: 8px 0; }
+  .prog-top { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 6px; }
+  .prog-num { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+  .prog-track { height: 8px; background: var(--split); border-radius: 4px; overflow: hidden; }
+  .prog-fill { height: 100%; background: var(--primary); border-radius: 4px; }
+  @media (max-width: 900px) { .kpi-row { grid-template-columns: repeat(3, 1fr); } .dash-grid { grid-template-columns: 1fr; } }
+</style>
+
+<div class="page-title">工作台 · 数据概览</div>
+<div class="hint">实时汇总各产线采集、标注进度与模型状态（数据来自 MinIO 与工控机的真实图片）。</div>
+
+<div class="kpi-row">
+  <div class="kpi"><div class="kpi-num">{{ total_imgs }}</div><div class="kpi-lbl">累计采集图片</div></div>
+  <div class="kpi"><div class="kpi-num">{{ annotated }}</div><div class="kpi-lbl">已标注</div></div>
+  <div class="kpi"><div class="kpi-num">{{ total_imgs - annotated }}</div><div class="kpi-lbl">待标注</div></div>
+  <div class="kpi"><div class="kpi-num">{{ lines_n }}</div><div class="kpi-lbl">在产产线</div></div>
+  <div class="kpi"><div class="kpi-num">{{ infer }}</div><div class="kpi-lbl">推理中模型</div></div>
+  <div class="kpi"><div class="kpi-num">{{ classes }}</div><div class="kpi-lbl">缺陷类别</div></div>
 </div>
-<div class="card" style="margin-top:20px">
-  <div class="card-head">快捷入口</div>
+
+<div class="dash-grid">
+  <div class="card"><div class="card-head">各产线采集量</div><div class="card-body">
+    {% for l in line_stats %}
+    <div class="bar-row">
+      <span class="bar-name">{{ l.name }}</span>
+      <div class="bar-track"><div class="bar-fill" style="width:{{ (l.count / max_count * 100)|round }}%"></div></div>
+      <span class="bar-val">{{ l.count }}</span>
+    </div>
+    {% else %}
+    <div class="empty">暂无产线</div>
+    {% endfor %}
+  </div></div>
+
+  <div class="card"><div class="card-head">各牌号标注进度</div><div class="card-body">
+    {% for b in brand_prog %}
+    <div class="prog-row">
+      <div class="prog-top"><span>{{ b.brand }}</span><span class="prog-num">{{ b.done }} / {{ b.total }}</span></div>
+      <div class="prog-track"><div class="prog-fill" style="width:{{ (b.done / b.total * 100)|round if b.total else 0 }}%"></div></div>
+    </div>
+    {% else %}
+    <div class="empty">暂无采集图片，先到「图片采集」拉取</div>
+    {% endfor %}
+  </div></div>
+</div>
+
+<div class="card" style="margin-top:16px"><div class="card-head">快捷入口</div>
   <div class="card-body form-inline">
-    <a class="btn" href="{{ url_for('config', tab='items') }}">检测项目维护</a>
-    <a class="btn" href="{{ url_for('config', tab='lines') }}">机组/产线维护</a>
-    <a class="btn" href="{{ url_for('config', tab='brands') }}">牌号/品规维护</a>
-    {% if session.role == 'admin' %}<a class="btn" href="{{ url_for('users') }}">用户管理</a>{% endif %}
+    <a class="btn" href="{{ url_for('collect', tab='images', item=cur_item) }}">图片查询</a>
+    <a class="btn" href="{{ url_for('label', item=cur_item) }}">缺陷标注</a>
+    <a class="btn" href="{{ url_for('model', item=cur_item) }}">模型版本</a>
+    <a class="btn" href="{{ url_for('analysis', tab='shift', item=cur_item) }}">分析结果</a>
+    <a class="btn" href="{{ url_for('config', tab='items', item=cur_item) }}">基础配置</a>
   </div>
 </div>
 {% endblock %}
