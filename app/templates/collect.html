@@ -8,7 +8,7 @@
     <a href="{{ url_for('collect', tab=key, item=cur_item) }}" class="{{ 'active' if tab==key }}">{{ name }}</a>
     {% endfor %}
   </nav>
-  {% if tab in ['terminal', 'monitor', 'history', 'images'] %}
+  {% if tab in ['monitor', 'history', 'images'] %}
   <div class="sider-title" style="margin-top:16px">选择产线</div>
   <nav class="sider-menu">
     {% for l in lines %}
@@ -21,87 +21,110 @@
 {% endblock %}
 
 {% block content %}
-{# ---------------- 采集模式 ---------------- #}
-{% if tab == 'mode' %}
-<div class="page-title">选择 NG 图片来源</div>
-<div class="stat-grid" style="grid-template-columns:repeat(2,1fr);max-width:900px">
-  <a class="home-card" href="{{ url_for('collect', tab='storage', item=cur_item) }}">
-    <div class="step">模式一</div>
-    <h3>对象存储系统读取图片</h3>
-    <p>连接对象存储服务（MinIO / S3 兼容），从指定存储库定时拉取 NG 图片</p>
-  </a>
-  <a class="home-card" href="{{ url_for('collect', tab='terminal', item=cur_item) }}">
-    <div class="step">模式二</div>
-    <h3>产线工控机采集图片</h3>
-    <p>按检测系统目录结构（日期 / 班次 / 相机 / 牌号）从工控机共享目录采集</p>
-  </a>
-</div>
+{# ---------------- 采集配置（按产线） ---------------- #}
+{% if tab == 'config' %}
+<div class="page-title">采集配置</div>
 
-{# ---------------- 服务配置（对象存储） ---------------- #}
-{% elif tab == 'storage' %}
-<div class="page-title">服务配置 — 对象存储系统读取图片</div>
-{% if conn %}
-<div style="max-width:680px;margin-bottom:12px;padding:9px 14px;border-radius:8px;font-size:13px;
-     background:{{ '#e5f2ea' if conn[0]=='ok' else '#f6e2de' }};
-     color:{{ '#006b2e' if conn[0]=='ok' else '#b23a2c' }}">
-  <b>{{ 'MinIO 在线' if conn[0]=='ok' else 'MinIO 连接失败' }}</b> — {{ conn[1] }}
-</div>
-{% endif %}
-<div class="card" style="max-width:680px"><div class="card-body">
-<form method="post">
-  <div class="form-item"><label><span class="req">*</span>输入服务器地址</label>
-    <input class="input" name="server_addr" value="{{ cfg.server_addr or '' }}" placeholder="127.0.0.1:23456" required></div>
-  <div class="form-item"><label><span class="req">*</span>输入对象存储库名</label>
-    <input class="input" name="in_bucket" value="{{ cfg.in_bucket or '' }}" placeholder="ng_yzwg" required></div>
-  <div class="form-item"><label>用户名</label>
-    <input class="input" name="username" value="{{ cfg.username or '' }}" placeholder="S*****B"></div>
-  <div class="form-item"><label>密码</label>
-    <input class="input" type="password" name="password" value="{{ cfg.password or '' }}" placeholder="*************"></div>
-  <div class="form-item"><label><span class="req">*</span>输出图片存储库名</label>
-    <input class="input" name="out_bucket" value="{{ cfg.out_bucket or '' }}" placeholder="ng_yzwg_out" required></div>
-  <button class="btn btn-primary" type="submit">保存配置</button>
-  <a class="btn" href="{{ url_for('collect', tab='storage', item=cur_item) }}">测试连接</a>
-</form>
-</div></div>
-
-{# ---------------- 终端配置（工控机） ---------------- #}
-{% elif tab == 'terminal' %}
-<div class="page-title">终端配置 — {{ cur_line }} 产线工控机采集图片</div>
-<div class="card" style="max-width:920px"><div class="card-body">
-<form method="post">
-  <input type="hidden" name="line_id" value="{{ line_row.id if line_row else '' }}">
-  <div class="form-grid">
-    <div class="form-item"><label><span class="req">*</span>检测系统地址</label>
-      <input class="input" name="sys_addr" value="{{ tcfg.sys_addr if tcfg else '' }}" placeholder="\\192.168.1.10\NG" required></div>
-    <div class="form-item"><label><span class="req">*</span>NG 图片文件目录名</label>
-      <input class="input" name="ng_dir" value="{{ tcfg.ng_dir if tcfg else '' }}" placeholder="NG_IMG" required></div>
-    <div class="form-item"><label>日期目录名</label>
-      <select class="select input" name="date_dir">
-        {% for opt in ['YYYYMMDD', 'YYYY-MM-DD', '年月日分三级目录'] %}
-        <option {{ 'selected' if tcfg and tcfg.date_dir==opt }}>{{ opt }}</option>
-        {% endfor %}
-      </select></div>
-    <div class="form-item"><label>字符串位置</label>
-      <input class="input" name="str_pos" value="{{ tcfg.str_pos if tcfg else '1,8' }}"></div>
-    <div class="form-item"><label>班次目录</label>
-      <select class="select input" name="shift_dir">
-        {% for opt in ['早、中、晚', '班次无目录'] %}
-        <option {{ 'selected' if tcfg and tcfg.shift_dir==opt }}>{{ opt }}</option>
-        {% endfor %}
-      </select></div>
-    <div class="form-item"><label>相机个数 / 图像面数</label>
-      <input class="input" name="cam_count" type="number" min="1" max="12"
-             value="{{ tcfg.cam_count if tcfg else 4 }}"></div>
-    <div class="form-item"><label>目录名</label>
-      <input class="input" name="cam_dirs" value="{{ tcfg.cam_dirs if tcfg else '1#,2#,3#,4#' }}"></div>
-    <div class="form-item"><label>品规/牌号目录名（牌号在日期上一级）</label>
-      <input class="input" name="brand_dirs"
-             value="{{ tcfg.brand_dirs if tcfg else '' }}" placeholder="玉溪（缤果爆），玉溪（创客）"></div>
+<div class="card" style="max-width:820px;margin-bottom:16px">
+  <div class="card-head">对象存储服务（MinIO / S3 兼容）
+    <span id="s3stat" style="float:right;font-size:12px;font-weight:400"></span>
   </div>
-  <button class="btn btn-primary" type="submit">保存配置</button>
-  <button class="btn" type="button" onclick="alert('目录扫描测试成功（演示）')">测试</button>
-</form>
-</div></div>
+  <div class="card-body">
+  <form method="post">
+    <input type="hidden" name="save" value="storage">
+    <div class="form-grid">
+      <div class="form-item"><label><span class="req">*</span>服务器地址</label>
+        <input class="input" name="server_addr" value="{{ cfg.server_addr or '' }}" placeholder="10.10.96.65:9000" required></div>
+      <div class="form-item"><label><span class="req">*</span>输入桶名</label>
+        <input class="input" name="in_bucket" value="{{ cfg.in_bucket or '' }}" placeholder="ng-yzwg" required></div>
+      <div class="form-item"><label>Access Key</label>
+        <input class="input" name="username" value="{{ cfg.username or '' }}"></div>
+      <div class="form-item"><label>Secret Key</label>
+        <input class="input" type="password" name="password" value="{{ cfg.password or '' }}"></div>
+      <div class="form-item"><label>输出桶名</label>
+        <input class="input" name="out_bucket" value="{{ cfg.out_bucket or '' }}" placeholder="ng-yzwg-out"></div>
+    </div>
+    <div style="margin-top:12px">
+      <button class="btn btn-primary" type="submit">保存</button>
+      <button class="btn" type="button" onclick="testStorage()">测试连接</button>
+      <a class="btn" href="{{ console_url }}" target="_blank" rel="noopener">在线访问控制台 ↗</a>
+    </div>
+  </form>
+  </div>
+</div>
+
+<div class="card" style="max-width:820px">
+  <div class="card-head">各产线数据来源</div>
+  <div class="card-body">
+  {% for lc in line_cfgs %}
+  <form method="post" style="padding:16px 0;{{ 'border-top:1px solid var(--split)' if not loop.first }}">
+    <input type="hidden" name="line_id" value="{{ lc.line.id }}">
+    <div class="form-inline" style="justify-content:space-between;align-items:center">
+      <b style="font-size:15px">{{ lc.line.name }}
+        <span style="color:var(--text-secondary);font-weight:400;font-size:13px">· {{ lc.line.workshop }}</span></b>
+      <span>
+        <label><input type="radio" name="mode" value="minio" {{ 'checked' if lc.mode=='minio' }} onchange="toggleMode(this)"> 对象存储</label>
+        <label style="margin-left:14px"><input type="radio" name="mode" value="terminal" {{ 'checked' if lc.mode=='terminal' }} onchange="toggleMode(this)"> 工控机</label>
+      </span>
+    </div>
+    <div class="term-fields" style="margin-top:12px;{{ '' if lc.mode=='terminal' else 'display:none' }}">
+      <div class="form-grid">
+        <div class="form-item"><label>系统地址 (host:port)</label>
+          <input class="input" name="sys_addr" value="{{ lc.tcfg.sys_addr if lc.tcfg else '' }}" placeholder="10.10.96.66:29"></div>
+        <div class="form-item"><label>NG 图目录</label>
+          <input class="input" name="ng_dir" value="{{ lc.tcfg.ng_dir if lc.tcfg else '/data/ng/NG_IMG' }}"></div>
+        <div class="form-item"><label>相机数</label>
+          <input class="input" type="number" name="cam_count" min="1" max="12" value="{{ lc.tcfg.cam_count if lc.tcfg else 4 }}"></div>
+        <div class="form-item"><label>相机目录</label>
+          <input class="input" name="cam_dirs" value="{{ lc.tcfg.cam_dirs if lc.tcfg else '1#,2#,3#,4#' }}"></div>
+        <div class="form-item"><label>牌号目录</label>
+          <input class="input" name="brand_dirs" value="{{ lc.tcfg.brand_dirs if lc.tcfg else '' }}"></div>
+      </div>
+      <input type="hidden" name="date_dir" value="{{ lc.tcfg.date_dir if lc.tcfg else 'YYYYMMDD' }}">
+      <input type="hidden" name="str_pos" value="{{ lc.tcfg.str_pos if lc.tcfg else '1,8' }}">
+      <input type="hidden" name="shift_dir" value="{{ lc.tcfg.shift_dir if lc.tcfg else '早、中、晚' }}">
+    </div>
+    <div class="minio-note" style="margin-top:8px;color:var(--text-secondary);font-size:13px;{{ 'display:none' if lc.mode=='terminal' }}">
+      读取上方对象存储 <b>{{ cfg.in_bucket }}</b> 桶（按牌号目录）。
+    </div>
+    <div style="margin-top:12px">
+      <button class="btn btn-primary btn-sm" type="submit">保存</button>
+      <button class="btn btn-sm term-test-btn" type="button" onclick="testTerm({{ lc.line.id }})"
+              style="{{ '' if lc.mode=='terminal' else 'display:none' }}">测试连接</button>
+      <span id="tt{{ lc.line.id }}" style="font-size:12px;margin-left:6px"></span>
+    </div>
+  </form>
+  {% endfor %}
+  </div>
+</div>
+
+<script>
+function toggleMode(r){
+  var form = r.closest('form');
+  var term = form.querySelector('.term-fields'), note = form.querySelector('.minio-note'),
+      tbtn = form.querySelector('.term-test-btn');
+  var isTerm = r.value === 'terminal';
+  term.style.display = isTerm ? '' : 'none';
+  note.style.display = isTerm ? 'none' : '';
+  if(tbtn) tbtn.style.display = isTerm ? '' : 'none';
+}
+function testStorage(){
+  var s = document.getElementById('s3stat');
+  s.textContent = '测试中…'; s.style.color = 'var(--text-secondary)';
+  fetch('{{ url_for("collect_test_storage") }}', {method:'POST'})
+    .then(function(r){ return r.json(); })
+    .then(function(d){ s.textContent = (d.ok?'● 在线 — ':'● 失败 — ') + d.msg; s.style.color = d.ok?'#00923f':'#ff4d4f'; })
+    .catch(function(){ s.textContent = '● 请求失败'; s.style.color = '#ff4d4f'; });
+}
+function testTerm(id){
+  var s = document.getElementById('tt'+id);
+  s.textContent = '测试中…'; s.style.color = 'var(--text-secondary)';
+  fetch('/collect/test/terminal/'+id, {method:'POST'})
+    .then(function(r){ return r.json(); })
+    .then(function(d){ s.textContent = '● ' + d.msg; s.style.color = d.ok?'#00923f':'#ff4d4f'; })
+    .catch(function(){ s.textContent = '● 请求失败'; s.style.color = '#ff4d4f'; });
+}
+</script>
 
 {# ---------------- 采集监控 ---------------- #}
 {% elif tab == 'monitor' %}

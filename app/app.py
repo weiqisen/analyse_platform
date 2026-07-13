@@ -471,8 +471,8 @@ def config_toggle(tab, rid):
 
 
 # ---------------------------------------------------------------- 图像采集
-COLLECT_TABS = [("mode", "采集模式"), ("storage", "服务配置"), ("terminal", "终端配置"),
-                ("monitor", "采集监控"), ("history", "历史采集"), ("images", "图片查询")]
+COLLECT_TABS = [("config", "采集配置"), ("monitor", "采集监控"),
+                ("history", "历史采集"), ("images", "图片查询")]
 
 
 def get_s3(cfg=None):
@@ -549,36 +549,34 @@ def collect(tab):
     cur_line = request.args.get("line") or (lines[0]["name"] if lines else "A01")
     ctx["cur_line"] = cur_line
 
-    if tab == "storage":
+    if tab == "config":
         if request.method == "POST":
             f = request.form
-            db.execute("UPDATE storage_config SET server_addr=?,in_bucket=?,username=?,password=?,out_bucket=? WHERE id=1",
-                       (f["server_addr"], f["in_bucket"], f["username"], f["password"], f["out_bucket"]))
-            db.commit()
-            flash("服务配置已保存", "success")
-            return redirect(url_for("collect", tab="storage"))
+            if f.get("save") == "storage":
+                db.execute("UPDATE storage_config SET server_addr=?,in_bucket=?,username=?,password=?,out_bucket=? WHERE id=1",
+                           (f["server_addr"], f["in_bucket"], f["username"], f["password"], f["out_bucket"]))
+                db.commit()
+                flash("对象存储配置已保存", "success")
+            elif f.get("line_id"):
+                lid = f["line_id"]
+                db.execute("DELETE FROM terminal_config WHERE line_id=?", (lid,))
+                if f.get("mode") == "terminal":
+                    db.execute("INSERT INTO terminal_config(line_id,sys_addr,ng_dir,date_dir,str_pos,shift_dir,cam_count,cam_dirs,brand_dirs) "
+                               "VALUES(?,?,?,?,?,?,?,?,?)",
+                               (lid, f.get("sys_addr", ""), f.get("ng_dir", ""), f.get("date_dir", "YYYYMMDD"),
+                                f.get("str_pos", "1,8"), f.get("shift_dir", "早、中、晚"),
+                                f.get("cam_count", 4) or 4, f.get("cam_dirs", ""), f.get("brand_dirs", "")))
+                db.commit()
+                flash("产线采集来源已保存", "success")
+            return redirect(url_for("collect", tab="config"))
         ctx["cfg"] = db.execute("SELECT * FROM storage_config WHERE id=1").fetchone()
-        try:
-            s3, cfg = get_s3(ctx["cfg"])
-            s3.head_bucket(Bucket=cfg["in_bucket"])
-            ctx["conn"] = ("ok", "连接正常，输入桶「%s」可访问" % cfg["in_bucket"])
-        except Exception as e:
-            ctx["conn"] = ("fail", str(e)[:140])
-    elif tab == "terminal":
-        if request.method == "POST":
-            f = request.form
-            db.execute("DELETE FROM terminal_config WHERE line_id=?", (f["line_id"],))
-            db.execute("INSERT INTO terminal_config(line_id,sys_addr,ng_dir,date_dir,str_pos,shift_dir,cam_count,cam_dirs,brand_dirs) "
-                       "VALUES(?,?,?,?,?,?,?,?,?)",
-                       (f["line_id"], f["sys_addr"], f["ng_dir"], f["date_dir"], f["str_pos"],
-                        f["shift_dir"], f["cam_count"], f["cam_dirs"], f["brand_dirs"]))
-            db.commit()
-            flash("终端配置已保存", "success")
-            return redirect(url_for("collect", tab="terminal", line=cur_line))
-        line_row = next((l for l in lines if l["name"] == cur_line), None)
-        ctx["line_row"] = line_row
-        ctx["tcfg"] = db.execute("SELECT * FROM terminal_config WHERE line_id=?",
-                                 (line_row["id"] if line_row else -1,)).fetchone()
+        line_cfgs = []
+        for l in lines:
+            tcfg = db.execute("SELECT * FROM terminal_config WHERE line_id=?", (l["id"],)).fetchone()
+            line_cfgs.append({"line": l, "mode": "terminal" if tcfg else "minio", "tcfg": tcfg})
+        ctx["line_cfgs"] = line_cfgs
+        host = ((ctx["cfg"]["server_addr"] or "").split(":")[0]) if ctx["cfg"] else ""
+        ctx["console_url"] = ("http://%s:9001" % host) if host else "#"
     elif tab == "monitor":
         line_row = next((l for l in lines if l["name"] == cur_line), None)
         tcfg = line_terminal_cfg(line_row)
@@ -662,6 +660,35 @@ def collect_wsimg():
         abort(404)
     mime = "image/png" if path.lower().endswith(".png") else "image/jpeg"
     return Response(data, mimetype=mime, headers={"Cache-Control": "max-age=300"})
+
+
+@app.route("/collect/test/storage", methods=["POST"])
+@login_required
+def collect_test_storage():
+    try:
+        s3, cfg = get_s3()
+        s3.head_bucket(Bucket=cfg["in_bucket"])
+        return jsonify({"ok": True, "msg": "连接成功，输入桶「%s」可访问" % cfg["in_bucket"]})
+    except Exception as e:
+        return jsonify({"ok": False, "msg": str(e)[:160]})
+
+
+@app.route("/collect/test/terminal/<int:line_id>", methods=["POST"])
+@login_required
+def collect_test_terminal(line_id):
+    db = get_db()
+    tcfg = db.execute("SELECT * FROM terminal_config WHERE line_id=?", (line_id,)).fetchone()
+    if not tcfg:
+        return jsonify({"ok": False, "msg": "该产线尚未保存工控机配置，请先保存"})
+    try:
+        t, sftp = _ws_sftp(tcfg)
+        try:
+            n = len(sftp.listdir(tcfg["ng_dir"] or "/"))
+        finally:
+            t.close()
+        return jsonify({"ok": True, "msg": "SFTP 连接成功，%s 下有 %d 个条目" % (tcfg["ng_dir"], n)})
+    except Exception as e:
+        return jsonify({"ok": False, "msg": str(e)[:160]})
 
 
 # ---------------------------------------------------------------- 缺陷标注
