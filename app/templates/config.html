@@ -32,6 +32,8 @@
     <tr><th>序号</th><th>车间名称</th><th>状态</th><th>操作</th></tr>
   {% elif tab == 'areas' %}
     <tr><th>序号</th><th>区域名称</th><th>所属车间</th><th>状态</th><th>操作</th></tr>
+  {% elif tab == 'defects' %}
+    <tr><th>序号</th><th>分类名称</th><th>状态</th><th>操作</th></tr>
   {% endif %}
   </thead>
   <tbody>
@@ -48,6 +50,8 @@
       <td>{{ r.name }}</td>
     {% elif tab == 'areas' %}
       <td>{{ r.name }}</td><td>{{ r.workshop }}</td>
+    {% elif tab == 'defects' %}
+      <td>{{ r.name }}</td>
     {% endif %}
     <td>{% if r.status %}<span class="tag">启用</span>{% else %}<span class="tag tag-gray">停用</span>{% endif %}</td>
     <td>
@@ -101,6 +105,8 @@
             <option value="">请选择车间</option>
             {% for w in workshops %}<option>{{ w.name }}</option>{% endfor %}
           </select></div>
+        {% elif tab == 'defects' %}
+        <div class="form-item"><label><span class="req">*</span>分类名称</label><input class="input" name="name" id="c_name" required></div>
         {% endif %}
       </div>
       <div class="modal-foot">

@@ -104,8 +104,9 @@ function drawAnno(a){
   } else { var b=a.bbox;
     svg.appendChild(el('rect',{x:b[0],y:b[1],width:b[2],height:b[3],fill:col+'18',stroke:col,'stroke-width':sw()})); }
   var lx=a.shape==='polygon'?a.points[0][0]:a.bbox[0], ly=a.shape==='polygon'?a.points[0][1]:a.bbox[1];
-  var t=el('text',{x:lx+2,y:ly-sw()*2,fill:col,'font-size':Math.max(13,NW/38),'font-weight':'bold'});
-  t.textContent=a.class_name||''; svg.appendChild(t);
+  // 左上角小色点标记类别，不阻塞图像
+  var rr=Math.max(4,sw()*1.3);
+  svg.appendChild(el('circle',{cx:lx+rr,cy:ly-rr,r:rr,fill:col,stroke:'#fff','stroke-width':sw()*0.6}));
 }
 
 svg.addEventListener('mousedown',function(e){

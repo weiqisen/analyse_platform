@@ -442,7 +442,7 @@ def users_delete(uid):
 
 # ---------------------------------------------------------------- 基础配置
 CONFIG_TABS = [("items", "检测项目"), ("lines", "机组/产线"), ("brands", "牌号/品规"),
-               ("workshops", "车间"), ("areas", "区域")]
+               ("workshops", "车间"), ("areas", "区域"), ("defects", "缺陷分类")]
 
 
 @app.route("/config/<tab>")
@@ -457,6 +457,7 @@ def config(tab):
         "brands": db.execute("SELECT * FROM brands ORDER BY id").fetchall(),
         "workshops": db.execute("SELECT * FROM workshops ORDER BY id").fetchall(),
         "areas": db.execute("SELECT * FROM areas ORDER BY id").fetchall(),
+        "defects": db.execute("SELECT * FROM label_classes ORDER BY id").fetchall(),
     }[tab]
     workshops = [dict(w) for w in db.execute("SELECT * FROM workshops WHERE status=1 ORDER BY id").fetchall()]
     areas = [dict(a) for a in db.execute("SELECT * FROM areas WHERE status=1 ORDER BY id").fetchall()]
@@ -499,6 +500,11 @@ def config_save(tab):
             db.execute("UPDATE areas SET name=?,workshop=? WHERE id=?", (f["name"], f.get("workshop", ""), rid))
         else:
             db.execute("INSERT INTO areas(name,workshop) VALUES(?,?)", (f["name"], f.get("workshop", "")))
+    elif tab == "defects":
+        if rid:
+            db.execute("UPDATE label_classes SET name=? WHERE id=?", (f["name"], rid))
+        else:
+            db.execute("INSERT INTO label_classes(name) VALUES(?)", (f["name"],))
     db.commit()
     flash("保存成功", "success")
     return redirect(url_for("config", tab=tab))
@@ -508,7 +514,7 @@ def config_save(tab):
 @login_required
 def config_delete(tab, rid):
     table = {"items": "detect_items", "lines": "prod_lines", "brands": "brands",
-             "workshops": "workshops", "areas": "areas"}.get(tab)
+             "workshops": "workshops", "areas": "areas", "defects": "label_classes"}.get(tab)
     if not table:
         abort(404)
     db = get_db()
@@ -522,7 +528,7 @@ def config_delete(tab, rid):
 @login_required
 def config_toggle(tab, rid):
     table = {"items": "detect_items", "lines": "prod_lines", "brands": "brands",
-             "workshops": "workshops", "areas": "areas"}.get(tab)
+             "workshops": "workshops", "areas": "areas", "defects": "label_classes"}.get(tab)
     if not table:
         abort(404)
     db = get_db()
@@ -942,7 +948,7 @@ def label():
     for b in db.execute("SELECT spec FROM brands WHERE status=1 ORDER BY id").fetchall():
         brand = b["spec"]
         row = db.execute("SELECT COUNT(*) AS t, COALESCE(SUM(annotated),0) AS d "
-                         "FROM label_images WHERE brand=?", (brand,)).fetchone()
+                         "FROM label_images WHERE brand=? AND src_key LIKE ?", (brand, "%/正常/%")).fetchone()
         total, done = row["t"] or 0, int(row["d"] or 0)
         tasks.append({"brand": brand, "total": total, "labeling": done,
                       "unlabeled": total - done, "exported": done})
@@ -974,10 +980,10 @@ def label_class_delete(cid):
 @login_required
 def label_anno(brand):
     db = get_db()
-    imgs = db.execute("SELECT * FROM label_images WHERE brand=? ORDER BY id", (brand,)).fetchall()
+    imgs = db.execute("SELECT * FROM label_images WHERE brand=? AND src_key LIKE ? ORDER BY id", (brand, "%/正常/%")).fetchall()
     if not imgs:
         sync_label_images()
-        imgs = db.execute("SELECT * FROM label_images WHERE brand=? ORDER BY id", (brand,)).fetchall()
+        imgs = db.execute("SELECT * FROM label_images WHERE brand=? AND src_key LIKE ? ORDER BY id", (brand, "%/正常/%")).fetchall()
     if not imgs:
         flash("牌号「%s」在数据源中未找到图片" % brand, "error")
         return redirect(url_for("label"))
@@ -1016,8 +1022,8 @@ def label_save(image_id):
 def label_export(brand):
     from flask import Response
     db = get_db()
-    imgs = db.execute("SELECT * FROM label_images WHERE brand=? AND annotated=1 ORDER BY id",
-                      (brand,)).fetchall()
+    imgs = db.execute("SELECT * FROM label_images WHERE brand=? AND annotated=1 AND src_key LIKE ? ORDER BY id",
+                      (brand, "%/正常/%")).fetchall()
     cats = db.execute("SELECT * FROM label_classes ORDER BY id").fetchall()
     coco = {"images": [], "annotations": [],
             "categories": [{"id": c["id"], "name": c["name"]} for c in cats]}

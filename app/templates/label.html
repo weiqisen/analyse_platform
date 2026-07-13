@@ -31,24 +31,11 @@
     </div></div>
   </div>
 
-  <div style="width:280px;flex-shrink:0">
+  <div style="width:240px;flex-shrink:0">
     <div class="page-title">缺陷分类</div>
     <div class="card"><div class="card-body">
-      <form method="post" action="{{ url_for('label_class_add') }}" class="form-inline" style="margin-bottom:14px">
-        <input class="input" name="name" placeholder="输入分类名称" required style="flex:1">
-        <button class="btn btn-primary btn-sm" type="submit">增加分类</button>
-      </form>
-      <div class="class-list">
-        {% for c in classes %}
-        <div class="class-item">
-          <span>{{ c.name }}</span>
-          <form method="post" action="{{ url_for('label_class_delete', cid=c.id) }}"
-                onsubmit="return confirm('删除分类「{{ c.name }}」？')">
-            <button class="btn-link danger" type="submit">删除</button>
-          </form>
-        </div>
-        {% endfor %}
-      </div>
+      <p style="font-size:13px;color:var(--text-secondary);margin:0">缺陷分类已统一在「基础配置」中维护。</p>
+      <a class="btn btn-sm" style="margin-top:10px" href="{{ url_for('config', tab='defects', item=cur_item) }}">前往维护 →</a>
     </div></div>
   </div>
 </div>
