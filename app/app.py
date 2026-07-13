@@ -425,6 +425,29 @@ COLLECT_TABS = [("mode", "采集模式"), ("storage", "服务配置"), ("termina
                 ("monitor", "采集监控"), ("history", "历史采集"), ("images", "图片查询")]
 
 
+def get_s3(cfg=None):
+    """按 storage_config 构建 MinIO/S3 客户端。"""
+    import boto3
+    from botocore.client import Config
+    if cfg is None:
+        cfg = get_db().execute("SELECT * FROM storage_config WHERE id=1").fetchone()
+    s3 = boto3.client("s3", endpoint_url="http://" + (cfg["server_addr"] or ""),
+                      aws_access_key_id=cfg["username"] or "",
+                      aws_secret_access_key=cfg["password"] or "",
+                      region_name="us-east-1",
+                      config=Config(signature_version="s3v4", connect_timeout=4,
+                                    read_timeout=8, retries={"max_attempts": 1}))
+    return s3, cfg
+
+
+def line_terminal_cfg(line_row):
+    """产线为工控机采集模式则返回其 terminal_config，否则 None（对象存储模式）。"""
+    if not line_row:
+        return None
+    return get_db().execute("SELECT * FROM terminal_config WHERE line_id=?",
+                            (line_row["id"],)).fetchone()
+
+
 @app.route("/collect/<tab>", methods=["GET", "POST"])
 @login_required
 def collect(tab):
@@ -446,6 +469,12 @@ def collect(tab):
             flash("服务配置已保存", "success")
             return redirect(url_for("collect", tab="storage"))
         ctx["cfg"] = db.execute("SELECT * FROM storage_config WHERE id=1").fetchone()
+        try:
+            s3, cfg = get_s3(ctx["cfg"])
+            s3.head_bucket(Bucket=cfg["in_bucket"])
+            ctx["conn"] = ("ok", "连接正常，输入桶「%s」可访问" % cfg["in_bucket"])
+        except Exception as e:
+            ctx["conn"] = ("fail", str(e)[:140])
     elif tab == "terminal":
         if request.method == "POST":
             f = request.form
@@ -462,16 +491,46 @@ def collect(tab):
         ctx["tcfg"] = db.execute("SELECT * FROM terminal_config WHERE line_id=?",
                                  (line_row["id"] if line_row else -1,)).fetchone()
     elif tab == "monitor":
-        rnd = random.Random(hash(cur_line) & 0xffff)
-        ctx["cams"] = [{"name": "%d#相机" % i, "count": rnd.randint(5, 30)} for i in range(1, 7)]
+        line_row = next((l for l in lines if l["name"] == cur_line), None)
+        tcfg = line_terminal_cfg(line_row)
+        ctx["src"] = "terminal" if tcfg else "minio"
+        ctx["tcfg"] = tcfg
+        ctx["cams"] = []
+        if not tcfg:
+            try:
+                s3, cfg = get_s3()
+                objs = s3.list_objects_v2(Bucket=cfg["in_bucket"], MaxKeys=2000).get("Contents", [])
+                from collections import Counter
+                cnt = Counter()
+                for o in objs:
+                    parts = o["Key"].split("/")
+                    cnt[parts[3] if len(parts) >= 4 else "未分类"] += 1
+                ctx["cams"] = [{"name": k, "count": v} for k, v in sorted(cnt.items())]
+                ctx["err"] = None
+            except Exception as e:
+                ctx["err"] = str(e)[:140]
     elif tab == "history":
         ctx["records"] = db.execute(
             "SELECT * FROM collect_history WHERE line=? ORDER BY date DESC, shift", (cur_line,)).fetchall() \
             or db.execute("SELECT * FROM collect_history ORDER BY date DESC LIMIT 20").fetchall()
     elif tab == "images":
-        rnd = random.Random(7)
-        ctx["total"] = 324
-        ctx["pics"] = [{"idx": i, "hue": rnd.randint(0, 360)} for i in range(1, 13)]
+        line_row = next((l for l in lines if l["name"] == cur_line), None)
+        tcfg = line_terminal_cfg(line_row)
+        ctx["src"] = "terminal" if tcfg else "minio"
+        ctx["tcfg"] = tcfg
+        ctx["pics"] = []; ctx["total"] = 0
+        if not tcfg:
+            try:
+                s3, cfg = get_s3()
+                objs = s3.list_objects_v2(Bucket=cfg["in_bucket"], MaxKeys=500).get("Contents", [])
+                pics = []
+                for o in objs:
+                    url = s3.generate_presigned_url(
+                        "get_object", Params={"Bucket": cfg["in_bucket"], "Key": o["Key"]}, ExpiresIn=7200)
+                    pics.append({"key": o["Key"], "name": o["Key"].split("/")[-1], "url": url})
+                ctx["pics"] = pics; ctx["total"] = len(pics); ctx["err"] = None
+            except Exception as e:
+                ctx["err"] = str(e)[:140]
     return render_template("collect.html", **ctx)
 
 
