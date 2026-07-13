@@ -34,8 +34,6 @@
   .lc-card .lc-foot { margin-top: 14px; display: flex; align-items: center; gap: 10px; }
   .lc-badge { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 10px; font-size: 12px; font-weight: 500; }
   .lc-badge.s3 { background: #e6f7ee; color: #006b2e; } .lc-badge.ws { background: #f8efdd; color: #a86e14; }
-  .lc-badge .bdot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
-  .lc-badge.s3 .bdot { background: #52c41a; } .lc-badge.ws .bdot { background: #d48806; }
   @media (max-width: 860px) { .lc-grid { grid-template-columns: 1fr; } }
   .mode-radio { position: relative; padding-left: 22px; cursor: pointer; user-select: none; }
   .mode-radio > input { position: absolute; opacity: 0; width: 0; height: 0; }
@@ -52,7 +50,7 @@
   <div class="lc-src">
     <span class="dot-status on"></span>
     <span class="lc-badge {{ 's3' if lc.mode=='minio' else 'ws' }}">
-      <span class="bdot"></span>{% if lc.mode=='minio' %}对象存储{% else %}工控机 SFTP{% endif %}</span>
+      {% if lc.mode=='minio' %}对象存储{% else %}工控机 SFTP{% endif %}</span>
   </div>
   <div class="lc-addr">
     {% if lc.mode == 'minio' %}
