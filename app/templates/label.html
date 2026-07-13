@@ -7,7 +7,7 @@
     <div class="card"><div class="card-body" style="padding:0">
     <table class="table">
       <thead><tr>
-        <th>品规</th><th>样本数量</th><th>标注中数量</th><th>未标注数量</th><th>导出数量</th><th>操作</th>
+        <th>品规</th><th>样本数量</th><th>已标注</th><th>未标注</th><th>可导出</th><th>操作</th>
       </tr></thead>
       <tbody>
       {% for t in tasks %}
@@ -15,8 +15,12 @@
         <td>{{ t.brand }}</td><td>{{ t.total }}</td><td>{{ t.labeling }}</td>
         <td>{{ t.unlabeled }}</td><td>{{ t.exported }}</td>
         <td>
-          <a href="{{ url_for('label_anno', tid=t.id) }}">继续标注</a>
-          <button class="btn-link" onclick="alert('已导出标注数据（演示）')">导出</button>
+          {% if t.total %}
+          <a href="{{ url_for('label_anno', brand=t.brand) }}">继续标注</a>
+          <a class="btn-link" href="{{ url_for('label_export', brand=t.brand) }}">导出COCO</a>
+          {% else %}
+          <span style="color:var(--text-secondary)">数据源无图片</span>
+          {% endif %}
         </td>
       </tr>
       {% else %}

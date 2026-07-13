@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """缺陷图片分析平台 — Flask 后端"""
 import os
+import json
 import hashlib
 import functools
 import random
@@ -159,6 +160,32 @@ def init_db():
             brand VARCHAR(64) COMMENT '牌号',
             img_count INT COMMENT '采集图片数量'
         ) DEFAULT CHARSET=utf8mb4 COMMENT='历史采集记录表'""",
+        """CREATE TABLE IF NOT EXISTS label_images(
+            id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+            brand VARCHAR(64) NOT NULL COMMENT '牌号',
+            source VARCHAR(16) NOT NULL COMMENT '数据源: minio对象存储 / terminal工控机',
+            src_key VARCHAR(512) NOT NULL COMMENT '对象key或工控机文件路径',
+            line_name VARCHAR(32) DEFAULT '' COMMENT '所属产线',
+            width INT DEFAULT 0 COMMENT '图片宽(像素)',
+            height INT DEFAULT 0 COMMENT '图片高(像素)',
+            annotated INT DEFAULT 0 COMMENT '是否已标注: 1是 0否',
+            UNIQUE KEY uq_brand_key (brand, src_key(300))
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='标注图片表'""",
+        """CREATE TABLE IF NOT EXISTS annotations(
+            id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+            image_id INT NOT NULL COMMENT '关联label_images.id',
+            class_id INT COMMENT '缺陷分类ID(label_classes.id)',
+            class_name VARCHAR(64) COMMENT '缺陷分类名称',
+            shape VARCHAR(16) DEFAULT 'rect' COMMENT '形状: rect矩形 / polygon多边形',
+            bbox_x DOUBLE DEFAULT 0 COMMENT '外接框左上x(像素)',
+            bbox_y DOUBLE DEFAULT 0 COMMENT '外接框左上y(像素)',
+            bbox_w DOUBLE DEFAULT 0 COMMENT '外接框宽(像素)',
+            bbox_h DOUBLE DEFAULT 0 COMMENT '外接框高(像素)',
+            points TEXT COMMENT '多边形顶点[[x,y],...] JSON(像素)',
+            created_by VARCHAR(64) DEFAULT '' COMMENT '标注人',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '标注时间',
+            KEY idx_image (image_id)
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='标注框表'""",
     ]
     for stmt in ddl:
         db.execute(stmt)
@@ -608,12 +635,96 @@ def collect_wsimg():
 
 
 # ---------------------------------------------------------------- 缺陷标注
+def sync_label_images():
+    """一次性扫描所有数据源，把 NG 图按顶层目录(牌号)登记进 label_images（幂等）。"""
+    import stat
+    db = get_db()
+    existing = {r["src_key"] for r in db.execute("SELECT src_key FROM label_images").fetchall()}
+    rows = []
+    # MinIO：分页列全部对象，顶层目录=牌号
+    try:
+        s3, cfg = get_s3()
+        tok = None
+        while True:
+            kw = {"Bucket": cfg["in_bucket"], "MaxKeys": 1000}
+            if tok:
+                kw["ContinuationToken"] = tok
+            r = s3.list_objects_v2(**kw)
+            for o in r.get("Contents", []):
+                k = o["Key"]
+                if "/" in k and k.lower().endswith((".jpg", ".jpeg", ".png")):
+                    rows.append(("minio", k, k.split("/")[0], "A01"))
+            if r.get("IsTruncated"):
+                tok = r.get("NextContinuationToken")
+            else:
+                break
+    except Exception:
+        pass
+    # 工控机：每台 SFTP 全量 walk，相对路径顶层=牌号
+    for l in db.execute("SELECT * FROM prod_lines").fetchall():
+        tcfg = db.execute("SELECT * FROM terminal_config WHERE line_id=?", (l["id"],)).fetchone()
+        if not tcfg:
+            continue
+        root = (tcfg["ng_dir"] or "").rstrip("/")
+        try:
+            t, sftp = _ws_sftp(tcfg)
+
+            def walk(p):
+                try:
+                    entries = sftp.listdir_attr(p)
+                except IOError:
+                    return
+                for e in entries:
+                    full = p + "/" + e.filename
+                    if stat.S_ISDIR(e.st_mode):
+                        walk(full)
+                    elif e.filename.lower().endswith((".jpg", ".jpeg", ".png")):
+                        rel = full[len(root):].lstrip("/")
+                        brand = rel.split("/")[0] if "/" in rel else ""
+                        rows.append(("terminal", full, brand, l["name"]))
+            try:
+                walk(root)
+            finally:
+                t.close()
+        except Exception:
+            pass
+    added = False
+    for source, key, brand, line in rows:
+        if brand and key not in existing:
+            try:
+                db.execute("INSERT INTO label_images(brand,source,src_key,line_name) VALUES(?,?,?,?)",
+                           (brand, source, key, line))
+                added = True
+            except IntegrityError:
+                pass
+    if added:
+        db.commit()
+
+
+def label_image_url(img):
+    """生成标注图片的可访问 URL（MinIO presigned 或工控机代理）。"""
+    if img["source"] == "minio":
+        s3, cfg = get_s3()
+        return s3.generate_presigned_url("get_object",
+                                         Params={"Bucket": cfg["in_bucket"], "Key": img["src_key"]},
+                                         ExpiresIn=7200)
+    return url_for("collect_wsimg", line=img["line_name"], path=img["src_key"])
+
+
 @app.route("/label")
 @login_required
 def label():
     db = get_db()
-    tasks = db.execute("SELECT * FROM label_tasks ORDER BY id").fetchall()
+    sync_label_images()
     classes = db.execute("SELECT * FROM label_classes ORDER BY id").fetchall()
+    tasks = []
+    for b in db.execute("SELECT spec FROM brands WHERE status=1 ORDER BY id").fetchall():
+        brand = b["spec"]
+        row = db.execute("SELECT COUNT(*) AS t, COALESCE(SUM(annotated),0) AS d "
+                         "FROM label_images WHERE brand=?", (brand,)).fetchone()
+        total, done = row["t"] or 0, int(row["d"] or 0)
+        tasks.append({"brand": brand, "total": total, "labeling": done,
+                      "unlabeled": total - done, "exported": done})
     return render_template("label.html", tasks=tasks, classes=classes, active="label")
 
 
@@ -638,15 +749,74 @@ def label_class_delete(cid):
     return redirect(url_for("label"))
 
 
-@app.route("/label/anno/<int:tid>")
+@app.route("/label/anno/<brand>")
 @login_required
-def label_anno(tid):
+def label_anno(brand):
     db = get_db()
-    task = db.execute("SELECT * FROM label_tasks WHERE id=?", (tid,)).fetchone()
-    classes = db.execute("SELECT * FROM label_classes ORDER BY id").fetchall()
-    if not task:
-        abort(404)
-    return render_template("label_anno.html", task=task, classes=classes, active="label")
+    imgs = db.execute("SELECT * FROM label_images WHERE brand=? ORDER BY id", (brand,)).fetchall()
+    if not imgs:
+        sync_label_images()
+        imgs = db.execute("SELECT * FROM label_images WHERE brand=? ORDER BY id", (brand,)).fetchall()
+    if not imgs:
+        flash("牌号「%s」在数据源中未找到图片" % brand, "error")
+        return redirect(url_for("label"))
+    idx = request.args.get("i", type=int) or 0
+    idx = max(0, min(idx, len(imgs) - 1))
+    img = imgs[idx]
+    classes = [dict(c) for c in db.execute("SELECT * FROM label_classes ORDER BY id").fetchall()]
+    annos = db.execute("SELECT * FROM annotations WHERE image_id=? ORDER BY id", (img["id"],)).fetchall()
+    return render_template("label_anno.html", brand=brand, img=dict(img), img_url=label_image_url(img),
+                           idx=idx, total=len(imgs), classes=classes,
+                           annos=[dict(a) for a in annos], active="label")
+
+
+@app.route("/label/save/<int:image_id>", methods=["POST"])
+@login_required
+def label_save(image_id):
+    db = get_db()
+    data = request.get_json(force=True) or {}
+    items = data.get("annos", [])
+    db.execute("UPDATE label_images SET width=?,height=?,annotated=? WHERE id=?",
+               (int(data.get("width", 0)), int(data.get("height", 0)), 1 if items else 0, image_id))
+    db.execute("DELETE FROM annotations WHERE image_id=?", (image_id,))
+    for a in items:
+        bx = a.get("bbox", [0, 0, 0, 0])
+        db.execute("INSERT INTO annotations(image_id,class_id,class_name,shape,"
+                   "bbox_x,bbox_y,bbox_w,bbox_h,points,created_by) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                   (image_id, a.get("class_id"), a.get("class_name", ""), a.get("shape", "rect"),
+                    bx[0], bx[1], bx[2], bx[3], json.dumps(a.get("points", [])),
+                    session.get("username", "")))
+    db.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/label/export/<brand>")
+@login_required
+def label_export(brand):
+    from flask import Response
+    db = get_db()
+    imgs = db.execute("SELECT * FROM label_images WHERE brand=? AND annotated=1 ORDER BY id",
+                      (brand,)).fetchall()
+    cats = db.execute("SELECT * FROM label_classes ORDER BY id").fetchall()
+    coco = {"images": [], "annotations": [],
+            "categories": [{"id": c["id"], "name": c["name"]} for c in cats]}
+    aid = 1
+    for im in imgs:
+        coco["images"].append({"id": im["id"], "file_name": im["src_key"],
+                               "width": im["width"], "height": im["height"]})
+        for a in db.execute("SELECT * FROM annotations WHERE image_id=?", (im["id"],)).fetchall():
+            seg = []
+            if a["shape"] == "polygon" and a["points"]:
+                pts = json.loads(a["points"])
+                seg = [[c for p in pts for c in p]]
+            coco["annotations"].append({
+                "id": aid, "image_id": im["id"], "category_id": a["class_id"],
+                "bbox": [a["bbox_x"], a["bbox_y"], a["bbox_w"], a["bbox_h"]],
+                "area": a["bbox_w"] * a["bbox_h"], "iscrowd": 0, "segmentation": seg})
+            aid += 1
+    body = json.dumps(coco, ensure_ascii=False, indent=2)
+    return Response(body, mimetype="application/json",
+                    headers={"Content-Disposition": "attachment; filename=coco_annotations.json"})
 
 
 # ---------------------------------------------------------------- 模型版本

@@ -1,73 +1,177 @@
 {% extends "base.html" %}
 {% block title %}图片标注 · 缺陷图片分析平台{% endblock %}
 {% block content %}
+<style>
+  .seg-on { background: var(--primary-bg); border-color: var(--primary); color: var(--primary); font-weight: 600; }
+  #annoSvg text { paint-order: stroke; stroke: rgba(0,0,0,.55); stroke-width: 3px; }
+</style>
 <div class="toolbar">
-  <div class="page-title" style="margin:0">图片标注 — {{ task.brand }}
-    <span style="font-size:13px;color:var(--text-secondary);font-weight:400">
-      （共 {{ task.total }} 张 · 未标注 {{ task.unlabeled }} 张）</span>
+  <div class="page-title" style="margin:0">缺陷标注 — {{ brand }}
+    <span style="font-size:13px;color:var(--text-secondary);font-weight:400">（第 {{ idx+1 }} / {{ total }} 张 · {{ img.line_name }} · {{ '对象存储' if img.source=='minio' else '工控机' }}）</span>
   </div>
-  <a class="btn" href="{{ url_for('label') }}">« 返回任务列表</a>
+  <div class="form-inline">
+    <button id="toolRect" class="btn btn-sm seg-on" onclick="setTool('rect')">▭ 矩形</button>
+    <button id="toolPoly" class="btn btn-sm" onclick="setTool('polygon')">⬡ 多边形</button>
+    <a class="btn btn-sm" href="{{ url_for('label') }}">« 返回列表</a>
+  </div>
 </div>
+
 <div style="display:flex;gap:16px;align-items:flex-start">
-  <div class="card" style="flex:1"><div class="card-body">
-    <div id="canvas" style="position:relative;height:480px;border-radius:8px;cursor:crosshair;
-         background:linear-gradient(135deg,hsl(150,18%,38%),hsl(150,22%,22%));
-         display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,.7)">
-      NG_0001.jpg — 在图片上拖拽框选缺陷区域
+  <div class="card" style="flex:1;min-width:0"><div class="card-body">
+    <div id="stage" style="position:relative;display:inline-block;max-width:100%;background:#0d1411;border-radius:8px">
+      <img id="annoImg" src="{{ img_url }}" style="display:block;max-width:100%;height:auto;border-radius:8px">
+      <svg id="annoSvg" preserveAspectRatio="none"
+           style="position:absolute;top:0;left:0;width:100%;height:100%;cursor:crosshair"></svg>
     </div>
-    <div class="form-inline" style="margin-top:14px;justify-content:space-between">
+    <div class="form-inline" style="margin-top:12px;justify-content:space-between">
       <div>
-        <button class="btn" onclick="alert('上一张（演示）')">« 上一张</button>
-        <button class="btn" onclick="alert('下一张（演示）')">下一张 »</button>
+        {% if idx>0 %}<a class="btn" href="{{ url_for('label_anno', brand=brand, i=idx-1) }}">« 上一张</a>{% else %}<button class="btn" disabled>« 上一张</button>{% endif %}
+        {% if idx+1<total %}<a class="btn" href="{{ url_for('label_anno', brand=brand, i=idx+1) }}">下一张 »</a>{% else %}<button class="btn" disabled>下一张 »</button>{% endif %}
       </div>
       <div>
-        <button class="btn" onclick="clearBoxes()">清除标注</button>
-        <button class="btn btn-primary" onclick="alert('已保存标注（演示）')">保存并下一张</button>
+        <button class="btn" onclick="undoLast()">撤销</button>
+        <button class="btn" onclick="clearAll()">清除</button>
+        <button class="btn btn-primary" onclick="saveAnno(false)">保存</button>
+        <button class="btn btn-primary" onclick="saveAnno(true)">保存并下一张</button>
       </div>
     </div>
+    <div class="hint" id="tip" style="margin-top:10px">矩形：在图上按住拖拽框选。多边形：依次点击顶点，点回起点或双击闭合。标注前先在右侧选缺陷分类。</div>
   </div></div>
-  <div class="card" style="width:240px;flex-shrink:0"><div class="card-head">选择缺陷分类</div>
-    <div class="card-body class-list" id="clsList">
-      {% for c in classes %}
-      <div class="class-item" style="cursor:pointer" onclick="pickCls(this)">
-        <span>{{ c.name }}</span>
-      </div>
-      {% endfor %}
-    </div>
+
+  <div class="card" style="width:240px;flex-shrink:0">
+    <div class="card-head">缺陷分类</div>
+    <div class="card-body class-list" id="clsList"></div>
+    <div class="card-head">本图标注（<span id="annoCount">0</span>）</div>
+    <div class="card-body" id="annoList" style="max-height:280px;overflow:auto"></div>
   </div>
 </div>
 {% endblock %}
 {% block script %}
 <script>
-var curCls = null;
-function pickCls(el){
-  document.querySelectorAll('#clsList .class-item').forEach(function(i){
-    i.style.borderColor=''; i.style.background='#fafafa';
+var IMG_ID = {{ img.id }};
+var CLASSES = {{ classes|tojson }};
+var INIT = {{ annos|tojson }};
+var SAVE_URL = "{{ url_for('label_save', image_id=img.id) }}";
+var NEXT_URL = "{{ url_for('label_anno', brand=brand, i=idx+1) if idx+1<total else '' }}";
+var PALETTE = ['#00923f','#faad14','#eb2f96','#13c2c2','#722ed1','#f5222d','#2f54eb','#fa8c16'];
+
+var SVGNS='http://www.w3.org/2000/svg';
+var img=document.getElementById('annoImg'), svg=document.getElementById('annoSvg');
+var NW=0, NH=0, curTool='rect', curClass=null, annos=[], drag=null, poly=[];
+
+function colorOf(cid){ var i=CLASSES.findIndex(function(c){return c.id===cid;}); return PALETTE[(i<0?0:i)%PALETTE.length]; }
+function el(tag,a){ var e=document.createElementNS(SVGNS,tag); for(var k in a) e.setAttribute(k,a[k]); return e; }
+function sw(){ return Math.max(2, NW/320); }
+
+CLASSES.forEach(function(c){
+  var d=document.createElement('div'); d.className='class-item'; d.style.cursor='pointer';
+  d.innerHTML='<span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:'+colorOf(c.id)+';margin-right:7px"></span>'+c.name+'</span>';
+  d.onclick=function(){ curClass=c;
+    document.querySelectorAll('#clsList .class-item').forEach(function(x){x.style.background='';x.style.borderColor='';});
+    d.style.background='var(--primary-bg)'; d.style.borderColor='var(--primary)'; };
+  document.getElementById('clsList').appendChild(d);
+});
+
+function initFromServer(){
+  INIT.forEach(function(a){
+    var pts=[]; try{ pts=JSON.parse(a.points||'[]'); }catch(e){}
+    annos.push({shape:a.shape,class_id:a.class_id,class_name:a.class_name,
+      bbox:[a.bbox_x,a.bbox_y,a.bbox_w,a.bbox_h],points:pts});
   });
-  el.style.borderColor='var(--primary)'; el.style.background='var(--primary-bg)';
-  curCls = el.textContent.trim();
 }
-var canvas = document.getElementById('canvas'), startX, startY, box = null;
-canvas.addEventListener('mousedown', function(e){
-  if(!curCls){ alert('请先在右侧选择缺陷分类'); return; }
-  var r = canvas.getBoundingClientRect();
-  startX = e.clientX - r.left; startY = e.clientY - r.top;
-  box = document.createElement('div');
-  box.style.cssText = 'position:absolute;border:2px solid #ffd666;background:rgba(255,214,102,.15);' +
-    'left:'+startX+'px;top:'+startY+'px;color:#ffd666;font-size:12px;padding:1px 4px;';
-  box.textContent = curCls;
-  canvas.appendChild(box);
+img.onload=function(){ NW=img.naturalWidth; NH=img.naturalHeight;
+  svg.setAttribute('viewBox','0 0 '+NW+' '+NH); initFromServer(); refresh(); };
+if(img.complete && img.naturalWidth){ img.onload(); }
+
+function toImg(e){ var r=svg.getBoundingClientRect();
+  var x=(e.clientX-r.left)/r.width*NW, y=(e.clientY-r.top)/r.height*NH;
+  return [Math.max(0,Math.min(NW,x)), Math.max(0,Math.min(NH,y))]; }
+
+function redraw(){
+  while(svg.firstChild) svg.removeChild(svg.firstChild);
+  annos.forEach(drawAnno);
+  if(curTool==='polygon' && poly.length){
+    svg.appendChild(el('polyline',{points:poly.map(function(p){return p.join(',');}).join(' '),
+      fill:'none',stroke:'#ffd666','stroke-width':sw(),'stroke-dasharray':sw()*2}));
+    poly.forEach(function(p){ svg.appendChild(el('circle',{cx:p[0],cy:p[1],r:sw()*1.6,fill:'#ffd666'})); });
+  }
+}
+function drawAnno(a){
+  var col=colorOf(a.class_id);
+  if(a.shape==='polygon' && a.points.length){
+    svg.appendChild(el('polygon',{points:a.points.map(function(p){return p.join(',');}).join(' '),
+      fill:col+'22',stroke:col,'stroke-width':sw()}));
+  } else { var b=a.bbox;
+    svg.appendChild(el('rect',{x:b[0],y:b[1],width:b[2],height:b[3],fill:col+'18',stroke:col,'stroke-width':sw()})); }
+  var lx=a.shape==='polygon'?a.points[0][0]:a.bbox[0], ly=a.shape==='polygon'?a.points[0][1]:a.bbox[1];
+  var t=el('text',{x:lx+2,y:ly-sw()*2,fill:col,'font-size':Math.max(13,NW/38),'font-weight':'bold'});
+  t.textContent=a.class_name||''; svg.appendChild(t);
+}
+
+svg.addEventListener('mousedown',function(e){
+  if(curTool!=='rect') return;
+  if(!curClass){ tip('请先在右侧选择缺陷分类',true); return; }
+  drag={s:toImg(e)};
 });
-canvas.addEventListener('mousemove', function(e){
-  if(!box) return;
-  var r = canvas.getBoundingClientRect();
-  var x = e.clientX - r.left, y = e.clientY - r.top;
-  box.style.left = Math.min(x, startX)+'px'; box.style.top = Math.min(y, startY)+'px';
-  box.style.width = Math.abs(x - startX)+'px'; box.style.height = Math.abs(y - startY)+'px';
+svg.addEventListener('mousemove',function(e){
+  if(curTool==='rect' && drag){ redraw();
+    var p=toImg(e), x=Math.min(drag.s[0],p[0]), y=Math.min(drag.s[1],p[1]),
+        w=Math.abs(p[0]-drag.s[0]), h=Math.abs(p[1]-drag.s[1]);
+    svg.appendChild(el('rect',{x:x,y:y,width:w,height:h,fill:colorOf(curClass.id)+'18',
+      stroke:colorOf(curClass.id),'stroke-width':sw()})); }
 });
-document.addEventListener('mouseup', function(){ box = null; });
-function clearBoxes(){
-  canvas.querySelectorAll('div').forEach(function(d){ d.remove(); });
+window.addEventListener('mouseup',function(e){
+  if(curTool==='rect' && drag){
+    var p=toImg(e), x=Math.min(drag.s[0],p[0]), y=Math.min(drag.s[1],p[1]),
+        w=Math.abs(p[0]-drag.s[0]), h=Math.abs(p[1]-drag.s[1]); drag=null;
+    if(w>3 && h>3){ annos.push({shape:'rect',class_id:curClass.id,class_name:curClass.name,bbox:[x,y,w,h],points:[]}); refresh(); }
+    else redraw();
+  }
+});
+svg.addEventListener('click',function(e){
+  if(curTool!=='polygon') return;
+  if(!curClass){ tip('请先在右侧选择缺陷分类',true); return; }
+  var p=toImg(e);
+  if(poly.length>=3 && Math.hypot(p[0]-poly[0][0],p[1]-poly[0][1]) < NW/38){ closePoly(); return; }
+  poly.push(p); redraw();
+});
+svg.addEventListener('dblclick',function(){ if(curTool==='polygon') closePoly(); });
+function closePoly(){
+  if(poly.length>=3){
+    var xs=poly.map(function(p){return p[0];}), ys=poly.map(function(p){return p[1];});
+    var x=Math.min.apply(null,xs), y=Math.min.apply(null,ys);
+    annos.push({shape:'polygon',class_id:curClass.id,class_name:curClass.name,
+      bbox:[x,y,Math.max.apply(null,xs)-x,Math.max.apply(null,ys)-y],points:poly.slice()});
+  }
+  poly=[]; refresh();
+}
+document.addEventListener('keydown',function(e){ if(e.key==='Escape'){ poly=[]; drag=null; redraw(); } });
+
+function refresh(){ redraw(); renderList(); }
+function renderList(){
+  document.getElementById('annoCount').textContent=annos.length;
+  var box=document.getElementById('annoList'); box.innerHTML='';
+  annos.forEach(function(a,i){
+    var d=document.createElement('div'); d.className='class-item';
+    d.innerHTML='<span><span style="color:'+colorOf(a.class_id)+'">■</span> '+(a.class_name||'?')+' <small style="color:var(--text-secondary)">'+(a.shape==='polygon'?'多边形':'矩形')+'</small></span>';
+    var b=document.createElement('button'); b.className='btn-link danger'; b.textContent='删除';
+    b.onclick=function(){ annos.splice(i,1); refresh(); };
+    d.appendChild(b); box.appendChild(d);
+  });
+}
+function undoLast(){ if(poly.length) poly.pop(), redraw(); else if(annos.length) annos.pop(), refresh(); }
+function clearAll(){ annos=[]; poly=[]; refresh(); }
+function setTool(t){ curTool=t; poly=[]; drag=null;
+  document.getElementById('toolRect').classList.toggle('seg-on',t==='rect');
+  document.getElementById('toolPoly').classList.toggle('seg-on',t==='polygon'); redraw(); }
+function tip(m,warn){ var e=document.getElementById('tip'); e.textContent=m; e.style.color=warn?'#b23a2c':'#006b2e'; }
+
+function saveAnno(goNext){
+  fetch(SAVE_URL,{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({width:NW,height:NH,annos:annos})})
+   .then(function(r){return r.json();})
+   .then(function(){ if(goNext && NEXT_URL){ location.href=NEXT_URL; } else tip('已保存 '+annos.length+' 个标注'); })
+   .catch(function(){ tip('保存失败',true); });
 }
 </script>
 {% endblock %}
