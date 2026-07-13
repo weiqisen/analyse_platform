@@ -632,7 +632,8 @@ def collect(tab):
         ctx["cur_path"] = path
         ctx["crumbs"] = path.split("/") if path else []
         ctx["root_label"] = tcfg["ng_dir"] if tcfg else (scfg["in_bucket"] if scfg else "根目录")
-        ctx["dirs"] = []; ctx["pics"] = []; ctx["total"] = 0; ctx["err"] = None
+        ctx["server_addr"] = tcfg["sys_addr"] if tcfg else (scfg["server_addr"] if scfg else "")
+        ctx["dirs"] = []; ctx["pics"] = []; ctx["total"] = 0; ctx["err"] = None; ctx["online"] = False
         try:
             if tcfg:
                 import stat as _st
@@ -664,6 +665,7 @@ def collect(tab):
                             "url": s3.generate_presigned_url("get_object",
                                 Params={"Bucket": cfg["in_bucket"], "Key": o["Key"]}, ExpiresIn=7200)})
             ctx["total"] = len(ctx["pics"])
+            ctx["online"] = True
         except Exception as e:
             ctx["err"] = str(e)[:140]
     return render_template("collect.html", **ctx)

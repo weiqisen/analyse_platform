@@ -29,6 +29,9 @@
     position: sticky; top: 56px; z-index: 90; }
   .layout-sider { position: sticky; top: 95px; align-self: flex-start;
     max-height: calc(100vh - 95px); overflow-y: auto; }
+  .dot-status { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+  .dot-status.on { background: #52c41a; box-shadow: 0 0 0 3px rgba(82,196,26,.18); }
+  .dot-status.off { background: #bbb; }
   .breadcrumb .bc-home { color: var(--text-secondary); }
   .breadcrumb .bc-ctx { color: var(--primary); font-weight: 600; background: var(--primary-bg); padding: 2px 11px; border-radius: 12px; }
   .breadcrumb .sep { color: var(--text-secondary); }

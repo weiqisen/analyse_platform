@@ -25,6 +25,14 @@
 {% if tab == 'config' %}
 <div class="page-title">采集配置</div>
 <div class="hint">每条产线选择它的 NG 图数据来源：对象存储（MinIO / S3）或产线工控机目录，就地填写参数并测试。</div>
+<style>
+  .mode-radio { position: relative; padding-left: 22px; cursor: pointer; user-select: none; }
+  .mode-radio > input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .mode-radio .rdot { position: absolute; left: 0; top: 50%; margin-top: -7px; width: 14px; height: 14px;
+    border-radius: 50%; border: 1.5px solid var(--border); background: #fff; transition: all .15s; }
+  .mode-radio > input:checked + .rdot { border-color: var(--primary); background: var(--primary); box-shadow: inset 0 0 0 2.5px #fff; }
+  .mode-radio > input:checked ~ * { color: var(--primary); font-weight: 600; }
+</style>
 <div class="card" style="max-width:860px"><div class="card-body">
 {% for lc in line_cfgs %}
 <form method="post" class="line-form" style="padding:18px 0;{{ 'border-top:1px solid var(--split)' if not loop.first }}">
@@ -33,8 +41,8 @@
     <b style="font-size:15px">{{ lc.line.name }}
       <span style="color:var(--text-secondary);font-weight:400;font-size:13px">· {{ lc.line.workshop }}</span></b>
     <span>
-      <label><input type="radio" name="mode" value="minio" {{ 'checked' if lc.mode=='minio' }} onchange="toggleMode(this)"> 对象存储</label>
-      <label style="margin-left:14px"><input type="radio" name="mode" value="terminal" {{ 'checked' if lc.mode=='terminal' }} onchange="toggleMode(this)"> 工控机</label>
+      <label class="mode-radio"><input type="radio" name="mode" value="minio" {{ 'checked' if lc.mode=='minio' }} onchange="toggleMode(this)"><span class="rdot"></span><span>对象存储</span></label>
+      <label class="mode-radio" style="margin-left:18px"><input type="radio" name="mode" value="terminal" {{ 'checked' if lc.mode=='terminal' }} onchange="toggleMode(this)"><span class="rdot"></span><span>工控机</span></label>
     </span>
   </div>
 
@@ -164,6 +172,11 @@ function testTerm(btn){
 {# ---------------- 图片查询（层级浏览） ---------------- #}
 {% elif tab == 'images' %}
 <div class="page-title">{{ cur_line }} 产线 {{ cur_item }} 图片浏览</div>
+<div style="display:flex;align-items:center;gap:9px;margin-bottom:12px;font-size:13px;color:var(--text-secondary)">
+  <span class="dot-status {{ 'on' if online else 'off' }}"></span>
+  数据源 <b style="color:var(--text)">{{ server_addr or '—' }}</b>
+  · {{ '对象存储' if src=='minio' else '工控机' }} · {{ '在线' if online else '离线' }}
+</div>
 <div class="card"><div class="card-body">
   {% if err %}
   <div class="hint">读取失败：{{ err }}</div>
