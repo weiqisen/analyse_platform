@@ -113,13 +113,15 @@ def init_db():
             status INT DEFAULT 1 COMMENT '状态: 1启用 0停用'
         ) DEFAULT CHARSET=utf8mb4 COMMENT='牌号/品规表'""",
         """CREATE TABLE IF NOT EXISTS storage_config(
-            id INT PRIMARY KEY COMMENT '主键(固定为1，单条配置)',
+            id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+            line_id INT COMMENT '所属产线(prod_lines.id)',
             server_addr VARCHAR(128) COMMENT '存储服务地址',
             in_bucket VARCHAR(64) COMMENT '输入桶名',
-            username VARCHAR(64) COMMENT '存储服务用户名',
-            password VARCHAR(128) COMMENT '存储服务密码',
-            out_bucket VARCHAR(64) COMMENT '输出桶名'
-        ) DEFAULT CHARSET=utf8mb4 COMMENT='存储服务配置表'""",
+            username VARCHAR(64) COMMENT '存储服务用户名(Access Key)',
+            password VARCHAR(128) COMMENT '存储服务密码(Secret Key)',
+            out_bucket VARCHAR(64) COMMENT '输出桶名',
+            UNIQUE KEY uq_line (line_id)
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='对象存储配置表(按产线)'""",
         """CREATE TABLE IF NOT EXISTS terminal_config(
             id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
             line_id INT COMMENT '关联产线ID(prod_lines.id)',
@@ -217,10 +219,10 @@ def init_db():
                            ("3302101", "玉溪（软）"), ("3302102", "玉溪（创客）"),
                            ("3302103", "玉溪（缤果爆）"), ("3303001", "云烟（紫）")]:
             db.execute("INSERT INTO brands(code,spec) VALUES(?,?)", (code, spec))
-        # 对象存储配置（模式一）：指向 10.10.96.65 上的 MinIO
-        db.execute("INSERT INTO storage_config(id,server_addr,in_bucket,username,password,out_bucket) "
-                   "VALUES(1,?,?,?,?,?)",
-                   ("10.10.96.65:9000", "ng-yzwg", "minioadmin", "minioadmin123", "ng-yzwg-out"))
+        # 对象存储配置：A01 产线指向 10.10.96.65 上的 MinIO
+        db.execute("INSERT INTO storage_config(line_id,server_addr,in_bucket,username,password,out_bucket) "
+                   "VALUES(?,?,?,?,?,?)",
+                   (line_ids["A01"], "10.10.96.65:9000", "ng-yzwg", "minioadmin", "minioadmin123", "ng-yzwg-out"))
         # 终端配置（模式二）：A02->10.10.96.66，A03->10.10.96.67 工控机 NG 目录
         db.execute("INSERT INTO terminal_config(line_id,sys_addr,ng_dir,date_dir,str_pos,shift_dir,cam_count,cam_dirs,brand_dirs) "
                    "VALUES(?,?,?,?,?,?,?,?,?)",
@@ -475,12 +477,10 @@ COLLECT_TABS = [("config", "采集配置"), ("monitor", "采集监控"),
                 ("history", "历史采集"), ("images", "图片查询")]
 
 
-def get_s3(cfg=None):
-    """按 storage_config 构建 MinIO/S3 客户端。"""
+def get_s3(cfg):
+    """按给定 storage_config 行构建 MinIO/S3 客户端。"""
     import boto3
     from botocore.client import Config
-    if cfg is None:
-        cfg = get_db().execute("SELECT * FROM storage_config WHERE id=1").fetchone()
     s3 = boto3.client("s3", endpoint_url="http://" + (cfg["server_addr"] or ""),
                       aws_access_key_id=cfg["username"] or "",
                       aws_secret_access_key=cfg["password"] or "",
@@ -488,6 +488,13 @@ def get_s3(cfg=None):
                       config=Config(signature_version="s3v4", connect_timeout=4,
                                     read_timeout=8, retries={"max_attempts": 1}))
     return s3, cfg
+
+
+def line_storage_cfg(line_name):
+    """返回该产线的对象存储配置(storage_config)行，无则 None。"""
+    return get_db().execute(
+        "SELECT s.* FROM storage_config s JOIN prod_lines p ON s.line_id=p.id WHERE p.name=?",
+        (line_name,)).fetchone()
 
 
 def line_terminal_cfg(line_row):
@@ -552,13 +559,9 @@ def collect(tab):
     if tab == "config":
         if request.method == "POST":
             f = request.form
-            if f.get("save") == "storage":
-                db.execute("UPDATE storage_config SET server_addr=?,in_bucket=?,username=?,password=?,out_bucket=? WHERE id=1",
-                           (f["server_addr"], f["in_bucket"], f["username"], f["password"], f["out_bucket"]))
-                db.commit()
-                flash("对象存储配置已保存", "success")
-            elif f.get("line_id"):
-                lid = f["line_id"]
+            lid = f.get("line_id")
+            if lid:
+                db.execute("DELETE FROM storage_config WHERE line_id=?", (lid,))
                 db.execute("DELETE FROM terminal_config WHERE line_id=?", (lid,))
                 if f.get("mode") == "terminal":
                     db.execute("INSERT INTO terminal_config(line_id,sys_addr,ng_dir,date_dir,str_pos,shift_dir,cam_count,cam_dirs,brand_dirs) "
@@ -566,17 +569,23 @@ def collect(tab):
                                (lid, f.get("sys_addr", ""), f.get("ng_dir", ""), f.get("date_dir", "YYYYMMDD"),
                                 f.get("str_pos", "1,8"), f.get("shift_dir", "早、中、晚"),
                                 f.get("cam_count", 4) or 4, f.get("cam_dirs", ""), f.get("brand_dirs", "")))
+                else:
+                    db.execute("INSERT INTO storage_config(line_id,server_addr,in_bucket,username,password,out_bucket) "
+                               "VALUES(?,?,?,?,?,?)",
+                               (lid, f.get("server_addr", ""), f.get("in_bucket", ""), f.get("username", ""),
+                                f.get("password", ""), f.get("out_bucket", "")))
                 db.commit()
                 flash("产线采集来源已保存", "success")
             return redirect(url_for("collect", tab="config"))
-        ctx["cfg"] = db.execute("SELECT * FROM storage_config WHERE id=1").fetchone()
         line_cfgs = []
         for l in lines:
+            scfg = db.execute("SELECT * FROM storage_config WHERE line_id=?", (l["id"],)).fetchone()
             tcfg = db.execute("SELECT * FROM terminal_config WHERE line_id=?", (l["id"],)).fetchone()
-            line_cfgs.append({"line": l, "mode": "terminal" if tcfg else "minio", "tcfg": tcfg})
+            host = ((scfg["server_addr"] or "").split(":")[0]) if scfg else ""
+            line_cfgs.append({"line": l, "mode": "terminal" if tcfg else "minio",
+                              "scfg": scfg, "tcfg": tcfg,
+                              "console_url": ("http://%s:9001" % host) if host else "#"})
         ctx["line_cfgs"] = line_cfgs
-        host = ((ctx["cfg"]["server_addr"] or "").split(":")[0]) if ctx["cfg"] else ""
-        ctx["console_url"] = ("http://%s:9001" % host) if host else "#"
     elif tab == "monitor":
         line_row = next((l for l in lines if l["name"] == cur_line), None)
         tcfg = line_terminal_cfg(line_row)
@@ -590,10 +599,12 @@ def collect(tab):
                     parts = im["rel"].split("/")
                     cnt[parts[3] if len(parts) >= 4 else (parts[-2] if len(parts) >= 2 else "未分类")] += 1
             else:
-                s3, cfg = get_s3()
-                for o in s3.list_objects_v2(Bucket=cfg["in_bucket"], MaxKeys=2000).get("Contents", []):
-                    parts = o["Key"].split("/")
-                    cnt[parts[3] if len(parts) >= 4 else "未分类"] += 1
+                scfg = line_storage_cfg(cur_line)
+                if scfg:
+                    s3, cfg = get_s3(scfg)
+                    for o in s3.list_objects_v2(Bucket=cfg["in_bucket"], MaxKeys=2000).get("Contents", []):
+                        parts = o["Key"].split("/")
+                        cnt[parts[3] if len(parts) >= 4 else "未分类"] += 1
             ctx["cams"] = [{"name": k, "count": v} for k, v in sorted(cnt.items())]
         except Exception as e:
             ctx["err"] = str(e)[:140]
@@ -615,19 +626,42 @@ def collect(tab):
     elif tab == "images":
         line_row = next((l for l in lines if l["name"] == cur_line), None)
         tcfg = line_terminal_cfg(line_row)
+        scfg = line_storage_cfg(cur_line)
         ctx["src"] = "terminal" if tcfg else "minio"
-        ctx["pics"] = []; ctx["total"] = 0; ctx["err"] = None
+        path = request.args.get("path", "").strip("/")
+        ctx["cur_path"] = path
+        ctx["crumbs"] = path.split("/") if path else []
+        ctx["dirs"] = []; ctx["pics"] = []; ctx["total"] = 0; ctx["err"] = None
         try:
             if tcfg:
-                ctx["pics"] = [{"key": im["rel"], "name": im["name"],
-                                "url": url_for("collect_wsimg", line=cur_line, path=im["path"])}
-                               for im in sftp_list_images(tcfg, max_n=500)]
-            else:
-                s3, cfg = get_s3()
-                for o in s3.list_objects_v2(Bucket=cfg["in_bucket"], MaxKeys=500).get("Contents", []):
-                    ctx["pics"].append({"key": o["Key"], "name": o["Key"].split("/")[-1],
-                        "url": s3.generate_presigned_url("get_object",
-                            Params={"Bucket": cfg["in_bucket"], "Key": o["Key"]}, ExpiresIn=7200)})
+                import stat as _st
+                root = (tcfg["ng_dir"] or "").rstrip("/")
+                full = root + ("/" + path if path else "")
+                t, sftp = _ws_sftp(tcfg)
+                try:
+                    for e in sorted(sftp.listdir_attr(full), key=lambda x: x.filename):
+                        if _st.S_ISDIR(e.st_mode):
+                            ctx["dirs"].append({"name": e.filename,
+                                                "path": (path + "/" + e.filename).strip("/")})
+                        elif e.filename.lower().endswith((".jpg", ".jpeg", ".png")):
+                            ctx["pics"].append({"name": e.filename,
+                                "url": url_for("collect_wsimg", line=cur_line, path=full + "/" + e.filename)})
+                finally:
+                    t.close()
+            elif scfg:
+                s3, cfg = get_s3(scfg)
+                prefix = (path + "/") if path else ""
+                r = s3.list_objects_v2(Bucket=cfg["in_bucket"], Prefix=prefix, Delimiter="/", MaxKeys=1000)
+                for cp in r.get("CommonPrefixes", []):
+                    name = cp["Prefix"][len(prefix):].rstrip("/")
+                    ctx["dirs"].append({"name": name, "path": (prefix + name).strip("/")})
+                for o in r.get("Contents", []):
+                    if o["Key"] == prefix:
+                        continue
+                    if o["Key"].lower().endswith((".jpg", ".jpeg", ".png")):
+                        ctx["pics"].append({"name": o["Key"].split("/")[-1],
+                            "url": s3.generate_presigned_url("get_object",
+                                Params={"Bucket": cfg["in_bucket"], "Key": o["Key"]}, ExpiresIn=7200)})
             ctx["total"] = len(ctx["pics"])
         except Exception as e:
             ctx["err"] = str(e)[:140]
@@ -665,21 +699,26 @@ def collect_wsimg():
 @app.route("/collect/test/storage", methods=["POST"])
 @login_required
 def collect_test_storage():
+    f = request.form
+    cfg = {"server_addr": f.get("server_addr", ""), "in_bucket": f.get("in_bucket", ""),
+           "username": f.get("username", ""), "password": f.get("password", "")}
+    if not cfg["server_addr"]:
+        return jsonify({"ok": False, "msg": "请先填写服务器地址"})
     try:
-        s3, cfg = get_s3()
+        s3, _ = get_s3(cfg)
         s3.head_bucket(Bucket=cfg["in_bucket"])
-        return jsonify({"ok": True, "msg": "连接成功，输入桶「%s」可访问" % cfg["in_bucket"]})
+        return jsonify({"ok": True, "msg": "连接成功，桶「%s」可访问" % cfg["in_bucket"]})
     except Exception as e:
         return jsonify({"ok": False, "msg": str(e)[:160]})
 
 
-@app.route("/collect/test/terminal/<int:line_id>", methods=["POST"])
+@app.route("/collect/test/terminal", methods=["POST"])
 @login_required
-def collect_test_terminal(line_id):
-    db = get_db()
-    tcfg = db.execute("SELECT * FROM terminal_config WHERE line_id=?", (line_id,)).fetchone()
-    if not tcfg:
-        return jsonify({"ok": False, "msg": "该产线尚未保存工控机配置，请先保存"})
+def collect_test_terminal():
+    f = request.form
+    tcfg = {"sys_addr": f.get("sys_addr", ""), "ng_dir": f.get("ng_dir", "")}
+    if not tcfg["sys_addr"]:
+        return jsonify({"ok": False, "msg": "请先填写系统地址"})
     try:
         t, sftp = _ws_sftp(tcfg)
         try:
@@ -698,53 +737,54 @@ def sync_label_images():
     db = get_db()
     existing = {r["src_key"] for r in db.execute("SELECT src_key FROM label_images").fetchall()}
     rows = []
-    # MinIO：分页列全部对象，顶层目录=牌号
-    try:
-        s3, cfg = get_s3()
-        tok = None
-        while True:
-            kw = {"Bucket": cfg["in_bucket"], "MaxKeys": 1000}
-            if tok:
-                kw["ContinuationToken"] = tok
-            r = s3.list_objects_v2(**kw)
-            for o in r.get("Contents", []):
-                k = o["Key"]
-                if "/" in k and k.lower().endswith((".jpg", ".jpeg", ".png")):
-                    rows.append(("minio", k, k.split("/")[0], "A01"))
-            if r.get("IsTruncated"):
-                tok = r.get("NextContinuationToken")
-            else:
-                break
-    except Exception:
-        pass
-    # 工控机：每台 SFTP 全量 walk，相对路径顶层=牌号
     for l in db.execute("SELECT * FROM prod_lines").fetchall():
+        scfg = db.execute("SELECT * FROM storage_config WHERE line_id=?", (l["id"],)).fetchone()
         tcfg = db.execute("SELECT * FROM terminal_config WHERE line_id=?", (l["id"],)).fetchone()
-        if not tcfg:
-            continue
-        root = (tcfg["ng_dir"] or "").rstrip("/")
-        try:
-            t, sftp = _ws_sftp(tcfg)
-
-            def walk(p):
-                try:
-                    entries = sftp.listdir_attr(p)
-                except IOError:
-                    return
-                for e in entries:
-                    full = p + "/" + e.filename
-                    if stat.S_ISDIR(e.st_mode):
-                        walk(full)
-                    elif e.filename.lower().endswith((".jpg", ".jpeg", ".png")):
-                        rel = full[len(root):].lstrip("/")
-                        brand = rel.split("/")[0] if "/" in rel else ""
-                        rows.append(("terminal", full, brand, l["name"]))
+        if scfg and scfg["server_addr"]:
+            # 对象存储产线：分页列全部对象，顶层目录=牌号
             try:
-                walk(root)
-            finally:
-                t.close()
-        except Exception:
-            pass
+                s3, _ = get_s3(scfg)
+                tok = None
+                while True:
+                    kw = {"Bucket": scfg["in_bucket"], "MaxKeys": 1000}
+                    if tok:
+                        kw["ContinuationToken"] = tok
+                    r = s3.list_objects_v2(**kw)
+                    for o in r.get("Contents", []):
+                        k = o["Key"]
+                        if "/" in k and k.lower().endswith((".jpg", ".jpeg", ".png")):
+                            rows.append(("minio", k, k.split("/")[0], l["name"]))
+                    if r.get("IsTruncated"):
+                        tok = r.get("NextContinuationToken")
+                    else:
+                        break
+            except Exception:
+                pass
+        elif tcfg:
+            # 工控机产线：SFTP 全量 walk，相对路径顶层=牌号
+            root = (tcfg["ng_dir"] or "").rstrip("/")
+            try:
+                t, sftp = _ws_sftp(tcfg)
+
+                def walk(p):
+                    try:
+                        entries = sftp.listdir_attr(p)
+                    except IOError:
+                        return
+                    for e in entries:
+                        full = p + "/" + e.filename
+                        if stat.S_ISDIR(e.st_mode):
+                            walk(full)
+                        elif e.filename.lower().endswith((".jpg", ".jpeg", ".png")):
+                            rel = full[len(root):].lstrip("/")
+                            brand = rel.split("/")[0] if "/" in rel else ""
+                            rows.append(("terminal", full, brand, l["name"]))
+                try:
+                    walk(root)
+                finally:
+                    t.close()
+            except Exception:
+                pass
     added = False
     for source, key, brand, line in rows:
         if brand and key not in existing:
@@ -761,10 +801,12 @@ def sync_label_images():
 def label_image_url(img):
     """生成标注图片的可访问 URL（MinIO presigned 或工控机代理）。"""
     if img["source"] == "minio":
-        s3, cfg = get_s3()
-        return s3.generate_presigned_url("get_object",
-                                         Params={"Bucket": cfg["in_bucket"], "Key": img["src_key"]},
-                                         ExpiresIn=7200)
+        scfg = line_storage_cfg(img["line_name"])
+        if scfg:
+            s3, cfg = get_s3(scfg)
+            return s3.generate_presigned_url("get_object",
+                Params={"Bucket": cfg["in_bucket"], "Key": img["src_key"]}, ExpiresIn=7200)
+        return "#"
     return url_for("collect_wsimg", line=img["line_name"], path=img["src_key"])
 
 

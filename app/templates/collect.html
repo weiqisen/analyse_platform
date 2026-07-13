@@ -24,105 +24,90 @@
 {# ---------------- 采集配置（按产线） ---------------- #}
 {% if tab == 'config' %}
 <div class="page-title">采集配置</div>
-
-<div class="card" style="max-width:820px;margin-bottom:16px">
-  <div class="card-head">对象存储服务（MinIO / S3 兼容）
-    <span id="s3stat" style="float:right;font-size:12px;font-weight:400"></span>
+<div class="hint">每条产线选择它的 NG 图数据来源：对象存储（MinIO / S3）或产线工控机目录，就地填写参数并测试。</div>
+<div class="card" style="max-width:860px"><div class="card-body">
+{% for lc in line_cfgs %}
+<form method="post" style="padding:18px 0;{{ 'border-top:1px solid var(--split)' if not loop.first }}">
+  <input type="hidden" name="line_id" value="{{ lc.line.id }}">
+  <div class="form-inline" style="justify-content:space-between;align-items:center">
+    <b style="font-size:15px">{{ lc.line.name }}
+      <span style="color:var(--text-secondary);font-weight:400;font-size:13px">· {{ lc.line.workshop }}</span></b>
+    <span>
+      <label><input type="radio" name="mode" value="minio" {{ 'checked' if lc.mode=='minio' }} onchange="toggleMode(this)"> 对象存储</label>
+      <label style="margin-left:14px"><input type="radio" name="mode" value="terminal" {{ 'checked' if lc.mode=='terminal' }} onchange="toggleMode(this)"> 工控机</label>
+    </span>
   </div>
-  <div class="card-body">
-  <form method="post">
-    <input type="hidden" name="save" value="storage">
+
+  <div class="fields-minio" style="margin-top:12px;{{ 'display:none' if lc.mode=='terminal' }}">
     <div class="form-grid">
-      <div class="form-item"><label><span class="req">*</span>服务器地址</label>
-        <input class="input" name="server_addr" value="{{ cfg.server_addr or '' }}" placeholder="10.10.96.65:9000" required></div>
-      <div class="form-item"><label><span class="req">*</span>输入桶名</label>
-        <input class="input" name="in_bucket" value="{{ cfg.in_bucket or '' }}" placeholder="ng-yzwg" required></div>
+      <div class="form-item"><label>服务器地址</label>
+        <input class="input" name="server_addr" value="{{ lc.scfg.server_addr if lc.scfg else '' }}" placeholder="10.10.96.65:9000"></div>
+      <div class="form-item"><label>输入桶名</label>
+        <input class="input" name="in_bucket" value="{{ lc.scfg.in_bucket if lc.scfg else '' }}" placeholder="ng-yzwg"></div>
       <div class="form-item"><label>Access Key</label>
-        <input class="input" name="username" value="{{ cfg.username or '' }}"></div>
+        <input class="input" name="username" value="{{ lc.scfg.username if lc.scfg else '' }}"></div>
       <div class="form-item"><label>Secret Key</label>
-        <input class="input" type="password" name="password" value="{{ cfg.password or '' }}"></div>
+        <input class="input" type="password" name="password" value="{{ lc.scfg.password if lc.scfg else '' }}"></div>
       <div class="form-item"><label>输出桶名</label>
-        <input class="input" name="out_bucket" value="{{ cfg.out_bucket or '' }}" placeholder="ng-yzwg-out"></div>
+        <input class="input" name="out_bucket" value="{{ lc.scfg.out_bucket if lc.scfg else '' }}" placeholder="ng-yzwg-out"></div>
     </div>
-    <div style="margin-top:12px">
-      <button class="btn btn-primary" type="submit">保存</button>
-      <button class="btn" type="button" onclick="testStorage()">测试连接</button>
-      <a class="btn" href="{{ console_url }}" target="_blank" rel="noopener">在线访问控制台 ↗</a>
+    <div style="margin-top:10px">
+      <button class="btn btn-sm" type="button" onclick="testStorage(this)">测试连接</button>
+      <a class="btn btn-sm" href="{{ lc.console_url }}" target="_blank" rel="noopener">在线访问控制台 ↗</a>
+      <span class="test-msg" style="font-size:12px;margin-left:6px"></span>
     </div>
-  </form>
   </div>
-</div>
 
-<div class="card" style="max-width:820px">
-  <div class="card-head">各产线数据来源</div>
-  <div class="card-body">
-  {% for lc in line_cfgs %}
-  <form method="post" style="padding:16px 0;{{ 'border-top:1px solid var(--split)' if not loop.first }}">
-    <input type="hidden" name="line_id" value="{{ lc.line.id }}">
-    <div class="form-inline" style="justify-content:space-between;align-items:center">
-      <b style="font-size:15px">{{ lc.line.name }}
-        <span style="color:var(--text-secondary);font-weight:400;font-size:13px">· {{ lc.line.workshop }}</span></b>
-      <span>
-        <label><input type="radio" name="mode" value="minio" {{ 'checked' if lc.mode=='minio' }} onchange="toggleMode(this)"> 对象存储</label>
-        <label style="margin-left:14px"><input type="radio" name="mode" value="terminal" {{ 'checked' if lc.mode=='terminal' }} onchange="toggleMode(this)"> 工控机</label>
-      </span>
+  <div class="fields-term" style="margin-top:12px;{{ '' if lc.mode=='terminal' else 'display:none' }}">
+    <div class="form-grid">
+      <div class="form-item"><label>系统地址 (host:port)</label>
+        <input class="input" name="sys_addr" value="{{ lc.tcfg.sys_addr if lc.tcfg else '' }}" placeholder="10.10.96.66:29"></div>
+      <div class="form-item"><label>NG 图目录</label>
+        <input class="input" name="ng_dir" value="{{ lc.tcfg.ng_dir if lc.tcfg else '/data/ng/NG_IMG' }}"></div>
+      <div class="form-item"><label>相机数</label>
+        <input class="input" type="number" name="cam_count" min="1" max="12" value="{{ lc.tcfg.cam_count if lc.tcfg else 4 }}"></div>
+      <div class="form-item"><label>相机目录</label>
+        <input class="input" name="cam_dirs" value="{{ lc.tcfg.cam_dirs if lc.tcfg else '1#,2#,3#,4#' }}"></div>
+      <div class="form-item"><label>牌号目录</label>
+        <input class="input" name="brand_dirs" value="{{ lc.tcfg.brand_dirs if lc.tcfg else '' }}"></div>
     </div>
-    <div class="term-fields" style="margin-top:12px;{{ '' if lc.mode=='terminal' else 'display:none' }}">
-      <div class="form-grid">
-        <div class="form-item"><label>系统地址 (host:port)</label>
-          <input class="input" name="sys_addr" value="{{ lc.tcfg.sys_addr if lc.tcfg else '' }}" placeholder="10.10.96.66:29"></div>
-        <div class="form-item"><label>NG 图目录</label>
-          <input class="input" name="ng_dir" value="{{ lc.tcfg.ng_dir if lc.tcfg else '/data/ng/NG_IMG' }}"></div>
-        <div class="form-item"><label>相机数</label>
-          <input class="input" type="number" name="cam_count" min="1" max="12" value="{{ lc.tcfg.cam_count if lc.tcfg else 4 }}"></div>
-        <div class="form-item"><label>相机目录</label>
-          <input class="input" name="cam_dirs" value="{{ lc.tcfg.cam_dirs if lc.tcfg else '1#,2#,3#,4#' }}"></div>
-        <div class="form-item"><label>牌号目录</label>
-          <input class="input" name="brand_dirs" value="{{ lc.tcfg.brand_dirs if lc.tcfg else '' }}"></div>
-      </div>
-      <input type="hidden" name="date_dir" value="{{ lc.tcfg.date_dir if lc.tcfg else 'YYYYMMDD' }}">
-      <input type="hidden" name="str_pos" value="{{ lc.tcfg.str_pos if lc.tcfg else '1,8' }}">
-      <input type="hidden" name="shift_dir" value="{{ lc.tcfg.shift_dir if lc.tcfg else '早、中、晚' }}">
+    <input type="hidden" name="date_dir" value="{{ lc.tcfg.date_dir if lc.tcfg else 'YYYYMMDD' }}">
+    <input type="hidden" name="str_pos" value="{{ lc.tcfg.str_pos if lc.tcfg else '1,8' }}">
+    <input type="hidden" name="shift_dir" value="{{ lc.tcfg.shift_dir if lc.tcfg else '早、中、晚' }}">
+    <div style="margin-top:10px">
+      <button class="btn btn-sm" type="button" onclick="testTerm(this)">测试连接</button>
+      <span class="test-msg" style="font-size:12px;margin-left:6px"></span>
     </div>
-    <div class="minio-note" style="margin-top:8px;color:var(--text-secondary);font-size:13px;{{ 'display:none' if lc.mode=='terminal' }}">
-      读取上方对象存储 <b>{{ cfg.in_bucket }}</b> 桶（按牌号目录）。
-    </div>
-    <div style="margin-top:12px">
-      <button class="btn btn-primary btn-sm" type="submit">保存</button>
-      <button class="btn btn-sm term-test-btn" type="button" onclick="testTerm({{ lc.line.id }})"
-              style="{{ '' if lc.mode=='terminal' else 'display:none' }}">测试连接</button>
-      <span id="tt{{ lc.line.id }}" style="font-size:12px;margin-left:6px"></span>
-    </div>
-  </form>
-  {% endfor %}
   </div>
-</div>
+
+  <div style="margin-top:12px"><button class="btn btn-primary btn-sm" type="submit">保存该产线</button></div>
+</form>
+{% endfor %}
+</div></div>
 
 <script>
 function toggleMode(r){
-  var form = r.closest('form');
-  var term = form.querySelector('.term-fields'), note = form.querySelector('.minio-note'),
-      tbtn = form.querySelector('.term-test-btn');
-  var isTerm = r.value === 'terminal';
-  term.style.display = isTerm ? '' : 'none';
-  note.style.display = isTerm ? 'none' : '';
-  if(tbtn) tbtn.style.display = isTerm ? '' : 'none';
+  var form = r.closest('form'), isTerm = r.value === 'terminal';
+  form.querySelector('.fields-minio').style.display = isTerm ? 'none' : '';
+  form.querySelector('.fields-term').style.display = isTerm ? '' : 'none';
 }
-function testStorage(){
-  var s = document.getElementById('s3stat');
-  s.textContent = '测试中…'; s.style.color = 'var(--text-secondary)';
-  fetch('{{ url_for("collect_test_storage") }}', {method:'POST'})
+function _fd(form, names){ var o = {}; names.forEach(function(n){ var el = form.querySelector('[name='+n+']'); o[n] = el ? el.value : ''; }); return o; }
+function _post(url, data, msg){
+  msg.textContent = '测试中…'; msg.style.color = 'var(--text-secondary)';
+  fetch(url, {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:new URLSearchParams(data)})
     .then(function(r){ return r.json(); })
-    .then(function(d){ s.textContent = (d.ok?'● 在线 — ':'● 失败 — ') + d.msg; s.style.color = d.ok?'#00923f':'#ff4d4f'; })
-    .catch(function(){ s.textContent = '● 请求失败'; s.style.color = '#ff4d4f'; });
+    .then(function(d){ msg.textContent = '● ' + d.msg; msg.style.color = d.ok ? '#00923f' : '#ff4d4f'; })
+    .catch(function(){ msg.textContent = '● 请求失败'; msg.style.color = '#ff4d4f'; });
 }
-function testTerm(id){
-  var s = document.getElementById('tt'+id);
-  s.textContent = '测试中…'; s.style.color = 'var(--text-secondary)';
-  fetch('/collect/test/terminal/'+id, {method:'POST'})
-    .then(function(r){ return r.json(); })
-    .then(function(d){ s.textContent = '● ' + d.msg; s.style.color = d.ok?'#00923f':'#ff4d4f'; })
-    .catch(function(){ s.textContent = '● 请求失败'; s.style.color = '#ff4d4f'; });
+function testStorage(btn){
+  var form = btn.closest('form');
+  _post('{{ url_for("collect_test_storage") }}', _fd(form, ['server_addr','in_bucket','username','password']),
+        btn.parentNode.querySelector('.test-msg'));
+}
+function testTerm(btn){
+  var form = btn.closest('form');
+  _post('{{ url_for("collect_test_terminal") }}', _fd(form, ['sys_addr','ng_dir']),
+        btn.parentNode.querySelector('.test-msg'));
 }
 </script>
 
@@ -130,7 +115,7 @@ function testTerm(id){
 {% elif tab == 'monitor' %}
 <div class="toolbar">
   <div class="page-title" style="margin:0">{{ cur_line }} 机台 {{ cur_item }} 共 {{ cams|length }} 个相机</div>
-  <a class="btn" href="{{ url_for('collect', tab='history', line=cur_line, item=cur_item) }}">查看历史图片 »</a>
+  <a class="btn" href="{{ url_for('collect', tab='images', line=cur_line, item=cur_item) }}">浏览图片 »</a>
 </div>
 {% if err %}
 <div class="hint">读取失败：{{ err }}</div>
@@ -154,7 +139,7 @@ function testTerm(id){
   {% for r in records %}
   <tr>
     <td>{{ r.date }}</td><td>{{ r.shift }}</td><td>{{ r.brand }}</td><td>{{ r.img_count }}</td>
-    <td><a href="{{ url_for('collect', tab='images', line=r.line, item=cur_item) }}">查看图片</a></td>
+    <td><a href="{{ url_for('collect', tab='images', line=r.line, item=cur_item) }}">浏览图片</a></td>
   </tr>
   {% else %}
   <tr><td colspan="5" class="empty">暂无采集记录</td></tr>
@@ -163,26 +148,42 @@ function testTerm(id){
 </table>
 </div></div>
 
-{# ---------------- 图片查询 ---------------- #}
+{# ---------------- 图片查询（层级浏览） ---------------- #}
 {% elif tab == 'images' %}
-<div class="page-title">{{ cur_line }} 产线 {{ cur_item }} 缺陷图片</div>
+<div class="page-title">{{ cur_line }} 产线 {{ cur_item }} 图片浏览</div>
 <div class="card"><div class="card-body">
   {% if err %}
   <div class="hint">读取失败：{{ err }}</div>
   {% else %}
-  <div class="form-inline" style="margin-bottom:14px">
-    <span style="color:var(--text-secondary)">{{ '工控机 SFTP' if src=='terminal' else 'MinIO 桶' }}实时读取，共 <b>{{ total }}</b> 张</span>
+  <div class="form-inline" style="margin-bottom:14px;gap:6px;flex-wrap:wrap;align-items:center">
+    <a href="{{ url_for('collect', tab='images', line=cur_line, item=cur_item) }}">根目录</a>
+    {% for c in crumbs %}
+    <span style="color:var(--text-secondary)">/</span>
+    <a href="{{ url_for('collect', tab='images', line=cur_line, item=cur_item, path=crumbs[:loop.index]|join('/')) }}">{{ c }}</a>
+    {% endfor %}
+    <span style="margin-left:auto;color:var(--text-secondary)">{{ dirs|length }} 个目录 · {{ total }} 张图片</span>
   </div>
+  {% if dirs %}
+  <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:14px">
+    {% for d in dirs %}
+    <a href="{{ url_for('collect', tab='images', line=cur_line, item=cur_item, path=d.path) }}"
+       style="display:inline-flex;align-items:center;gap:8px;padding:10px 16px;border:1px solid var(--split);border-radius:8px;color:var(--text);background:#fafafa">
+      <span style="font-size:17px">📁</span><span>{{ d.name }}</span>
+    </a>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% if pics %}
   <div class="pic-grid">
     {% for p in pics %}
-    <a class="pic-cell" style="padding:0;overflow:hidden;display:block;color:inherit"
-       href="{{ p.url }}" target="_blank" title="{{ p.key }}">
+    <a class="pic-cell" style="padding:0;overflow:hidden;display:block;color:inherit" href="{{ p.url }}" target="_blank">
       <img src="{{ p.url }}" loading="lazy" style="width:100%;height:112px;object-fit:cover;display:block">
       <div style="font-size:11px;padding:3px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text-secondary)">{{ p.name }}</div>
     </a>
     {% endfor %}
   </div>
-  {% if not pics %}<div class="empty">暂无图片</div>{% endif %}
+  {% endif %}
+  {% if not dirs and not pics %}<div class="empty">此层级暂无内容</div>{% endif %}
   {% endif %}
 </div></div>
 {% endif %}
