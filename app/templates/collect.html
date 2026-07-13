@@ -24,8 +24,19 @@
 {# ---------------- 采集配置（按产线） ---------------- #}
 {% if tab == 'config' %}
 <div class="page-title">采集配置</div>
-<div class="hint">每条产线选择它的 NG 图数据来源：对象存储（MinIO / S3）或产线工控机目录，就地填写参数并测试。</div>
 <style>
+  .lc-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .lc-card { background: #fff; border: 1px solid var(--split); border-radius: 10px; padding: 18px 16px 14px; box-shadow: var(--shadow); }
+  .lc-card .lc-name { font-size: 15px; font-weight: 680; display: flex; align-items: center; gap: 8px; }
+  .lc-card .lc-ws { font-size: 12px; color: var(--text-secondary); font-weight: 400; }
+  .lc-card .lc-src { margin-top: 12px; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-secondary); }
+  .lc-card .lc-addr { margin-top: 6px; font-family: var(--font-mono, monospace); font-size: 12.5px; color: var(--text-secondary); word-break: break-all; }
+  .lc-card .lc-foot { margin-top: 14px; display: flex; align-items: center; gap: 10px; }
+  .lc-badge { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 10px; font-size: 12px; font-weight: 500; }
+  .lc-badge.s3 { background: #e6f7ee; color: #006b2e; } .lc-badge.ws { background: #f8efdd; color: #a86e14; }
+  .lc-badge .bdot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+  .lc-badge.s3 .bdot { background: #52c41a; } .lc-badge.ws .bdot { background: #d48806; }
+  @media (max-width: 860px) { .lc-grid { grid-template-columns: 1fr; } }
   .mode-radio { position: relative; padding-left: 22px; cursor: pointer; user-select: none; }
   .mode-radio > input { position: absolute; opacity: 0; width: 0; height: 0; }
   .mode-radio .rdot { position: absolute; left: 0; top: 50%; margin-top: -7px; width: 14px; height: 14px;
@@ -33,104 +44,109 @@
   .mode-radio > input:checked + .rdot { border-color: var(--primary); background: var(--primary); box-shadow: inset 0 0 0 2.5px #fff; }
   .mode-radio > input:checked ~ * { color: var(--primary); font-weight: 600; }
 </style>
-<div class="card" style="max-width:860px"><div class="card-body">
+
+<div class="lc-grid">
 {% for lc in line_cfgs %}
-<form method="post" class="line-form" style="padding:18px 0;{{ 'border-top:1px solid var(--split)' if not loop.first }}">
-  <input type="hidden" name="line_id" value="{{ lc.line.id }}">
-  <div class="form-inline" style="justify-content:space-between;align-items:center">
-    <b style="font-size:15px">{{ lc.line.name }}
-      <span style="color:var(--text-secondary);font-weight:400;font-size:13px">· {{ lc.line.workshop }}</span></b>
-    <span>
-      <label class="mode-radio"><input type="radio" name="mode" value="minio" {{ 'checked' if lc.mode=='minio' }} onchange="toggleMode(this)"><span class="rdot"></span><span>对象存储</span></label>
-      <label class="mode-radio" style="margin-left:18px"><input type="radio" name="mode" value="terminal" {{ 'checked' if lc.mode=='terminal' }} onchange="toggleMode(this)"><span class="rdot"></span><span>工控机</span></label>
-    </span>
+<div class="lc-card">
+  <div class="lc-name">{{ lc.line.name }}<span class="lc-ws">· {{ lc.line.workshop }}</span></div>
+  <div class="lc-src">
+    <span class="dot-status on"></span>
+    <span class="lc-badge {{ 's3' if lc.mode=='minio' else 'ws' }}">
+      <span class="bdot"></span>{% if lc.mode=='minio' %}对象存储{% else %}工控机 SFTP{% endif %}</span>
   </div>
-
-  <div class="fields-minio" style="margin-top:12px;{{ 'display:none' if lc.mode=='terminal' }}">
-    <div class="form-grid">
-      <div class="form-item"><label>服务器地址</label>
-        <input class="input" name="server_addr" value="{{ lc.scfg.server_addr if lc.scfg else '' }}" placeholder="10.10.96.65:9000"></div>
-      <div class="form-item"><label>输入桶名</label>
-        <input class="input" name="in_bucket" value="{{ lc.scfg.in_bucket if lc.scfg else '' }}" placeholder="ng-yzwg"></div>
-      <div class="form-item"><label>Access Key</label>
-        <input class="input" name="username" value="{{ lc.scfg.username if lc.scfg else '' }}"></div>
-      <div class="form-item"><label>Secret Key</label>
-        <input class="input" type="password" name="password" value="{{ lc.scfg.password if lc.scfg else '' }}"></div>
-      <div class="form-item"><label>输出桶名</label>
-        <input class="input" name="out_bucket" value="{{ lc.scfg.out_bucket if lc.scfg else '' }}" placeholder="ng-yzwg-out"></div>
-    </div>
-    <div style="margin-top:10px">
-      <button class="btn btn-sm" type="button" onclick="testStorage(this)">测试连接</button>
-      <a class="btn btn-sm" href="{{ lc.console_url }}" target="_blank" rel="noopener">在线访问控制台 ↗</a>
-      <span class="test-msg" style="font-size:12px;margin-left:6px"></span>
-    </div>
+  <div class="lc-addr">
+    {% if lc.mode == 'minio' %}
+      {{ lc.scfg.server_addr }} / {{ lc.scfg.in_bucket }}
+    {% else %}
+      {{ lc.tcfg.sys_addr }}{{ lc.tcfg.ng_dir if lc.tcfg else '' }}
+    {% endif %}
   </div>
-
-  <div class="fields-term" style="margin-top:12px;{{ '' if lc.mode=='terminal' else 'display:none' }}">
-    <div class="form-grid">
-      <div class="form-item"><label>系统地址 (host:port)</label>
-        <input class="input" name="sys_addr" value="{{ lc.tcfg.sys_addr if lc.tcfg else '' }}" placeholder="10.10.96.66:29"></div>
-      <div class="form-item"><label>NG 图目录</label>
-        <input class="input" name="ng_dir" value="{{ lc.tcfg.ng_dir if lc.tcfg else '/data/ng/NG_IMG' }}"></div>
-      <div class="form-item"><label>相机数</label>
-        <input class="input" type="number" name="cam_count" min="1" max="12" value="{{ lc.tcfg.cam_count if lc.tcfg else 4 }}"></div>
-      <div class="form-item"><label>相机目录</label>
-        <input class="input" name="cam_dirs" value="{{ lc.tcfg.cam_dirs if lc.tcfg else '1#,2#,3#,4#' }}"></div>
-      <div class="form-item"><label>牌号目录</label>
-        <input class="input" name="brand_dirs" value="{{ lc.tcfg.brand_dirs if lc.tcfg else '' }}"></div>
-    </div>
-    <input type="hidden" name="date_dir" value="{{ lc.tcfg.date_dir if lc.tcfg else 'YYYYMMDD' }}">
-    <input type="hidden" name="str_pos" value="{{ lc.tcfg.str_pos if lc.tcfg else '1,8' }}">
-    <input type="hidden" name="shift_dir" value="{{ lc.tcfg.shift_dir if lc.tcfg else '早、中、晚' }}">
-    <div style="margin-top:10px">
-      <button class="btn btn-sm" type="button" onclick="testTerm(this)">测试连接</button>
-      <span class="test-msg" style="font-size:12px;margin-left:6px"></span>
-    </div>
+  <div class="lc-foot">
+    <button class="btn btn-sm" onclick="openCfgModal({{ loop.index0 }})">配置</button>
+    {% if lc.mode == 'minio' and lc.scfg %}
+      <a class="btn btn-sm" href="http://{{ lc.scfg.server_addr.split(':')[0] }}:9001" target="_blank" rel="noopener">控制台</a>
+    {% endif %}
   </div>
-
-  <div style="margin-top:12px">
-    <button class="btn btn-sm btn-edit" type="button" onclick="editLine(this)">编辑</button>
-    <button class="btn btn-primary btn-sm btn-save" type="submit" style="display:none">保存</button>
-    <button class="btn btn-sm btn-cancel" type="button" onclick="location.reload()" style="display:none">取消</button>
-  </div>
-</form>
+</div>
 {% endfor %}
-</div></div>
+</div>
+
+{# 配置弹窗（三条产线共用，JS 切换） #}
+<div class="modal-mask" id="cfgModal">
+  <div class="modal" style="width:620px;max-width:94vw">
+    <div class="modal-head"><span id="cfgTitle">产线采集配置</span><span class="close" onclick="closeModal('cfgModal')">×</span></div>
+    <form method="post" id="cfgForm" action="{{ url_for('collect', tab='config') }}">
+      <input type="hidden" name="line_id" id="cfgLineId">
+      <div class="modal-body">
+        <div style="margin-bottom:14px">
+          <label class="mode-radio"><input type="radio" name="mode" value="minio" id="cfgModeS3" onchange="cfgToggle()"><span class="rdot"></span><span>对象存储</span></label>
+          <label class="mode-radio" style="margin-left:18px"><input type="radio" name="mode" value="terminal" id="cfgModeWs" onchange="cfgToggle()"><span class="rdot"></span><span>工控机 SFTP</span></label>
+        </div>
+        <div id="cfgFieldsS3">
+          <div class="form-grid">
+            <div class="form-item"><label>服务器地址</label><input class="input" name="server_addr" id="cfSrv" placeholder="10.10.96.65:9000"></div>
+            <div class="form-item"><label>输入桶</label><input class="input" name="in_bucket" id="cfIn" placeholder="defect-raw"></div>
+            <div class="form-item"><label>Access Key</label><input class="input" name="username" id="cfAk"></div>
+            <div class="form-item"><label>Secret Key</label><input class="input" type="password" name="password" id="cfSk"></div>
+            <div class="form-item"><label>输出桶</label><input class="input" name="out_bucket" id="cfOut" placeholder="defect-outputs"></div>
+          </div>
+          <div style="margin-top:8px"><button class="btn btn-sm" type="button" onclick="cfgTestS3()">测试连接</button><span class="test-msg" style="font-size:12px;margin-left:8px"></span></div>
+        </div>
+        <div id="cfgFieldsWs" style="display:none">
+          <div class="form-grid">
+            <div class="form-item"><label>系统地址 (host:port)</label><input class="input" name="sys_addr" id="cfAddr" placeholder="10.10.96.66:29"></div>
+            <div class="form-item"><label>NG 图目录</label><input class="input" name="ng_dir" id="cfNgd" placeholder="/data/ng/NG_IMG"></div>
+            <div class="form-item"><label>相机数</label><input class="input" type="number" name="cam_count" id="cfCam"></div>
+            <div class="form-item"><label>相机目录</label><input class="input" name="cam_dirs" id="cfCds"></div>
+            <div class="form-item"><label>牌号目录</label><input class="input" name="brand_dirs" id="cfBds"></div>
+          </div>
+          <input type="hidden" name="date_dir" value="YYYYMMDD"><input type="hidden" name="str_pos" value="1,8"><input type="hidden" name="shift_dir" value="早、中、晚">
+          <div style="margin-top:8px"><button class="btn btn-sm" type="button" onclick="cfgTestWs()">测试连接</button><span class="test-msg" style="font-size:12px;margin-left:8px"></span></div>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn" onclick="closeModal('cfgModal')">取消</button>
+        <button type="submit" class="btn btn-primary">保存配置</button>
+      </div>
+    </form>
+  </div>
+</div>
 
 <script>
-// 默认所有产线配置字段只读，点「编辑」才可改
-document.querySelectorAll('form.line-form input, form.line-form select').forEach(function(el){ el.disabled = true; });
-function editLine(btn){
-  var f = btn.closest('form');
-  f.querySelectorAll('input, select').forEach(function(el){ el.disabled = false; });
-  f.querySelector('.btn-edit').style.display = 'none';
-  f.querySelector('.btn-save').style.display = '';
-  f.querySelector('.btn-cancel').style.display = '';
+var LINES = {{ line_cfgs|tojson }};
+function openCfgModal(idx){
+  var lc = LINES[idx], isTerm = lc.mode === 'terminal';
+  document.getElementById('cfgTitle').textContent = lc.line.name + ' · ' + lc.line.workshop + ' — 采集配置';
+  document.getElementById('cfgLineId').value = lc.line.id;
+  document.getElementById('cfgModeS3').checked = !isTerm;
+  document.getElementById('cfgModeWs').checked = isTerm;
+  if(lc.scfg){ document.getElementById('cfSrv').value = lc.scfg.server_addr||''; document.getElementById('cfIn').value = lc.scfg.in_bucket||''; document.getElementById('cfAk').value = lc.scfg.username||''; document.getElementById('cfSk').value = lc.scfg.password||''; document.getElementById('cfOut').value = lc.scfg.out_bucket||''; }
+  if(lc.tcfg){ document.getElementById('cfAddr').value = lc.tcfg.sys_addr||''; document.getElementById('cfNgd').value = lc.tcfg.ng_dir||''; document.getElementById('cfCam').value = lc.tcfg.cam_count||4; document.getElementById('cfCds').value = lc.tcfg.cam_dirs||''; document.getElementById('cfBds').value = lc.tcfg.brand_dirs||''; }
+  cfgToggle(); openModal('cfgModal');
 }
-function toggleMode(r){
-  var form = r.closest('form'), isTerm = r.value === 'terminal';
-  form.querySelector('.fields-minio').style.display = isTerm ? 'none' : '';
-  form.querySelector('.fields-term').style.display = isTerm ? '' : 'none';
+function cfgToggle(){
+  var isTerm = document.getElementById('cfgModeWs').checked;
+  document.getElementById('cfgFieldsS3').style.display = isTerm ? 'none' : '';
+  document.getElementById('cfgFieldsWs').style.display = isTerm ? '' : 'none';
 }
-function _fd(form, names){ var o = {}; names.forEach(function(n){ var el = form.querySelector('[name='+n+']'); o[n] = el ? el.value : ''; }); return o; }
-function _post(url, data, msg){
+function _fd2(ids){
+  var o = {}; Object.keys(ids).forEach(function(k){ o[k] = document.getElementById(ids[k]).value; }); return o;
+}
+function _post2(url, data, msg){
   msg.textContent = '测试中…'; msg.style.color = 'var(--text-secondary)';
   fetch(url, {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:new URLSearchParams(data)})
     .then(function(r){ return r.json(); })
     .then(function(d){ msg.textContent = '● ' + d.msg; msg.style.color = d.ok ? '#00923f' : '#ff4d4f'; })
     .catch(function(){ msg.textContent = '● 请求失败'; msg.style.color = '#ff4d4f'; });
 }
-function testStorage(btn){
-  var form = btn.closest('form');
-  _post('{{ url_for("collect_test_storage") }}', _fd(form, ['server_addr','in_bucket','username','password']),
-        btn.parentNode.querySelector('.test-msg'));
+function cfgTestS3(){
+  _post2('{{ url_for("collect_test_storage") }}', _fd2({server_addr:'cfSrv',in_bucket:'cfIn',username:'cfAk',password:'cfSk'}), document.querySelector('#cfgFieldsS3 .test-msg'));
 }
-function testTerm(btn){
-  var form = btn.closest('form');
-  _post('{{ url_for("collect_test_terminal") }}', _fd(form, ['sys_addr','ng_dir']),
-        btn.parentNode.querySelector('.test-msg'));
+function cfgTestWs(){
+  _post2('{{ url_for("collect_test_terminal") }}', _fd2({sys_addr:'cfAddr',ng_dir:'cfNgd'}), document.querySelector('#cfgFieldsWs .test-msg'));
 }
 </script>
+
 
 {# ---------------- 采集监控 ---------------- #}
 {% elif tab == 'monitor' %}
