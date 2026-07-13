@@ -27,7 +27,7 @@
 <div class="hint">每条产线选择它的 NG 图数据来源：对象存储（MinIO / S3）或产线工控机目录，就地填写参数并测试。</div>
 <div class="card" style="max-width:860px"><div class="card-body">
 {% for lc in line_cfgs %}
-<form method="post" style="padding:18px 0;{{ 'border-top:1px solid var(--split)' if not loop.first }}">
+<form method="post" class="line-form" style="padding:18px 0;{{ 'border-top:1px solid var(--split)' if not loop.first }}">
   <input type="hidden" name="line_id" value="{{ lc.line.id }}">
   <div class="form-inline" style="justify-content:space-between;align-items:center">
     <b style="font-size:15px">{{ lc.line.name }}
@@ -80,12 +80,25 @@
     </div>
   </div>
 
-  <div style="margin-top:12px"><button class="btn btn-primary btn-sm" type="submit">保存该产线</button></div>
+  <div style="margin-top:12px">
+    <button class="btn btn-sm btn-edit" type="button" onclick="editLine(this)">编辑</button>
+    <button class="btn btn-primary btn-sm btn-save" type="submit" style="display:none">保存</button>
+    <button class="btn btn-sm btn-cancel" type="button" onclick="location.reload()" style="display:none">取消</button>
+  </div>
 </form>
 {% endfor %}
 </div></div>
 
 <script>
+// 默认所有产线配置字段只读，点「编辑」才可改
+document.querySelectorAll('form.line-form input, form.line-form select').forEach(function(el){ el.disabled = true; });
+function editLine(btn){
+  var f = btn.closest('form');
+  f.querySelectorAll('input, select').forEach(function(el){ el.disabled = false; });
+  f.querySelector('.btn-edit').style.display = 'none';
+  f.querySelector('.btn-save').style.display = '';
+  f.querySelector('.btn-cancel').style.display = '';
+}
 function toggleMode(r){
   var form = r.closest('form'), isTerm = r.value === 'terminal';
   form.querySelector('.fields-minio').style.display = isTerm ? 'none' : '';
