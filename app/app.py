@@ -581,9 +581,20 @@ def collect(tab):
         except Exception as e:
             ctx["err"] = str(e)[:140]
     elif tab == "history":
-        ctx["records"] = db.execute(
-            "SELECT * FROM collect_history WHERE line=? ORDER BY date DESC, shift", (cur_line,)).fetchall() \
-            or db.execute("SELECT * FROM collect_history ORDER BY date DESC LIMIT 20").fetchall()
+        sync_label_images()
+        from collections import defaultdict
+        agg = defaultdict(int)
+        for im in db.execute("SELECT brand, src_key FROM label_images WHERE line_name=?",
+                             (cur_line,)).fetchall():
+            parts = im["src_key"].split("/")
+            if len(parts) < 4:
+                continue
+            agg[(parts[-4], parts[-3], im["brand"])] += 1  # (日期, 班次, 牌号)
+
+        def _fmt(d):
+            return d[:4] + "/" + d[4:6] + "/" + d[6:8] if len(d) == 8 and d.isdigit() else d
+        ctx["records"] = [{"date": _fmt(d), "shift": s, "brand": b, "img_count": c, "line": cur_line}
+                          for (d, s, b), c in sorted(agg.items(), reverse=True)]
     elif tab == "images":
         line_row = next((l for l in lines if l["name"] == cur_line), None)
         tcfg = line_terminal_cfg(line_row)
