@@ -37,8 +37,18 @@
   <div id="chart" class="chart"></div>
 </div></div>
 {% if tab == 'shift' %}
-<div class="hint" style="cursor:pointer" onclick="alert('图片分析详情（弹出层，演示）\n日期：{{ today }}  机组：{{ cur_line }}  班次：早班  缺陷类型：污渍  图片数量：共 12 张')">
-  点击柱状图可查看「图片分析详情」弹出层（日期 / 机组 / 班次 / 缺陷类型 / 图片列表）
+<div class="hint">点击柱状图可查看该缺陷类型的分析详情。</div>
+<style>
+  .kv { display: flex; justify-content: space-between; padding: 11px 2px; border-bottom: 1px solid var(--split); font-size: 14px; }
+  .kv:last-child { border-bottom: none; }
+  .kv span { color: var(--text-secondary); }
+</style>
+<div class="modal-mask" id="detailModal">
+  <div class="modal">
+    <div class="modal-head"><span>缺陷分析详情</span><span class="close" onclick="closeModal('detailModal')">×</span></div>
+    <div class="modal-body" id="detailBody"></div>
+    <div class="modal-foot"><button class="btn btn-primary" onclick="closeModal('detailModal')">关闭</button></div>
+  </div>
 </div>
 {% endif %}
 {% endblock %}
@@ -63,7 +73,13 @@ fetch('{{ url_for("api_analysis", tab=tab, line=cur_line) }}')
                  label: { show: true, position: 'top' } }]
     };
     chart.on('click', function(p){
-      alert('图片分析详情（弹出层，演示）\n日期：{{ today }}  机组：{{ cur_line }}  班次：早班\n缺陷类型：' + p.name + '  图片数量：共 ' + p.value + ' 张');
+      document.getElementById('detailBody').innerHTML =
+        '<div class="kv"><span>日期</span><b>{{ today }}</b></div>' +
+        '<div class="kv"><span>机组</span><b>{{ cur_line }}</b></div>' +
+        '<div class="kv"><span>班次</span><b>早班</b></div>' +
+        '<div class="kv"><span>缺陷类型</span><b>' + p.name + '</b></div>' +
+        '<div class="kv"><span>剔除数量</span><b>' + p.value + ' 个</b></div>';
+      openModal('detailModal');
     });
     {% elif tab == 'history' %}
     opt = {

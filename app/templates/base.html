@@ -25,7 +25,10 @@
     background: transparent; border: none; color: rgba(255,255,255,.9); font-size: 13.5px; cursor: pointer; font-family: inherit; }
   .hdr-dd .dd-btn:hover { background: rgba(255,255,255,.15); color: #fff; }
   .breadcrumb { background: #fff; border-bottom: 1px solid var(--split); padding: 9px 24px;
-    display: flex; align-items: center; gap: 9px; font-size: 13px; box-shadow: var(--shadow); }
+    display: flex; align-items: center; gap: 9px; font-size: 13px; box-shadow: var(--shadow);
+    position: sticky; top: 56px; z-index: 90; }
+  .layout-sider { position: sticky; top: 95px; align-self: flex-start;
+    max-height: calc(100vh - 95px); overflow-y: auto; }
   .breadcrumb .bc-home { color: var(--text-secondary); }
   .breadcrumb .bc-ctx { color: var(--primary); font-weight: 600; background: var(--primary-bg); padding: 2px 11px; border-radius: 12px; }
   .breadcrumb .sep { color: var(--text-secondary); }

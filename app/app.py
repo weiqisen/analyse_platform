@@ -631,6 +631,7 @@ def collect(tab):
         path = request.args.get("path", "").strip("/")
         ctx["cur_path"] = path
         ctx["crumbs"] = path.split("/") if path else []
+        ctx["root_label"] = tcfg["ng_dir"] if tcfg else (scfg["in_bucket"] if scfg else "根目录")
         ctx["dirs"] = []; ctx["pics"] = []; ctx["total"] = 0; ctx["err"] = None
         try:
             if tcfg:

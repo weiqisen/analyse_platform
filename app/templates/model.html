@@ -13,7 +13,7 @@
 {% block content %}
 <div class="toolbar">
   <div class="page-title" style="margin:0">③ 模型训练 & 版本 — {{ cur_brand }}</div>
-  <button class="btn btn-primary" onclick="alert('已发起新一轮训练（演示）')">+ 发起训练</button>
+  <button class="btn btn-primary" onclick="openTrain('new')">+ 发起训练</button>
 </div>
 <div class="card"><div class="card-body" style="padding:0">
 <table class="table">
@@ -30,8 +30,8 @@
       {% else %}<span class="tag tag-gray">停用</span>{% endif %}
     </td>
     <td>
-      <button class="btn-link" onclick="alert('打开调参面板（演示）')">调参</button>
-      <button class="btn-link" onclick="alert('模型导出成功（演示）')">导出</button>
+      <button class="btn-link" onclick="openTrain('tune','{{ m.version }}')">调参</button>
+      <button class="btn-link" onclick="openExport('{{ m.version }}')">导出</button>
       <form method="post" action="{{ url_for('model_status', mid=m.id) }}" style="display:inline">
         <select class="select input btn-sm" name="status" onchange="this.form.submit()"
                 style="width:auto;height:26px;padding:0 6px;font-size:13px">
@@ -48,4 +48,62 @@
   </tbody>
 </table>
 </div></div>
+
+<div class="modal-mask" id="trainModal">
+  <div class="modal">
+    <div class="modal-head"><span id="trainTitle">发起新训练</span><span class="close" onclick="closeModal('trainModal')">×</span></div>
+    <div class="modal-body">
+      <div class="form-item"><label>牌号</label><input class="input" value="{{ cur_brand }}" readonly></div>
+      <div class="form-item"><label>基础版本</label>
+        <select class="select input" id="baseVer">
+          <option value="">从头训练</option>
+          {% for m in rows %}<option>{{ m.version }}</option>{% endfor %}
+        </select></div>
+      <div class="form-grid">
+        <div class="form-item"><label>学习率</label><input class="input" value="0.001"></div>
+        <div class="form-item"><label>迭代轮数</label><input class="input" type="number" value="100"></div>
+        <div class="form-item"><label>批大小</label><input class="input" type="number" value="16"></div>
+        <div class="form-item"><label>置信度阈值</label><input class="input" value="0.5"></div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeModal('trainModal')">取消</button>
+      <button class="btn btn-primary" onclick="submitTrain()">提交训练</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-mask" id="exportModal">
+  <div class="modal">
+    <div class="modal-head"><span id="exportTitle">导出模型</span><span class="close" onclick="closeModal('exportModal')">×</span></div>
+    <div class="modal-body">
+      <div class="form-item"><label>导出格式</label>
+        <select class="select input"><option>ONNX</option><option>TorchScript</option><option>TensorRT</option></select></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeModal('exportModal')">取消</button>
+      <button class="btn btn-primary" onclick="submitExport()">导出</button>
+    </div>
+  </div>
+</div>
+
+<script>
+function toast(m){
+  var w = document.querySelector('.msg-wrap') || document.body;
+  var d = document.createElement('div'); d.className = 'msg success';
+  d.innerHTML = '<span class="dot"></span>' + m; w.appendChild(d);
+  setTimeout(function(){ d.remove(); }, 3000);
+}
+function openTrain(mode, ref){
+  document.getElementById('trainTitle').textContent = mode === 'tune' ? ('调参训练 — ' + ref) : '发起新训练';
+  if(mode === 'tune' && ref){ document.getElementById('baseVer').value = ref; }
+  openModal('trainModal');
+}
+function openExport(ver){
+  document.getElementById('exportTitle').textContent = '导出模型 — ' + ver;
+  openModal('exportModal');
+}
+function submitTrain(){ closeModal('trainModal'); toast('训练请求已提交，将由算法平台执行'); }
+function submitExport(){ closeModal('exportModal'); toast('导出任务已提交'); }
+</script>
 {% endblock %}

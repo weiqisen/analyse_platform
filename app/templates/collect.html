@@ -169,7 +169,7 @@ function testTerm(btn){
   <div class="hint">读取失败：{{ err }}</div>
   {% else %}
   <div class="form-inline" style="margin-bottom:14px;gap:6px;flex-wrap:wrap;align-items:center">
-    <a href="{{ url_for('collect', tab='images', line=cur_line, item=cur_item) }}">根目录</a>
+    <a href="{{ url_for('collect', tab='images', line=cur_line, item=cur_item) }}">{{ root_label }}</a>
     {% for c in crumbs %}
     <span style="color:var(--text-secondary)">/</span>
     <a href="{{ url_for('collect', tab='images', line=cur_line, item=cur_item, path=crumbs[:loop.index]|join('/')) }}">{{ c }}</a>
