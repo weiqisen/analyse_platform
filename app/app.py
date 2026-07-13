@@ -774,9 +774,18 @@ def collect_test_terminal():
 
 
 # ---------------------------------------------------------------- 缺陷标注
-def sync_label_images():
-    """一次性扫描所有数据源，把 NG 图按顶层目录(牌号)登记进 label_images（幂等）。"""
+_last_sync_ts = [0.0]
+
+
+def sync_label_images(force=False):
+    """扫描所有数据源，把 NG 图按顶层目录(牌号)登记进 label_images（幂等）。
+    带 60 秒节流，避免每次切换页面都重连数据源导致卡顿。"""
+    import time
     import stat
+    now = time.time()
+    if not force and (now - _last_sync_ts[0]) < 60:
+        return
+    _last_sync_ts[0] = now
     db = get_db()
     existing = {r["src_key"] for r in db.execute("SELECT src_key FROM label_images").fetchall()}
     rows = []
