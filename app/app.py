@@ -25,6 +25,9 @@ DB_NAME = os.environ.get("DB_NAME", "analyse_platform")
 WS_USER = os.environ.get("WS_USER", "root")
 WS_PASS = os.environ.get("WS_PASS", "hlxd@123")
 
+# 算法推理服务地址（HTTP）。为空时使用内置模拟判定，接入算法平台后配置此项即可
+INFER_URL = os.environ.get("INFER_URL", "")
+
 app = Flask(__name__)
 app.secret_key = "yancao-analyse-platform-secret-2026"
 
@@ -199,6 +202,21 @@ def init_db():
             workshop VARCHAR(64) DEFAULT '' COMMENT '所属车间',
             status INT DEFAULT 1 COMMENT '状态: 1启用 0停用'
         ) DEFAULT CHARSET=utf8mb4 COMMENT='区域字典表'""",
+        """CREATE TABLE IF NOT EXISTS inference_results(
+            id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+            image_id INT NOT NULL COMMENT '关联label_images.id',
+            line_name VARCHAR(32) COMMENT '产线',
+            brand VARCHAR(64) COMMENT '牌号',
+            img_date VARCHAR(32) COMMENT '采集日期',
+            shift VARCHAR(16) COMMENT '班次',
+            is_defect INT DEFAULT 1 COMMENT '判定: 1真缺陷 0误剔',
+            class_id INT COMMENT '缺陷分类ID',
+            class_name VARCHAR(64) COMMENT '缺陷分类',
+            confidence DOUBLE COMMENT '置信度',
+            model_version VARCHAR(32) COMMENT '推理模型版本',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '推理时间',
+            UNIQUE KEY uq_img (image_id)
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='推理结果表'""",
     ]
     for stmt in ddl:
         db.execute(stmt)
@@ -1005,34 +1023,99 @@ def analysis(tab):
         abort(404)
     db = get_db()
     lines = db.execute("SELECT * FROM prod_lines WHERE status=1 ORDER BY id").fetchall()
-    cur_line = request.args.get("line") or (lines[0]["name"] if lines else "A01")
+    cur_line = request.args.get("line", "all")
+    infer_total = db.execute("SELECT COUNT(*) AS c FROM inference_results").fetchone()["c"]
     return render_template("analysis.html", tab=tab, tabs=ANALYSIS_TABS,
                            lines=lines, cur_line=cur_line, active="analysis",
+                           infer_total=infer_total, using_mock=(not INFER_URL),
                            today=datetime.now().strftime("%Y/%m/%d"))
+
+
+def run_inference_one(img, classes):
+    """对一张 NG 图推理，返回判定 dict。INFER_URL 有则调算法服务，否则内置模拟。"""
+    if INFER_URL:
+        try:
+            import urllib.request
+            body = json.dumps({"image_id": img["id"], "src_key": img["src_key"],
+                               "line": img["line_name"], "brand": img["brand"]}).encode("utf-8")
+            req = urllib.request.Request(INFER_URL, data=body,
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                d = json.loads(r.read().decode("utf-8"))
+            return {"is_defect": int(d.get("is_defect", 1)), "class_id": d.get("class_id"),
+                    "class_name": d.get("class_name", ""), "confidence": float(d.get("confidence", 0))}
+        except Exception:
+            pass
+    h = int(hashlib.md5(img["src_key"].encode("utf-8")).hexdigest(), 16)
+    cls = classes[h % len(classes)] if classes else None
+    return {"is_defect": 0 if h % 5 == 0 else 1,
+            "class_id": cls["id"] if cls else None,
+            "class_name": cls["name"] if cls else "",
+            "confidence": round(0.6 + (h % 40) / 100.0, 3)}
+
+
+@app.route("/analysis/infer", methods=["POST"])
+@login_required
+def analysis_infer():
+    db = get_db()
+    sync_label_images(force=True)
+    classes = [dict(c) for c in db.execute("SELECT * FROM label_classes ORDER BY id").fetchall()]
+    done = {r["image_id"] for r in db.execute("SELECT image_id FROM inference_results").fetchall()}
+    v = db.execute("SELECT version FROM model_versions WHERE status='推理' ORDER BY id DESC LIMIT 1").fetchone()
+    ver = v["version"] if v else ""
+    n = 0
+    for img in db.execute("SELECT * FROM label_images").fetchall():
+        if img["id"] in done:
+            continue
+        parts = img["src_key"].split("/")
+        date = parts[-4] if len(parts) >= 4 else ""
+        shift = parts[-3] if len(parts) >= 3 else ""
+        res = run_inference_one(img, classes)
+        db.execute("INSERT INTO inference_results(image_id,line_name,brand,img_date,shift,"
+                   "is_defect,class_id,class_name,confidence,model_version) "
+                   "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                   (img["id"], img["line_name"], img["brand"], date, shift,
+                    res["is_defect"], res["class_id"], res["class_name"], res["confidence"], ver))
+        n += 1
+    db.commit()
+    tip = "推理完成，本次新增 %d 条结果" % n + ("（内置模拟判定）" if not INFER_URL else "")
+    flash(tip, "success")
+    return redirect(request.referrer or url_for("analysis", tab="shift"))
 
 
 @app.route("/api/analysis/<tab>")
 @login_required
 def api_analysis(tab):
-    line = request.args.get("line", "A01")
-    rnd = random.Random(hash(line + tab) & 0xffff)
-    classes = ["污渍", "翘边", "封签歪斜", "印刷错误", "刺破", "缺支"]
+    db = get_db()
+    line = request.args.get("line", "all")
+    base = "FROM inference_results WHERE is_defect=1"
+    params = []
+    if line != "all":
+        base += " AND line_name=?"
+        params.append(line)
+    cls_expr = "COALESCE(NULLIF(class_name,''),'未分类')"
+
+    def _fmt(d):
+        return d[:4] + "/" + d[4:6] + "/" + d[6:8] if len(d) == 8 and d.isdigit() else d
+
     if tab == "shift":
-        return jsonify({
-            "classes": classes,
-            "counts": [rnd.randint(5, 120) for _ in classes],
-        })
-    if tab == "history":
-        days = [(datetime.now() - timedelta(days=d)).strftime("%m/%d") for d in range(6, -1, -1)]
-        return jsonify({
-            "days": days,
-            "series": [{"name": c, "data": [rnd.randint(2, 60) for _ in days]} for c in classes[:4]],
-        })
-    days = [(datetime.now() - timedelta(days=d)).strftime("%m/%d") for d in range(13, -1, -1)]
-    return jsonify({
-        "days": days,
-        "series": [{"name": c, "data": [rnd.randint(10, 90) for _ in days]} for c in classes[:4]],
-    })
+        rows = db.execute("SELECT %s n, COUNT(*) c " % cls_expr + base +
+                          " GROUP BY n ORDER BY c DESC", params).fetchall()
+        return jsonify({"classes": [r["n"] for r in rows], "counts": [r["c"] for r in rows]})
+
+    days = [r["img_date"] for r in db.execute(
+        "SELECT DISTINCT img_date " + base + " AND img_date<>'' ORDER BY img_date", params).fetchall()]
+    top = [r["n"] for r in db.execute(
+        "SELECT %s n, COUNT(*) c " % cls_expr + base + " GROUP BY n ORDER BY c DESC", params).fetchall()][:4]
+    series = []
+    for cn in top:
+        data = []
+        for d in days:
+            cnt = db.execute("SELECT COUNT(*) c " + base + " AND %s=? AND img_date=?" % cls_expr,
+                             params + [cn, d]).fetchone()["c"]
+            data.append(cnt)
+        series.append({"name": cn, "data": data})
+    return jsonify({"days": [_fmt(d) for d in days], "series": series})
 
 
 # ----------------------------------------------------------------

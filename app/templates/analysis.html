@@ -9,8 +9,9 @@
        class="{{ 'active' if tab==key }}">{{ name }}</a>
     {% endfor %}
   </nav>
-  <div class="sider-title" style="margin-top:16px">选择产线</div>
+  <div class="sider-title" style="margin-top:16px">产线</div>
   <nav class="sider-menu">
+    <a href="{{ url_for('analysis', tab=tab, item=cur_item) }}" class="{{ 'active' if cur_line=='all' }}">全部产线</a>
     {% for l in lines %}
     <a href="{{ url_for('analysis', tab=tab, line=l.name, item=cur_item) }}"
        class="{{ 'active' if cur_line==l.name }}">{{ l.name }}</a>
@@ -22,17 +23,16 @@
 {% set tabname = dict(tabs)[tab] %}
 <div class="toolbar">
   <div class="page-title" style="margin:0">
-    {{ cur_line }} 产线 {{ cur_item }}
+    {{ '全部产线' if cur_line=='all' else cur_line + ' 产线' }} · {{ cur_item }}
     {% if tab=='shift' %}当班分析结果{% elif tab=='history' %}历史统计结果{% else %}分类剔除数变化曲线{% endif %}
   </div>
-  {% if tab == 'history' %}
-  <div class="form-inline">
-    <input class="input" type="date">
-    <select class="select input"><option>选择班次</option><option>早班</option><option>中班</option><option>晚班</option></select>
-    <button class="btn btn-primary btn-sm">查询</button>
-  </div>
-  {% endif %}
+  <form method="post" action="{{ url_for('analysis_infer') }}" style="display:inline">
+    <button class="btn btn-primary" type="submit">运行推理</button>
+  </form>
 </div>
+{% if infer_total == 0 %}
+<div class="hint">暂无推理结果，点击右上角「运行推理」对已采集的 NG 图进行分析{% if using_mock %}（当前 INFER_URL 未配置，使用内置模拟判定；接入算法推理服务后即为真实结果）{% endif %}。</div>
+{% endif %}
 <div class="card"><div class="card-body">
   <div id="chart" class="chart"></div>
 </div></div>
