@@ -245,6 +245,7 @@ def init_db():
                 (code, name, ws, area)).lastrowid
         # 牌号
         for code, spec in [("3301231", "中华（软）"), ("3301232", "中华（硬）"),
+                           ("3301001", "玉溪（硬）"),
                            ("3302101", "玉溪（软）"), ("3302102", "玉溪（创客）"),
                            ("3302103", "玉溪（缤果爆）"), ("3303001", "云烟（紫）")]:
             db.execute("INSERT INTO brands(code,spec) VALUES(?,?)", (code, spec))
@@ -861,6 +862,7 @@ def sync_label_images(force=False):
     _last_sync_ts[0] = now
     db = get_db()
     existing = {r["src_key"] for r in db.execute("SELECT src_key FROM label_images").fetchall()}
+    BRAND_MAP = {"小包外观": "玉溪（硬）"}
     rows = []
     for l in db.execute("SELECT * FROM prod_lines").fetchall():
         scfg = db.execute("SELECT * FROM storage_config WHERE line_id=?", (l["id"],)).fetchone()
@@ -878,7 +880,8 @@ def sync_label_images(force=False):
                     for o in r.get("Contents", []):
                         k = o["Key"]
                         if "/" in k and k.lower().endswith((".jpg", ".jpeg", ".png", ".bmp")):
-                            rows.append(("minio", k, k.split("/")[0], l["name"]))
+                            b = BRAND_MAP.get(k.split("/")[0], k.split("/")[0])
+                            rows.append(("minio", k, b, l["name"]))
                     if r.get("IsTruncated"):
                         tok = r.get("NextContinuationToken")
                     else:
@@ -902,7 +905,8 @@ def sync_label_images(force=False):
                             walk(full)
                         elif e.filename.lower().endswith((".jpg", ".jpeg", ".png", ".bmp")):
                             rel = full[len(root):].lstrip("/")
-                            brand = rel.split("/")[0] if "/" in rel else ""
+                            b = rel.split("/")[0] if "/" in rel else ""
+                            brand = BRAND_MAP.get(b, b)
                             rows.append(("terminal", full, brand, l["name"]))
                 try:
                     walk(root)
