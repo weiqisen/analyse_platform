@@ -26,8 +26,12 @@
     <tr><th>序号</th><th>代码</th><th>名称</th><th>简称</th><th>状态</th><th>操作</th></tr>
   {% elif tab == 'lines' %}
     <tr><th>序号</th><th>产线编码</th><th>名称</th><th>车间</th><th>区域</th><th>状态</th><th>操作</th></tr>
-  {% else %}
+  {% elif tab == 'brands' %}
     <tr><th>序号</th><th>产品代码</th><th>产品规格</th><th>状态</th><th>操作</th></tr>
+  {% elif tab == 'workshops' %}
+    <tr><th>序号</th><th>车间名称</th><th>状态</th><th>操作</th></tr>
+  {% elif tab == 'areas' %}
+    <tr><th>序号</th><th>区域名称</th><th>所属车间</th><th>状态</th><th>操作</th></tr>
   {% endif %}
   </thead>
   <tbody>
@@ -38,8 +42,12 @@
       <td>{{ r.code }}</td><td>{{ r.name }}</td><td>{{ r.short_name }}</td>
     {% elif tab == 'lines' %}
       <td>{{ r.code }}</td><td>{{ r.name }}</td><td>{{ r.workshop }}</td><td>{{ r.area }}</td>
-    {% else %}
+    {% elif tab == 'brands' %}
       <td>{{ r.code }}</td><td>{{ r.spec }}</td>
+    {% elif tab == 'workshops' %}
+      <td>{{ r.name }}</td>
+    {% elif tab == 'areas' %}
+      <td>{{ r.name }}</td><td>{{ r.workshop }}</td>
     {% endif %}
     <td>{% if r.status %}<span class="tag">启用</span>{% else %}<span class="tag tag-gray">停用</span>{% endif %}</td>
     <td>
@@ -74,11 +82,25 @@
         {% elif tab == 'lines' %}
         <div class="form-item"><label><span class="req">*</span>产线编码</label><input class="input" name="code" id="c_code" required></div>
         <div class="form-item"><label><span class="req">*</span>名称</label><input class="input" name="name" id="c_name" required></div>
-        <div class="form-item"><label>车间</label><input class="input" name="workshop" id="c_workshop"></div>
-        <div class="form-item"><label>区域</label><input class="input" name="area" id="c_area"></div>
-        {% else %}
+        <div class="form-item"><label>车间</label>
+          <select class="select input" name="workshop" id="c_workshop" onchange="fillAreas(this.value)">
+            <option value="">请选择车间</option>
+            {% for w in workshops %}<option>{{ w.name }}</option>{% endfor %}
+          </select></div>
+        <div class="form-item"><label>区域</label>
+          <select class="select input" name="area" id="c_area"><option value="">请先选择车间</option></select></div>
+        {% elif tab == 'brands' %}
         <div class="form-item"><label><span class="req">*</span>产品代码</label><input class="input" name="code" id="c_code" required></div>
         <div class="form-item"><label><span class="req">*</span>产品规格</label><input class="input" name="spec" id="c_spec" required></div>
+        {% elif tab == 'workshops' %}
+        <div class="form-item"><label><span class="req">*</span>车间名称</label><input class="input" name="name" id="c_name" required></div>
+        {% elif tab == 'areas' %}
+        <div class="form-item"><label><span class="req">*</span>区域名称</label><input class="input" name="name" id="c_name" required></div>
+        <div class="form-item"><label>所属车间</label>
+          <select class="select input" name="workshop" id="c_workshop">
+            <option value="">请选择车间</option>
+            {% for w in workshops %}<option>{{ w.name }}</option>{% endfor %}
+          </select></div>
         {% endif %}
       </div>
       <div class="modal-foot">
@@ -91,6 +113,17 @@
 {% endblock %}
 {% block script %}
 <script>
+var AREAS = {{ areas|tojson }};
+function fillAreas(ws, selected){
+  var sel = document.getElementById('c_area');
+  if(!sel) return;
+  sel.innerHTML = '<option value="">请选择区域</option>';
+  AREAS.filter(function(a){ return a.workshop === ws; }).forEach(function(a){
+    var o = document.createElement('option'); o.value = a.name; o.textContent = a.name;
+    if(a.name === selected) o.selected = true;
+    sel.appendChild(o);
+  });
+}
 function editRow(r){
   r = r || {};
   document.getElementById('rowModalTitle').textContent = (r.id ? '修改' : '新增') + '{{ tabname }}';
@@ -98,6 +131,8 @@ function editRow(r){
     var el = document.getElementById('c_' + k);
     if (el) el.value = r[k] || '';
   });
+  var wsEl = document.getElementById('c_workshop');
+  if (wsEl && document.getElementById('c_area')) { fillAreas(r.workshop || '', r.area || ''); }
   openModal('rowModal');
 }
 </script>

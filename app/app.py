@@ -188,6 +188,17 @@ def init_db():
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '标注时间',
             KEY idx_image (image_id)
         ) DEFAULT CHARSET=utf8mb4 COMMENT='标注框表'""",
+        """CREATE TABLE IF NOT EXISTS workshops(
+            id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+            name VARCHAR(64) NOT NULL COMMENT '车间名称',
+            status INT DEFAULT 1 COMMENT '状态: 1启用 0停用'
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='车间字典表'""",
+        """CREATE TABLE IF NOT EXISTS areas(
+            id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+            name VARCHAR(64) NOT NULL COMMENT '区域名称',
+            workshop VARCHAR(64) DEFAULT '' COMMENT '所属车间',
+            status INT DEFAULT 1 COMMENT '状态: 1启用 0停用'
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='区域字典表'""",
     ]
     for stmt in ddl:
         db.execute(stmt)
@@ -219,6 +230,11 @@ def init_db():
                            ("3302101", "玉溪（软）"), ("3302102", "玉溪（创客）"),
                            ("3302103", "玉溪（缤果爆）"), ("3303001", "云烟（紫）")]:
             db.execute("INSERT INTO brands(code,spec) VALUES(?,?)", (code, spec))
+        # 车间 / 区域 字典
+        for w in ["卷包一车间", "卷包二车间"]:
+            db.execute("INSERT INTO workshops(name) VALUES(?)", (w,))
+        for name, ws in [("一区", "卷包一车间"), ("二区", "卷包二车间")]:
+            db.execute("INSERT INTO areas(name,workshop) VALUES(?,?)", (name, ws))
         # 对象存储配置：A01 产线指向 10.10.96.65 上的 MinIO
         db.execute("INSERT INTO storage_config(line_id,server_addr,in_bucket,username,password,out_bucket) "
                    "VALUES(?,?,?,?,?,?)",
@@ -399,7 +415,8 @@ def users_delete(uid):
 
 
 # ---------------------------------------------------------------- 基础配置
-CONFIG_TABS = [("items", "检测项目"), ("lines", "机组/产线"), ("brands", "牌号/品规")]
+CONFIG_TABS = [("items", "检测项目"), ("lines", "机组/产线"), ("brands", "牌号/品规"),
+               ("workshops", "车间"), ("areas", "区域")]
 
 
 @app.route("/config/<tab>")
@@ -412,9 +429,13 @@ def config(tab):
         "items": db.execute("SELECT * FROM detect_items ORDER BY id").fetchall(),
         "lines": db.execute("SELECT * FROM prod_lines ORDER BY id").fetchall(),
         "brands": db.execute("SELECT * FROM brands ORDER BY id").fetchall(),
+        "workshops": db.execute("SELECT * FROM workshops ORDER BY id").fetchall(),
+        "areas": db.execute("SELECT * FROM areas ORDER BY id").fetchall(),
     }[tab]
+    workshops = [dict(w) for w in db.execute("SELECT * FROM workshops WHERE status=1 ORDER BY id").fetchall()]
+    areas = [dict(a) for a in db.execute("SELECT * FROM areas WHERE status=1 ORDER BY id").fetchall()]
     return render_template("config.html", tab=tab, tabs=CONFIG_TABS,
-                           rows=data, active="config")
+                           rows=data, workshops=workshops, areas=areas, active="config")
 
 
 @app.route("/config/<tab>/save", methods=["POST"])
@@ -442,6 +463,16 @@ def config_save(tab):
             db.execute("UPDATE brands SET code=?,spec=? WHERE id=?", (f["code"], f["spec"], rid))
         else:
             db.execute("INSERT INTO brands(code,spec) VALUES(?,?)", (f["code"], f["spec"]))
+    elif tab == "workshops":
+        if rid:
+            db.execute("UPDATE workshops SET name=? WHERE id=?", (f["name"], rid))
+        else:
+            db.execute("INSERT INTO workshops(name) VALUES(?)", (f["name"],))
+    elif tab == "areas":
+        if rid:
+            db.execute("UPDATE areas SET name=?,workshop=? WHERE id=?", (f["name"], f.get("workshop", ""), rid))
+        else:
+            db.execute("INSERT INTO areas(name,workshop) VALUES(?,?)", (f["name"], f.get("workshop", "")))
     db.commit()
     flash("保存成功", "success")
     return redirect(url_for("config", tab=tab))
@@ -450,7 +481,8 @@ def config_save(tab):
 @app.route("/config/<tab>/delete/<int:rid>", methods=["POST"])
 @login_required
 def config_delete(tab, rid):
-    table = {"items": "detect_items", "lines": "prod_lines", "brands": "brands"}.get(tab)
+    table = {"items": "detect_items", "lines": "prod_lines", "brands": "brands",
+             "workshops": "workshops", "areas": "areas"}.get(tab)
     if not table:
         abort(404)
     db = get_db()
@@ -463,7 +495,8 @@ def config_delete(tab, rid):
 @app.route("/config/<tab>/toggle/<int:rid>", methods=["POST"])
 @login_required
 def config_toggle(tab, rid):
-    table = {"items": "detect_items", "lines": "prod_lines", "brands": "brands"}.get(tab)
+    table = {"items": "detect_items", "lines": "prod_lines", "brands": "brands",
+             "workshops": "workshops", "areas": "areas"}.get(tab)
     if not table:
         abort(404)
     db = get_db()
