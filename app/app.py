@@ -170,18 +170,35 @@ def init_db():
                                            ("条外观检测", "条外观")], 1):
             db.execute("INSERT INTO detect_items(code,name,short_name) VALUES(?,?,?)",
                        ("JC%03d" % i, name, short))
-        # 产线
-        for i in range(1, 9):
-            db.execute("INSERT INTO prod_lines(code,name,workshop,area) VALUES(?,?,?,?)",
-                       ("Y2045864%02d" % (74 + i), "A%02d" % i, "卷包车间", "一区" if i <= 4 else "二区"))
+        # 产线（3 条，分别对应 10.10.96.65 / 66 / 67）
+        line_plan = [
+            ("YZ-A01", "A01", "卷包一车间", "一区"),
+            ("YZ-A02", "A02", "卷包一车间", "一区"),
+            ("YZ-A03", "A03", "卷包二车间", "二区"),
+        ]
+        line_ids = {}
+        for code, name, ws, area in line_plan:
+            line_ids[name] = db.execute(
+                "INSERT INTO prod_lines(code,name,workshop,area) VALUES(?,?,?,?)",
+                (code, name, ws, area)).lastrowid
         # 牌号
         for code, spec in [("3301231", "中华（软）"), ("3301232", "中华（硬）"),
                            ("3302101", "玉溪（软）"), ("3302102", "玉溪（创客）"),
                            ("3302103", "玉溪（缤果爆）"), ("3303001", "云烟（紫）")]:
             db.execute("INSERT INTO brands(code,spec) VALUES(?,?)", (code, spec))
+        # 对象存储配置（模式一）：指向 10.10.96.65 上的 MinIO
         db.execute("INSERT INTO storage_config(id,server_addr,in_bucket,username,password,out_bucket) "
                    "VALUES(1,?,?,?,?,?)",
-                   ("127.0.0.1:23456", "ng_yzwg", "S*****B", "", "ng_yzwg_out"))
+                   ("10.10.96.65:9000", "ng-yzwg", "minioadmin", "minioadmin123", "ng-yzwg-out"))
+        # 终端配置（模式二）：A02->10.10.96.66，A03->10.10.96.67 工控机 NG 目录
+        db.execute("INSERT INTO terminal_config(line_id,sys_addr,ng_dir,date_dir,str_pos,shift_dir,cam_count,cam_dirs,brand_dirs) "
+                   "VALUES(?,?,?,?,?,?,?,?,?)",
+                   (line_ids["A02"], "10.10.96.66:29", "/data/ng/NG_IMG", "YYYYMMDD", "1,8",
+                    "早、中、晚", 3, "1#,2#,3#", "中华（软）"))
+        db.execute("INSERT INTO terminal_config(line_id,sys_addr,ng_dir,date_dir,str_pos,shift_dir,cam_count,cam_dirs,brand_dirs) "
+                   "VALUES(?,?,?,?,?,?,?,?,?)",
+                   (line_ids["A03"], "10.10.96.67:29", "/data/ng/NG_IMG", "YYYYMMDD", "1,8",
+                    "早、中、晚", 2, "1#,2#", "云烟（紫）"))
         for c in ["污渍", "翘边", "封签歪斜", "印刷错误", "刺破", "缺支"]:
             db.execute("INSERT INTO label_classes(name) VALUES(?)", (c,))
         for b in ["中华（软）", "玉溪（软）", "玉溪（创客）", "云烟（紫）"]:
@@ -206,7 +223,7 @@ def init_db():
             day = (today - timedelta(days=d)).strftime("%Y/%m/%d")
             for shift in ["早班", "中班", "晚班"]:
                 db.execute("INSERT INTO collect_history(line,date,shift,brand,img_count) VALUES(?,?,?,?,?)",
-                           ("A%02d" % rnd.randint(1, 8), day, shift,
+                           ("A%02d" % rnd.randint(1, 3), day, shift,
                             rnd.choice(brands), rnd.randint(80, 420)))
         db.commit()
     db.close()
