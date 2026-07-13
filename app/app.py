@@ -256,7 +256,7 @@ def init_db():
         # 对象存储配置：A01 产线指向 10.10.96.65 上的 MinIO
         db.execute("INSERT INTO storage_config(line_id,server_addr,in_bucket,username,password,out_bucket) "
                    "VALUES(?,?,?,?,?,?)",
-                   (line_ids["A01"], "10.10.96.65:9000", "ng-yzwg", "minioadmin", "minioadmin123", "ng-yzwg-out"))
+                   (line_ids["A01"], "10.10.96.65:9000", "defect-raw", "minioadmin", "minioadmin123", "defect-outputs"))
         # 终端配置（模式二）：A02->10.10.96.66，A03->10.10.96.67 工控机 NG 目录
         db.execute("INSERT INTO terminal_config(line_id,sys_addr,ng_dir,date_dir,str_pos,shift_dir,cam_count,cam_dirs,brand_dirs) "
                    "VALUES(?,?,?,?,?,?,?,?,?)",
