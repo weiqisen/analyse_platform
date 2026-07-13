@@ -266,7 +266,14 @@ def init_db():
                    "VALUES(?,?,?,?,?,?,?,?,?)",
                    (line_ids["A03"], "10.10.96.67:29", "/data/ng/NG_IMG", "YYYYMMDD", "1,8",
                     "早、中、晚", 2, "1#,2#", "云烟（紫）"))
-        for c in ["污渍", "翘边", "封签歪斜", "印刷错误", "刺破", "缺支"]:
+        xb_classes = ["侧面翘边", "内衬顶部质量缺陷", "内衬高于商标", "商标接头", "商标歪斜",
+                      "商标歪斜错位", "商标纸接头", "商标纸歪斜", "商标裁切错误", "商标错牙",
+                      "封签接头", "封签歪斜", "封签破损", "封签粘贴不牢", "封签裁切错误",
+                      "小盒不洁", "小盒侧边飞边", "小盒侧面粘贴不牢", "小盒侧飞边", "小盒倒",
+                      "小盒底部折叠不良", "小盒底部粘贴不牢", "小盒底部翘边", "小盒底部翻折破损",
+                      "小盒底部飞边", "小盒破损触皱", "小盒触皱", "小盒触皱破损", "底部翘边",
+                      "无商标", "无封签", "烟支外漏", "缺封签", "顶部内衬破损"]
+        for c in xb_classes:
             db.execute("INSERT INTO label_classes(name) VALUES(?)", (c,))
         for b in ["中华（软）", "玉溪（软）", "玉溪（创客）", "云烟（紫）"]:
             db.execute("INSERT INTO label_tasks(brand,total,labeling,unlabeled) VALUES(?,?,?,?)",
@@ -585,7 +592,7 @@ def sftp_list_images(tcfg, max_n=500):
             full = p + "/" + e.filename
             if stat.S_ISDIR(e.st_mode):
                 walk(full)
-            elif e.filename.lower().endswith((".jpg", ".jpeg", ".png")):
+            elif e.filename.lower().endswith((".jpg", ".jpeg", ".png", ".bmp")):
                 out.append({"path": full, "rel": full[len(root):].lstrip("/"), "name": e.filename})
 
     try:
@@ -703,9 +710,9 @@ def collect(tab):
                         if _st.S_ISDIR(e.st_mode):
                             ctx["dirs"].append({"name": e.filename,
                                                 "path": (path + "/" + e.filename).strip("/")})
-                        elif e.filename.lower().endswith((".jpg", ".jpeg", ".png")):
+                        elif e.filename.lower().endswith((".jpg", ".jpeg", ".png", ".bmp")):
                             ctx["pics"].append({"name": e.filename,
-                                "url": url_for("collect_wsimg", line=cur_line, path=full + "/" + e.filename)})
+                                "url": url_for("media", src="terminal", line=cur_line, key=full + "/" + e.filename)})
                 finally:
                     t.close()
             elif scfg:
@@ -718,10 +725,9 @@ def collect(tab):
                 for o in r.get("Contents", []):
                     if o["Key"] == prefix:
                         continue
-                    if o["Key"].lower().endswith((".jpg", ".jpeg", ".png")):
+                    if o["Key"].lower().endswith((".jpg", ".jpeg", ".png", ".bmp")):
                         ctx["pics"].append({"name": o["Key"].split("/")[-1],
-                            "url": s3.generate_presigned_url("get_object",
-                                Params={"Bucket": cfg["in_bucket"], "Key": o["Key"]}, ExpiresIn=7200)})
+                            "url": url_for("media", src="minio", line=cur_line, key=o["Key"])})
             ctx["total"] = len(ctx["pics"])
             ctx["online"] = True
         except Exception as e:
@@ -755,6 +761,55 @@ def collect_wsimg():
         abort(404)
     mime = "image/png" if path.lower().endswith(".png") else "image/jpeg"
     return Response(data, mimetype=mime, headers={"Cache-Control": "max-age=300"})
+
+
+@app.route("/media")
+@login_required
+def media():
+    """统一图片代理：读 MinIO / 工控机原图（bmp 等）转码为 jpg 返回浏览器。"""
+    from flask import Response
+    import io
+    src = request.args.get("src", "")
+    line = request.args.get("line", "")
+    key = request.args.get("key", "")
+    if not key:
+        abort(404)
+    try:
+        if src == "terminal":
+            line_row = get_db().execute("SELECT * FROM prod_lines WHERE name=?", (line,)).fetchone()
+            tcfg = line_terminal_cfg(line_row)
+            root = (tcfg["ng_dir"] or "").rstrip("/") if tcfg else ""
+            if not tcfg or ".." in key or not (key == root or key.startswith(root + "/")):
+                abort(403)
+            t, sftp = _ws_sftp(tcfg)
+            try:
+                with sftp.open(key, "rb") as f:
+                    data = f.read()
+            finally:
+                t.close()
+        else:
+            scfg = line_storage_cfg(line)
+            if not scfg:
+                abort(404)
+            s3, cfg = get_s3(scfg)
+            data = s3.get_object(Bucket=cfg["in_bucket"], Key=key)["Body"].read()
+    except Exception:
+        abort(404)
+    ext = key.rsplit(".", 1)[-1].lower() if "." in key else ""
+    if ext in ("jpg", "jpeg"):
+        return Response(data, mimetype="image/jpeg", headers={"Cache-Control": "max-age=600"})
+    try:
+        from PIL import Image
+        img = Image.open(io.BytesIO(data)).convert("RGB")
+        w, h = img.size
+        m = max(w, h)
+        if m > 1600:
+            img = img.resize((int(w * 1600 / m), int(h * 1600 / m)))
+        buf = io.BytesIO()
+        img.save(buf, "JPEG", quality=85)
+        return Response(buf.getvalue(), mimetype="image/jpeg", headers={"Cache-Control": "max-age=600"})
+    except Exception:
+        return Response(data, mimetype="application/octet-stream")
 
 
 @app.route("/collect/test/storage", methods=["POST"])
@@ -822,7 +877,7 @@ def sync_label_images(force=False):
                     r = s3.list_objects_v2(**kw)
                     for o in r.get("Contents", []):
                         k = o["Key"]
-                        if "/" in k and k.lower().endswith((".jpg", ".jpeg", ".png")):
+                        if "/" in k and k.lower().endswith((".jpg", ".jpeg", ".png", ".bmp")):
                             rows.append(("minio", k, k.split("/")[0], l["name"]))
                     if r.get("IsTruncated"):
                         tok = r.get("NextContinuationToken")
@@ -845,7 +900,7 @@ def sync_label_images(force=False):
                         full = p + "/" + e.filename
                         if stat.S_ISDIR(e.st_mode):
                             walk(full)
-                        elif e.filename.lower().endswith((".jpg", ".jpeg", ".png")):
+                        elif e.filename.lower().endswith((".jpg", ".jpeg", ".png", ".bmp")):
                             rel = full[len(root):].lstrip("/")
                             brand = rel.split("/")[0] if "/" in rel else ""
                             rows.append(("terminal", full, brand, l["name"]))
@@ -869,15 +924,8 @@ def sync_label_images(force=False):
 
 
 def label_image_url(img):
-    """生成标注图片的可访问 URL（MinIO presigned 或工控机代理）。"""
-    if img["source"] == "minio":
-        scfg = line_storage_cfg(img["line_name"])
-        if scfg:
-            s3, cfg = get_s3(scfg)
-            return s3.generate_presigned_url("get_object",
-                Params={"Bucket": cfg["in_bucket"], "Key": img["src_key"]}, ExpiresIn=7200)
-        return "#"
-    return url_for("collect_wsimg", line=img["line_name"], path=img["src_key"])
+    """生成标注图片的可访问 URL（统一走 /media 代理，bmp 自动转 jpg）。"""
+    return url_for("media", src=img["source"], line=img["line_name"], key=img["src_key"])
 
 
 @app.route("/label")
