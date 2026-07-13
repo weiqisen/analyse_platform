@@ -8,19 +8,25 @@
     <a href="{{ url_for('collect', tab=key, item=cur_item) }}" class="{{ 'active' if tab==key }}">{{ name }}</a>
     {% endfor %}
   </nav>
-  {% if tab in ['monitor', 'history', 'images'] %}
-  <div class="sider-title" style="margin-top:16px">选择产线</div>
-  <nav class="sider-menu">
-    {% for l in lines %}
-    <a href="{{ url_for('collect', tab=tab, line=l.name, item=cur_item) }}"
-       class="{{ 'active' if cur_line==l.name }}">{{ l.name }}</a>
-    {% endfor %}
-  </nav>
-  {% endif %}
 </aside>
 {% endblock %}
 
 {% block content %}
+{% macro line_tabs() %}
+<div class="line-tabs">
+  <a href="{{ url_for('collect', tab=tab, item=cur_item) }}" class="{{ 'on' if cur_line=='all' }}">所有</a>
+  {% for l in lines %}
+  <a href="{{ url_for('collect', tab=tab, line=l.name, item=cur_item) }}" class="{{ 'on' if cur_line==l.name }}">{{ l.name }}</a>
+  {% endfor %}
+</div>
+{% endmacro %}
+<style>
+  .line-tabs { display:flex; gap:6px; margin-bottom:14px; flex-wrap:wrap; }
+  .line-tabs a { padding:5px 15px; border-radius:16px; background:var(--split); color:var(--text-secondary); font-size:13px; }
+  .line-tabs a.on { background:var(--primary); color:#fff; font-weight:600; }
+  .line-tabs a:hover { color:var(--primary); }
+  .line-tabs a.on:hover { color:#fff; }
+</style>
 {# ---------------- 采集配置（按产线） ---------------- #}
 {% if tab == 'config' %}
 <div class="page-title">采集配置</div>
@@ -134,36 +140,35 @@ function testTerm(btn){
 
 {# ---------------- 采集监控 ---------------- #}
 {% elif tab == 'monitor' %}
-<div class="toolbar">
-  <div class="page-title" style="margin:0">{{ cur_line }} 机台 {{ cur_item }} 共 {{ cams|length }} 个相机</div>
-  <a class="btn" href="{{ url_for('collect', tab='images', line=cur_line, item=cur_item) }}">浏览图片 »</a>
-</div>
-{% if err %}
-<div class="hint">读取失败：{{ err }}</div>
-{% endif %}
+<div class="page-title">采集监控</div>
+{{ line_tabs() }}
 <div class="stat-grid">
   {% for c in cams %}
   <div class="cam-card">
     <div class="num">{{ c.count }}</div>
-    <div class="label">{{ c.name }} 相机 · {{ '工控机' if src=='terminal' else '桶内' }}图片（张）</div>
+    <div class="label">{{ c.name }}{{ ' 产线' if by_line else ' 相机' }} · 采集图片（张）</div>
   </div>
+  {% else %}
+  <div class="empty">暂无数据</div>
   {% endfor %}
 </div>
 
 {# ---------------- 历史采集 ---------------- #}
 {% elif tab == 'history' %}
-<div class="page-title">{{ cur_line }} 机台 {{ cur_item }} 历史采集记录</div>
+<div class="page-title">历史采集记录</div>
+{{ line_tabs() }}
 <div class="card"><div class="card-body" style="padding:0">
 <table class="table">
-  <thead><tr><th>日期</th><th>班次</th><th>牌号</th><th>图片数量（张）</th><th>操作</th></tr></thead>
+  <thead><tr>{% if show_line %}<th>产线</th>{% endif %}<th>日期</th><th>班次</th><th>牌号</th><th>图片数量（张）</th><th>操作</th></tr></thead>
   <tbody>
   {% for r in records %}
   <tr>
+    {% if show_line %}<td>{{ r.line }}</td>{% endif %}
     <td>{{ r.date }}</td><td>{{ r.shift }}</td><td>{{ r.brand }}</td><td>{{ r.img_count }}</td>
     <td><a href="{{ url_for('collect', tab='images', line=r.line, item=cur_item) }}">浏览图片</a></td>
   </tr>
   {% else %}
-  <tr><td colspan="5" class="empty">暂无采集记录</td></tr>
+  <tr><td colspan="6" class="empty">暂无采集记录</td></tr>
   {% endfor %}
   </tbody>
 </table>
@@ -171,16 +176,20 @@ function testTerm(btn){
 
 {# ---------------- 图片查询（层级浏览） ---------------- #}
 {% elif tab == 'images' %}
-<div class="page-title">{{ cur_line }} 产线 {{ cur_item }} 图片浏览</div>
+<div class="page-title">图片浏览</div>
+{{ line_tabs() }}
+{% if not all_lines %}
 <div style="display:flex;align-items:center;gap:9px;margin-bottom:12px;font-size:13px;color:var(--text-secondary)">
   <span class="dot-status {{ 'on' if online else 'off' }}"></span>
   数据源 <b style="color:var(--text)">{{ server_addr or '—' }}</b>
   · {{ '对象存储' if src=='minio' else '工控机' }} · {{ '在线' if online else '离线' }}
 </div>
+{% endif %}
 <div class="card"><div class="card-body">
   {% if err %}
   <div class="hint">读取失败：{{ err }}</div>
   {% else %}
+  {% if not all_lines %}
   <div class="form-inline" style="margin-bottom:14px;gap:6px;flex-wrap:wrap;align-items:center">
     <a href="{{ url_for('collect', tab='images', line=cur_line, item=cur_item) }}">{{ root_label }}</a>
     {% for c in crumbs %}
@@ -189,10 +198,11 @@ function testTerm(btn){
     {% endfor %}
     <span style="margin-left:auto;color:var(--text-secondary)">{{ dirs|length }} 个目录 · {{ total }} 张图片</span>
   </div>
+  {% endif %}
   {% if dirs %}
   <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:14px">
     {% for d in dirs %}
-    <a href="{{ url_for('collect', tab='images', line=cur_line, item=cur_item, path=d.path) }}"
+    <a href="{% if all_lines %}{{ url_for('collect', tab='images', line=d.line, item=cur_item) }}{% else %}{{ url_for('collect', tab='images', line=cur_line, item=cur_item, path=d.path) }}{% endif %}"
        style="display:inline-flex;align-items:center;gap:8px;padding:10px 16px;border:1px solid var(--split);border-radius:8px;color:var(--text);background:#fafafa">
       <span style="font-size:17px">📁</span><span>{{ d.name }}</span>
     </a>

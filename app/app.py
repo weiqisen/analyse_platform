@@ -553,7 +553,7 @@ def collect(tab):
     ctx = dict(tab=tab, tabs=COLLECT_TABS, active="collect")
     lines = db.execute("SELECT * FROM prod_lines WHERE status=1 ORDER BY id").fetchall()
     ctx["lines"] = lines
-    cur_line = request.args.get("line") or (lines[0]["name"] if lines else "A01")
+    cur_line = request.args.get("line", "all")
     ctx["cur_line"] = cur_line
 
     if tab == "config":
@@ -587,43 +587,50 @@ def collect(tab):
                               "console_url": ("http://%s:9001" % host) if host else "#"})
         ctx["line_cfgs"] = line_cfgs
     elif tab == "monitor":
-        line_row = next((l for l in lines if l["name"] == cur_line), None)
-        tcfg = line_terminal_cfg(line_row)
-        ctx["src"] = "terminal" if tcfg else "minio"
+        sync_label_images()
         ctx["cams"] = []; ctx["err"] = None
-        from collections import Counter
-        cnt = Counter()
-        try:
-            if tcfg:
-                for im in sftp_list_images(tcfg, max_n=3000):
-                    parts = im["rel"].split("/")
-                    cnt[parts[3] if len(parts) >= 4 else (parts[-2] if len(parts) >= 2 else "未分类")] += 1
-            else:
-                scfg = line_storage_cfg(cur_line)
-                if scfg:
-                    s3, cfg = get_s3(scfg)
-                    for o in s3.list_objects_v2(Bucket=cfg["in_bucket"], MaxKeys=2000).get("Contents", []):
-                        parts = o["Key"].split("/")
-                        cnt[parts[3] if len(parts) >= 4 else "未分类"] += 1
+        ctx["by_line"] = (cur_line == "all")
+        if cur_line == "all":
+            for l in lines:
+                c = db.execute("SELECT COUNT(*) AS c FROM label_images WHERE line_name=?",
+                               (l["name"],)).fetchone()["c"]
+                ctx["cams"].append({"name": l["name"], "count": c})
+        else:
+            from collections import Counter
+            cnt = Counter()
+            for im in db.execute("SELECT src_key FROM label_images WHERE line_name=?",
+                                 (cur_line,)).fetchall():
+                parts = im["src_key"].split("/")
+                cnt[parts[-2] if len(parts) >= 2 else "?"] += 1
             ctx["cams"] = [{"name": k, "count": v} for k, v in sorted(cnt.items())]
-        except Exception as e:
-            ctx["err"] = str(e)[:140]
     elif tab == "history":
         sync_label_images()
         from collections import defaultdict
         agg = defaultdict(int)
-        for im in db.execute("SELECT brand, src_key FROM label_images WHERE line_name=?",
-                             (cur_line,)).fetchall():
+        q = "SELECT brand, src_key, line_name FROM label_images"
+        params = ()
+        if cur_line != "all":
+            q += " WHERE line_name=?"
+            params = (cur_line,)
+        for im in db.execute(q, params).fetchall():
             parts = im["src_key"].split("/")
             if len(parts) < 4:
                 continue
-            agg[(parts[-4], parts[-3], im["brand"])] += 1  # (日期, 班次, 牌号)
+            agg[(im["line_name"], parts[-4], parts[-3], im["brand"])] += 1  # (产线, 日期, 班次, 牌号)
 
         def _fmt(d):
             return d[:4] + "/" + d[4:6] + "/" + d[6:8] if len(d) == 8 and d.isdigit() else d
-        ctx["records"] = [{"date": _fmt(d), "shift": s, "brand": b, "img_count": c, "line": cur_line}
-                          for (d, s, b), c in sorted(agg.items(), reverse=True)]
+        ctx["records"] = [{"line": ln, "date": _fmt(d), "shift": s, "brand": b, "img_count": c}
+                          for (ln, d, s, b), c in sorted(agg.items(), reverse=True)]
+        ctx["show_line"] = (cur_line == "all")
+    elif tab == "images" and cur_line == "all":
+        ctx["all_lines"] = True
+        ctx["dirs"] = [{"name": l["name"] + " 产线", "line": l["name"]} for l in lines]
+        ctx["pics"] = []; ctx["total"] = 0; ctx["err"] = None
+        ctx["crumbs"] = []; ctx["cur_path"] = ""; ctx["root_label"] = "全部产线"
+        ctx["server_addr"] = ""; ctx["online"] = True; ctx["src"] = ""
     elif tab == "images":
+        ctx["all_lines"] = False
         line_row = next((l for l in lines if l["name"] == cur_line), None)
         tcfg = line_terminal_cfg(line_row)
         scfg = line_storage_cfg(cur_line)
