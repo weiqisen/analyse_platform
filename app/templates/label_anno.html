@@ -38,11 +38,11 @@
     <div class="hint" id="tip" style="margin-top:10px">矩形：在图上按住拖拽框选。多边形：依次点击顶点，点回起点或双击闭合。标注前先在右侧选缺陷分类。</div>
   </div></div>
 
-  <div class="card" style="width:240px;flex-shrink:0">
-    <div class="card-head">缺陷分类</div>
-    <div class="card-body class-list" id="clsList"></div>
-    <div class="card-head">本图标注（<span id="annoCount">0</span>）</div>
-    <div class="card-body" id="annoList" style="max-height:280px;overflow:auto"></div>
+  <div class="card" style="width:240px;flex-shrink:0;position:sticky;top:95px;align-self:flex-start;max-height:calc(100vh - 110px);display:flex;flex-direction:column">
+    <div class="card-head" style="flex-shrink:0">缺陷分类</div>
+    <div class="card-body class-list" id="clsList" style="max-height:260px;overflow-y:auto;flex-shrink:0"></div>
+    <div class="card-head" style="flex-shrink:0;border-top:1px solid var(--split)">本图标注（<span id="annoCount">0</span>）</div>
+    <div class="card-body" id="annoList" style="flex:1;overflow-y:auto;min-height:100px"></div>
   </div>
 </div>
 {% endblock %}
