@@ -923,49 +923,39 @@ def ls_ensure_project(brand, classes, scfg):
     return pid, total
 
 
-def ls_import_images(pid, brand, scfg):
-    """从 MinIO 导入某牌号「正常」图片 presigned URL 到 Label Studio 项目（幂等）。"""
-    import boto3
-    from botocore.client import Config
-    s3 = boto3.client("s3", endpoint_url="http://" + scfg["server_addr"],
-                      aws_access_key_id=scfg["username"], aws_secret_access_key=scfg["password"],
-                      region_name="us-east-1",
-                      config=Config(signature_version="s3v4", connect_timeout=8, read_timeout=20))
-    # 列出桶里已有任务，避免重复导入
-    existing = set()
-    try:
-        r = _ls_get("/api/projects/%d/tasks?page_size=5000" % pid) or {}
-        for t in r.get("results", []):
-            url = (t.get("data") or {}).get("image", "")
-            if url:
-                existing.add(url.split("?")[0].rsplit("/", 1)[-1])
-    except Exception:
-        pass
+def ls_ensure_s3_storage(pid, scfg):
+    """给 LS 项目挂 MinIO 源存储（幂等）。LS 自己列桶建任务、每次访问现签 URL，
+    平台不再枚举图片。新建时触发一次同步，返回 (storage_id, 是否新建)。"""
+    r = _ls_get("/api/storages/s3?project=%d" % pid)
+    for s in (r if isinstance(r, list) else r.get("results", []) if isinstance(r, dict) else []):
+        if s.get("bucket") == scfg["in_bucket"]:
+            return s.get("id"), False
+    s = _ls_post("/api/storages/s3", {
+        "project": pid,
+        "title": "MinIO %s" % scfg["in_bucket"],
+        "bucket": scfg["in_bucket"],
+        "prefix": "",
+        "s3_endpoint": "http://" + scfg["server_addr"],
+        "aws_access_key_id": scfg["username"],
+        "aws_secret_access_key": scfg["password"],
+        "region_name": "us-east-1",
+        "use_blob_urls": True,   # 每个对象=一个任务，data.image=s3://…
+        "recursive_scan": True,  # key 是 检测项目/日期/班次/缺陷类型/文件名 多级嵌套
+        "presign": True,         # LS 按需现签，URL 不会过期
+        "presign_ttl": 60,
+    })
+    sid = s.get("id")
+    if sid:
+        _ls_post("/api/storages/s3/%d/sync" % sid, {})
+    return sid, True
 
-    tasks = []
-    tok = None
-    while True:
-        kw = {"Bucket": scfg["in_bucket"], "Prefix": brand + "/", "MaxKeys": 1000}
-        if tok:
-            kw["ContinuationToken"] = tok
-        r = s3.list_objects_v2(**kw)
-        for o in r.get("Contents", []):
-            k = o["Key"]
-            if "/正常/" not in k or not k.lower().endswith((".jpg", ".jpeg", ".png", ".bmp")):
-                continue
-            if k.rsplit("/", 1)[-1] in existing:
-                continue
-            url = s3.generate_presigned_url("get_object", Params={"Bucket": scfg["in_bucket"], "Key": k}, ExpiresIn=86400)
-            tasks.append({"data": {"image": url}})
-        if r.get("IsTruncated"):
-            tok = r.get("NextContinuationToken")
-        else:
-            break
-    if not tasks:
-        return 0
-    for i in range(0, len(tasks), 100):
-        _ls_post("/api/projects/%d/import" % pid, tasks[i:i + 100])
-    return len(tasks)
+
+def ls_task_counts(pid):
+    """读 LS 项目的标注进度。"""
+    p = _ls_get("/api/projects/%d" % pid) or {}
+    total = p.get("task_number") or 0
+    done = p.get("finished_task_number") or 0
+    return {"total": total, "done": done, "unlabeled": max(0, total - done)}
 
 
 # ---------------------------------------------------------------- 缺陷标注
@@ -1078,11 +1068,11 @@ def label():
             try:
                 pid, _ = ls_ensure_project(brand, classes, scfg)
                 if pid:
-                    ls_import_images(pid, brand, scfg)
+                    ls_ensure_s3_storage(pid, scfg)
                     cnt = ls_task_counts(pid)
                     ls_total, ls_done = cnt["total"], cnt["done"]
-            except Exception:
-                pass
+            except Exception as e:
+                app.logger.warning("Label Studio 对接失败（牌号 %s）：%s", brand, e)
         tasks.append({"brand": brand, "total": ls_total or total_db,
                       "labeling": ls_done, "unlabeled": max(0, (ls_total or total_db) - ls_done),
                       "exported": ls_done, "ls_pid": pid, "ls_ok": ls_ok})
@@ -1162,8 +1152,8 @@ def label_webhook():
                     db.execute("UPDATE label_tasks SET total=?,labeling=?,unlabeled=? WHERE brand=?",
                                (cnt["total"], cnt["done"], cnt["unlabeled"], brand))
                     db.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        app.logger.warning("Label Studio webhook 处理失败：%s", e)
     return jsonify({"ok": True})
 
 
