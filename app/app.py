@@ -138,6 +138,11 @@ def migrate_db(db):
         ("label_tasks", "item_id", "INT DEFAULT 0 COMMENT '所属检测项目(detect_items.id)'"),
         ("inference_results", "item_id", "INT DEFAULT 0 COMMENT '所属检测项目(detect_items.id)'"),
         ("model_versions", "item_id", "INT DEFAULT 0 COMMENT '所属检测项目(detect_items.id)'"),
+        # 新架构推理：结果不再来自 label_images，直接记 机台/相机面/单元/对象key
+        ("inference_results", "machine", "VARCHAR(64) DEFAULT '' COMMENT '机台/产线'"),
+        ("inference_results", "face_name", "VARCHAR(64) DEFAULT '' COMMENT '相机面'"),
+        ("inference_results", "unit_id", "INT DEFAULT 0 COMMENT '建模单元(model_units.id)'"),
+        ("inference_results", "src_key", "VARCHAR(512) DEFAULT '' COMMENT '对象key'"),
     ]
     added = set()
     for table, col, ddl in adds:
@@ -146,6 +151,20 @@ def migrate_db(db):
             added.add(table)
     if added:
         db.commit()
+
+    # inference_results 换新架构：不再挂 label_images，image_id 应可空且去掉 uq_img
+    # 唯一键。旧表 image_id NOT NULL + UNIQUE(image_id)，新流程不提供 image_id 会插入失败。
+    if _has_column(db, "inference_results", "image_id"):
+        col = db.execute("SELECT is_nullable AS n FROM information_schema.columns WHERE table_schema=? "
+                         "AND table_name='inference_results' AND column_name='image_id'",
+                         (DB_NAME,)).fetchone()
+        if col and str(col["n"]).upper() == "NO":
+            try:
+                db.execute("ALTER TABLE inference_results DROP INDEX uq_img")
+            except Exception:
+                pass
+            db.execute("ALTER TABLE inference_results MODIFY image_id INT NULL COMMENT '旧字段, 新架构不用'")
+            db.commit()
 
     # 相机面映射种子：现场用 is7600C_x 技术码，首次预置这 6 面（is7600C 机型）
     if not db.execute("SELECT COUNT(*) AS c FROM camera_faces").fetchone()["c"]:
@@ -240,6 +259,15 @@ def init_db():
             name VARCHAR(64) NOT NULL COMMENT '缺陷分类名称',
             status INT DEFAULT 1 COMMENT '状态: 1启用 0停用'
         ) DEFAULT CHARSET=utf8mb4 COMMENT='缺陷标注分类表'""",
+        """CREATE TABLE IF NOT EXISTS machine_schedule(
+            id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+            machine VARCHAR(64) NOT NULL COMMENT '机台/产线(如 a01)',
+            sched_date VARCHAR(16) NOT NULL COMMENT '日期 YYYYMMDD',
+            shift VARCHAR(16) DEFAULT '' COMMENT '班次(空=全天)',
+            brand VARCHAR(64) NOT NULL COMMENT '该时段生产的牌号',
+            status INT DEFAULT 1 COMMENT '状态: 1启用 0停用',
+            UNIQUE KEY uq_sched (machine, sched_date, shift)
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='机台排程(机台×日期×班次→牌号), 推理时反查牌号'""",
         """CREATE TABLE IF NOT EXISTS model_units(
             id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
             brand VARCHAR(64) NOT NULL COMMENT '牌号/品规',
@@ -591,7 +619,7 @@ def users_delete(uid):
 # ---------------------------------------------------------------- 基础配置
 CONFIG_TABS = [("items", "检测项目"), ("lines", "机组/产线"), ("brands", "牌号/品规"),
                ("workshops", "车间"), ("areas", "区域"), ("defects", "缺陷分类"),
-               ("faces", "相机面映射"), ("integration", "系统集成")]
+               ("faces", "相机面映射"), ("schedule", "机台排程"), ("integration", "系统集成")]
 
 
 @app.route("/config/<tab>")
@@ -617,14 +645,16 @@ def config(tab):
         "areas": db.execute("SELECT * FROM areas ORDER BY id").fetchall(),
         "defects": db.execute("SELECT * FROM label_classes ORDER BY id").fetchall(),
         "faces": db.execute("SELECT * FROM camera_faces ORDER BY machine_model, sort_order, id").fetchall(),
+        "schedule": db.execute("SELECT * FROM machine_schedule ORDER BY sched_date DESC, machine, shift").fetchall(),
     }[tab]
     if tab == "faces":
         return render_template("config_faces.html", tab=tab, tabs=CONFIG_TABS,
                                rows=[dict(r) for r in data], active="config")
     workshops = [dict(w) for w in db.execute("SELECT * FROM workshops WHERE status=1 ORDER BY id").fetchall()]
     areas = [dict(a) for a in db.execute("SELECT * FROM areas WHERE status=1 ORDER BY id").fetchall()]
-    return render_template("config.html", tab=tab, tabs=CONFIG_TABS,
-                           rows=data, workshops=workshops, areas=areas, active="config")
+    sched_brands = [dict(b) for b in db.execute("SELECT * FROM brands WHERE status=1 ORDER BY id").fetchall()]
+    return render_template("config.html", tab=tab, tabs=CONFIG_TABS, rows=data,
+                           workshops=workshops, areas=areas, sched_brands=sched_brands, active="config")
 
 
 @app.route("/config/items/sources")
@@ -805,6 +835,14 @@ def config_save(tab):
             db.execute("UPDATE label_classes SET name=? WHERE id=?", (f["name"], rid))
         else:
             db.execute("INSERT INTO label_classes(name) VALUES(?)", (f["name"],))
+    elif tab == "schedule":
+        vals = (f["machine"].strip(), f["sched_date"].strip(), f.get("shift", "").strip(), f["brand"].strip())
+        if rid:
+            db.execute("UPDATE machine_schedule SET machine=?,sched_date=?,shift=?,brand=? WHERE id=?",
+                       vals + (rid,))
+        else:
+            db.execute("INSERT INTO machine_schedule(machine,sched_date,shift,brand) VALUES(?,?,?,?) "
+                       "ON DUPLICATE KEY UPDATE brand=VALUES(brand)", vals)
     elif tab == "faces":
         vals = (f["raw_name"].strip(), f["face_name"].strip(), f.get("face_code", "").strip(),
                 f.get("machine_model", "").strip(), f.get("sort_order", 0) or 0)
@@ -827,7 +865,7 @@ def config_save(tab):
 def config_delete(tab, rid):
     table = {"items": "detect_items", "lines": "prod_lines", "brands": "brands",
              "workshops": "workshops", "areas": "areas", "defects": "label_classes",
-             "faces": "camera_faces"}.get(tab)
+             "faces": "camera_faces", "schedule": "machine_schedule"}.get(tab)
     if not table:
         abort(404)
     db = get_db()
@@ -842,7 +880,7 @@ def config_delete(tab, rid):
 def config_toggle(tab, rid):
     table = {"items": "detect_items", "lines": "prod_lines", "brands": "brands",
              "workshops": "workshops", "areas": "areas", "defects": "label_classes",
-             "faces": "camera_faces"}.get(tab)
+             "faces": "camera_faces", "schedule": "machine_schedule"}.get(tab)
     if not table:
         abort(404)
     db = get_db()
@@ -1871,75 +1909,119 @@ def analysis(tab):
     if tab not in dict(ANALYSIS_TABS):
         abort(404)
     db = get_db()
-    lines = db.execute("SELECT * FROM prod_lines WHERE status=1 ORDER BY id").fetchall()
-    cur_line = request.args.get("line", "all")
-    it = cur_detect_item()
-    infer_total = db.execute("SELECT COUNT(*) AS c FROM inference_results WHERE item_id=?",
-                             (it["id"] if it else 0,)).fetchone()["c"]
+    brands = [dict(b) for b in db.execute("SELECT * FROM brands WHERE status=1 ORDER BY id").fetchall()]
+    cur_brand = request.args.get("brand", "all")
+    base = "FROM inference_results WHERE 1=1"
+    params = []
+    if cur_brand != "all":
+        base += " AND brand=?"
+        params.append(cur_brand)
+    infer_total = db.execute("SELECT COUNT(*) AS c " + base, params).fetchone()["c"]
+    defect_total = db.execute("SELECT COUNT(*) AS c " + base + " AND is_defect=1", params).fetchone()["c"]
+    # 有多少建模单元已绑定模型（可推理）
+    ready = db.execute("SELECT COUNT(*) AS c FROM model_units WHERE model_endpoint<>''").fetchone()["c"]
     return render_template("analysis.html", tab=tab, tabs=ANALYSIS_TABS,
-                           lines=lines, cur_line=cur_line, active="analysis",
-                           infer_total=infer_total, using_mock=(not get_cfg("infer_url")),
+                           brands=brands, cur_brand=cur_brand, active="analysis",
+                           infer_total=infer_total, defect_total=defect_total, ready_units=ready,
                            today=datetime.now().strftime("%Y/%m/%d"))
 
 
-def run_inference_one(img, infer_url, classes):
-    """调算法服务对一张 NG 图推理，返回判定 dict；本张失败返回 None（跳过）。
-    没有内置模拟兜底 —— 推理结果会进分析库当统计依据，编造的数据一旦混进去
-    就再也分不清真假，宁可少一条也不能假一条。"""
+def infer_call(endpoint, src_key):
+    """调建模单元绑定的推理服务；失败返回 None（跳过，不编造）。"""
     try:
         import urllib.request
-        body = json.dumps({"image_id": img["id"], "src_key": img["src_key"],
-                           "line": img["line_name"], "brand": img["brand"]}).encode("utf-8")
-        req = urllib.request.Request(infer_url, data=body,
+        body = json.dumps({"src_key": src_key}).encode("utf-8")
+        req = urllib.request.Request(endpoint, data=body,
                                      headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=30) as r:
             d = json.loads(r.read().decode("utf-8"))
-        cname = d.get("class_name", "")
-        cid = d.get("class_id")
-        if cid is None and cname:  # 算法服务只回类名，平台自己查字典映射 id
-            cid = next((c["id"] for c in classes if c["name"] == cname), None)
-        return {"is_defect": int(d.get("is_defect", 1)), "class_id": cid,
-                "class_name": cname, "confidence": float(d.get("confidence", 0)),
-                "model_version": d.get("model_version", "")}
+        # 兼容对方 {status,result,message} 包裹
+        if isinstance(d, dict) and "result" in d and "status" in d:
+            d = d["result"]
+        return {"is_defect": int(d.get("is_defect", 1)), "class_name": d.get("class_name", ""),
+                "confidence": float(d.get("confidence", 0)), "model_version": d.get("model_version", "")}
     except Exception as e:
-        app.logger.warning("推理服务调用失败，跳过（%s）：%s", img["src_key"], e)
+        app.logger.warning("推理服务调用失败，跳过（%s）：%s", src_key, e)
         return None
+
+
+def resolve_brand(db, machine, date, shift):
+    """机台排程反查牌号：先精确(机台+日期+班次)，再退到全天(班次为空)。"""
+    r = db.execute("SELECT brand FROM machine_schedule WHERE machine=? AND sched_date=? "
+                   "AND shift=? AND status=1", (machine, date, shift)).fetchone()
+    if not r:
+        r = db.execute("SELECT brand FROM machine_schedule WHERE machine=? AND sched_date=? "
+                       "AND shift='' AND status=1", (machine, date)).fetchone()
+    return r["brand"] if r else ""
 
 
 @app.route("/analysis/infer", methods=["POST"])
 @login_required
 def analysis_infer():
+    """按新架构推理：扫数据源图 → 排程反查牌号 + 相机面 → 找单元绑定的模型 → 推理存库。"""
     db = get_db()
-    infer_url = get_cfg("infer_url")
-    if not infer_url:
-        flash("未配置推理服务地址，无法推理。请到「基础配置 → 系统集成」填写。", "error")
+    scfg = db.execute("SELECT * FROM storage_config WHERE server_addr<>'' LIMIT 1").fetchone()
+    if not scfg:
+        flash("未配置对象存储数据源", "error")
         return redirect(request.referrer or url_for("analysis", tab="shift"))
-    sync_label_images(force=True)
-    classes = [dict(c) for c in db.execute("SELECT * FROM label_classes ORDER BY id").fetchall()]
-    done = {r["image_id"] for r in db.execute("SELECT image_id FROM inference_results").fetchall()}
-    n = 0
-    skipped = 0
-    for img in db.execute("SELECT * FROM label_images").fetchall():
-        if img["id"] in done:
-            continue
-        parts = img["src_key"].split("/")
-        date = parts[-4] if len(parts) >= 4 else ""
-        shift = parts[-3] if len(parts) >= 3 else ""
-        res = run_inference_one(img, infer_url, classes)
-        if res is None:
-            skipped += 1
-            continue
-        db.execute("INSERT INTO inference_results(image_id,item_id,line_name,brand,img_date,shift,"
-                   "is_defect,class_id,class_name,confidence,model_version) "
-                   "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                   (img["id"], img["item_id"], img["line_name"], img["brand"], date, shift,
-                    res["is_defect"], res["class_id"], res["class_name"], res["confidence"],
-                    res["model_version"]))  # 版本取自算法服务自报，能追溯到具体模型
-        n += 1
+    # 相机面映射、建模单元(含绑定 endpoint)一次性载入
+    face_by_raw = {f["raw_name"]: dict(f) for f in db.execute(
+        "SELECT * FROM camera_faces WHERE status=1").fetchall()}
+    units = {(u["brand"], u["face_id"]): dict(u) for u in db.execute(
+        "SELECT * FROM model_units WHERE model_endpoint<>''").fetchall()}
+    done = {r["src_key"] for r in db.execute(
+        "SELECT src_key FROM inference_results WHERE src_key<>''").fetchall()}
+
+    s3, cfg = get_s3(scfg)
+    n = skipped = no_sched = no_model = 0
+    tok = None
+    while True:
+        kw = {"Bucket": cfg["in_bucket"], "MaxKeys": 1000}
+        if tok:
+            kw["ContinuationToken"] = tok
+        r = s3.list_objects_v2(**kw)
+        for o in r.get("Contents", []):
+            key = o["Key"]
+            if not key.lower().endswith((".jpg", ".jpeg", ".png", ".bmp")) or key in done:
+                continue
+            # 路径：车间/机台/检测项目/日期/班组/班次/相机面/文件
+            p = key.split("/")
+            if len(p) < 8:
+                continue
+            machine, date, shift, raw_face = p[1], p[3], p[5], p[6]
+            face = face_by_raw.get(raw_face)
+            if not face:
+                continue  # 相机面未映射，跳过
+            brand = resolve_brand(db, machine, date, shift)
+            if not brand:
+                no_sched += 1
+                continue
+            unit = units.get((brand, face["id"]))
+            if not unit:
+                no_model += 1
+                continue
+            res = infer_call(unit["model_endpoint"], key)
+            if res is None:
+                skipped += 1
+                continue
+            db.execute("INSERT INTO inference_results(src_key,unit_id,machine,line_name,brand,face_name,"
+                       "img_date,shift,is_defect,class_name,confidence,model_version) "
+                       "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                       (key, unit["id"], machine, machine, brand, face["face_name"],
+                        date, shift, res["is_defect"], res["class_name"], res["confidence"],
+                        res["model_version"]))
+            n += 1
+        if not r.get("IsTruncated"):
+            break
+        tok = r.get("NextContinuationToken")
     db.commit()
-    tip = "推理完成，本次新增 %d 条结果" % n
+    tip = "推理完成，新增 %d 条" % n
+    if no_sched:
+        tip += "；%d 张排程未排到牌号" % no_sched
+    if no_model:
+        tip += "；%d 张对应单元未绑定模型" % no_model
     if skipped:
-        tip += "；%d 张推理服务读不到已跳过" % skipped
+        tip += "；%d 张推理调用失败" % skipped
     flash(tip, "success")
     return redirect(request.referrer or url_for("analysis", tab="shift"))
 
@@ -1948,13 +2030,12 @@ def analysis_infer():
 @login_required
 def api_analysis(tab):
     db = get_db()
-    line = request.args.get("line", "all")
-    it = cur_detect_item()
-    base = "FROM inference_results WHERE is_defect=1 AND item_id=?"
-    params = [it["id"] if it else 0]
-    if line != "all":
-        base += " AND line_name=?"
-        params.append(line)
+    brand = request.args.get("brand", "all")
+    base = "FROM inference_results WHERE is_defect=1"
+    params = []
+    if brand != "all":
+        base += " AND brand=?"
+        params.append(brand)
     cls_expr = "COALESCE(NULLIF(class_name,''),'未分类')"
 
     def _fmt(d):

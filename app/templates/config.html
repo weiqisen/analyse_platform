@@ -34,6 +34,8 @@
     <tr><th>序号</th><th>区域名称</th><th>所属车间</th><th>状态</th><th>操作</th></tr>
   {% elif tab == 'defects' %}
     <tr><th>序号</th><th>分类名称</th><th>状态</th><th>操作</th></tr>
+  {% elif tab == 'schedule' %}
+    <tr><th>序号</th><th>机台</th><th>日期</th><th>班次</th><th>牌号</th><th>状态</th><th>操作</th></tr>
   {% endif %}
   </thead>
   <tbody>
@@ -57,6 +59,9 @@
       <td>{{ r.name }}</td><td>{{ r.workshop }}</td>
     {% elif tab == 'defects' %}
       <td>{{ r.name }}</td>
+    {% elif tab == 'schedule' %}
+      <td><code>{{ r.machine }}</code></td><td>{{ r.sched_date }}</td>
+      <td>{{ r.shift or '全天' }}</td><td>{{ r.brand }}</td>
     {% endif %}
     <td>{% if r.status %}<span class="tag">启用</span>{% else %}<span class="tag tag-gray">停用</span>{% endif %}</td>
     <td>
@@ -118,6 +123,18 @@
           </select></div>
         {% elif tab == 'defects' %}
         <div class="form-item"><label><span class="req">*</span>分类名称</label><input class="input" name="name" id="c_name" required></div>
+        {% elif tab == 'schedule' %}
+        <div class="form-item"><label><span class="req">*</span>机台</label><input class="input" name="machine" id="c_machine" placeholder="如 a01" required></div>
+        <div class="form-item"><label><span class="req">*</span>日期</label><input class="input" name="sched_date" id="c_sched_date" placeholder="YYYYMMDD 如 20260716" required></div>
+        <div class="form-item"><label>班次</label>
+          <select class="select input" name="shift" id="c_shift">
+            <option value="">全天</option><option>早班</option><option>中班</option><option>晚班</option>
+          </select></div>
+        <div class="form-item"><label><span class="req">*</span>牌号</label>
+          <select class="select input" name="brand" id="c_brand" required>
+            <option value="">请选择牌号</option>
+            {% for b in sched_brands %}<option>{{ b.spec }}</option>{% endfor %}
+          </select></div>
         {% endif %}
       </div>
       <div class="modal-foot">
@@ -178,7 +195,7 @@ function fillSources(selected){
 function editRow(r){
   r = r || {};
   document.getElementById('rowModalTitle').textContent = (r.id ? '修改' : '新增') + '{{ tabname }}';
-  ['id','code','name','short_name','workshop','area','spec'].forEach(function(k){
+  ['id','code','name','short_name','workshop','area','spec','machine','sched_date','shift','brand'].forEach(function(k){
     var el = document.getElementById('c_' + k);
     if (el) el.value = r[k] || '';
   });
