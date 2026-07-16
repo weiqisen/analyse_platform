@@ -199,7 +199,7 @@ function cfgTestWs(){
     <a href="{{ url_for('collect', tab='images', line=cur_line, item=cur_item) }}">{{ root_label }}</a>
     {% for c in crumbs %}
     <span style="color:var(--text-secondary)">/</span>
-    <a href="{{ url_for('collect', tab='images', line=cur_line, item=cur_item, path=crumbs[:loop.index]|join('/')) }}">{{ c }}</a>
+    <a href="{{ url_for('collect', tab='images', line=cur_line, item=cur_item, path=c.path) }}">{{ c.name }}</a>
     {% endfor %}
     <span style="margin-left:auto;color:var(--text-secondary)">{{ dirs|length }} 个目录 · {{ total }} 张图片</span>
   </div>
@@ -209,7 +209,8 @@ function cfgTestWs(){
     {% for d in dirs %}
     <a href="{% if all_lines %}{{ url_for('collect', tab='images', line=d.line, item=cur_item) }}{% else %}{{ url_for('collect', tab='images', line=cur_line, item=cur_item, path=d.path) }}{% endif %}"
        style="display:inline-flex;align-items:center;gap:8px;padding:10px 16px;border:1px solid var(--split);border-radius:8px;color:var(--text);background:#fafafa">
-      <span style="font-size:17px">📁</span><span>{{ d.name }}</span>
+      <span style="font-size:17px">📁</span>
+      <span>{{ d.name }}{% if d.raw and d.raw != d.name %}<span style="font-size:11px;color:var(--text-secondary);margin-left:5px">{{ d.raw }}</span>{% endif %}</span>
     </a>
     {% endfor %}
   </div>

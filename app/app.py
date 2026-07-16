@@ -908,6 +908,12 @@ def sftp_list_images(tcfg, max_n=500):
     return out
 
 
+def face_display_map():
+    """{原始相机面目录名: 标准面名}，用于把 is7600C_D 这类技术码显示成「正面」。"""
+    return {r["raw_name"]: r["face_name"] for r in
+            get_db().execute("SELECT raw_name,face_name FROM camera_faces WHERE status=1").fetchall()}
+
+
 @app.route("/collect/<tab>", methods=["GET", "POST"])
 @login_required
 def collect(tab):
@@ -1008,23 +1014,25 @@ def collect(tab):
         ctx["src"] = "terminal" if tcfg else "minio"
         path = request.args.get("path", "").strip("/")
         ctx["cur_path"] = path
-        ctx["crumbs"] = path.split("/") if path else []
-        # 浏览起点是当前检测项目的目录，往下就是 日期→班次→缺陷类型→图片。
-        # 此前从桶根开始，第一级还要再点一次检测项目，且不受顶栏选择影响。
-        base = (cur_item_row["src_prefix"] if cur_item_row else "") or ""
-        ctx["root_label"] = (cur_item_row["short_name"] or cur_item_row["name"]) if cur_item_row else "根目录"
+        # 新现场结构从桶根逐层下钻：车间/产线/检测项目/日期/班组/班次/相机面/文件。
+        # 相机面那层的技术码（is7600C_D）显示成标准面名（正面）。
+        fmap = face_display_map()
+        segs = path.split("/") if path else []
+        ctx["crumbs"] = [{"name": fmap.get(s, s),
+                          "path": "/".join(segs[:i + 1])} for i, s in enumerate(segs)]
+        ctx["root_label"] = scfg["in_bucket"] if scfg else (tcfg["ng_dir"] if tcfg else "根目录")
         ctx["server_addr"] = tcfg["sys_addr"] if tcfg else (scfg["server_addr"] if scfg else "")
         ctx["dirs"] = []; ctx["pics"] = []; ctx["total"] = 0; ctx["err"] = None; ctx["online"] = False
         try:
             if tcfg:
                 import stat as _st
                 root = (tcfg["ng_dir"] or "").rstrip("/")
-                full = root + ("/" + base if base else "") + ("/" + path if path else "")
+                full = root + ("/" + path if path else "")
                 t, sftp = _ws_sftp(tcfg)
                 try:
                     for e in sorted(sftp.listdir_attr(full), key=lambda x: x.filename):
                         if _st.S_ISDIR(e.st_mode):
-                            ctx["dirs"].append({"name": e.filename,
+                            ctx["dirs"].append({"name": fmap.get(e.filename, e.filename), "raw": e.filename,
                                                 "path": (path + "/" + e.filename).strip("/")})
                         elif e.filename.lower().endswith((".jpg", ".jpeg", ".png", ".bmp")):
                             ctx["pics"].append({"name": e.filename,
@@ -1033,11 +1041,12 @@ def collect(tab):
                     t.close()
             elif scfg:
                 s3, cfg = get_s3(scfg)
-                prefix = (base + "/" if base else "") + ((path + "/") if path else "")
+                prefix = (path + "/") if path else ""
                 r = s3.list_objects_v2(Bucket=cfg["in_bucket"], Prefix=prefix, Delimiter="/", MaxKeys=1000)
                 for cp in r.get("CommonPrefixes", []):
                     name = cp["Prefix"][len(prefix):].rstrip("/")
-                    ctx["dirs"].append({"name": name, "path": (path + "/" + name).strip("/")})
+                    ctx["dirs"].append({"name": fmap.get(name, name), "raw": name,
+                                        "path": (path + "/" + name).strip("/")})
                 for o in r.get("Contents", []):
                     if o["Key"] == prefix:
                         continue
