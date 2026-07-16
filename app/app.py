@@ -1107,32 +1107,47 @@ def _ls_post(path, data, method="POST"):
         return json.loads(txt) if txt else {}
 
 
+def ls_label_config(classes):
+    """按缺陷类别字典生成 LS 的标注界面配置。"""
+    cfg = ['<View>', '  <Image name="image" value="$image"/>',
+           '  <RectangleLabels name="tag" toName="image">']
+    for c in classes:
+        bg = "#%02x%02x%02x" % tuple((int(c["id"]) * 47 * (i + 1) + 40) % 200 + 30 for i in range(3))
+        cfg.append('    <Label value="%s" background="%s"/>' % (c["name"], bg))
+    cfg += ['  </RectangleLabels>', '</View>']
+    return "\n".join(cfg)
+
+
 def ls_ensure_project(item, classes):
-    """为某检测项目确保 Label Studio 标注项目存在，返回 project_id。
+    """为某检测项目确保 Label Studio 标注项目存在且缺陷类别是最新的，返回 project_id。
     优先用 detect_items.ls_project_id 直接命中，避免改名后重复建项目。"""
     db = get_db()
     brand = item["short_name"] or item["name"]
+    want = ls_label_config(classes)
     pid = item["ls_project_id"] or 0
-    if pid and (_ls_get("/api/projects/%d" % pid) or {}).get("id"):
-        return pid
-    r = _ls_get("/api/projects?page_size=200") or {}
-    pid = None
-    for p in r.get("results", []):
-        if p.get("title") == brand:
-            pid = p["id"]
-            break
+    p = _ls_get("/api/projects/%d" % pid) if pid else {}
+    if not (p or {}).get("id"):
+        pid, p = None, {}
+        r = _ls_get("/api/projects?page_size=200") or {}
+        for x in r.get("results", []):
+            if x.get("title") == brand:
+                pid, p = x["id"], x
+                break
     if not pid:
-        labels = [{"value": c["name"], "background": "#%02x%02x%02x" %
-                   tuple((int(c["id"]) * 47 * (i + 1) + 40) % 200 + 30 for i in range(3))} for c in classes]
-        label_config = '<View>\n  <Image name="image" value="$image"/>\n  <RectangleLabels name="tag" toName="image">\n'
-        for l in labels:
-            label_config += '    <Label value="%s" background="%s"/>\n' % (l["value"], l["background"])
-        label_config += '  </RectangleLabels>\n</View>'
-        p = _ls_post("/api/projects", {"title": brand, "label_config": label_config,
+        p = _ls_post("/api/projects", {"title": brand, "label_config": want,
                      "description": "卷烟厂缺陷标注 · %s · %d类缺陷" % (brand, len(classes))})
         pid = p.get("id")
-    if not pid:
-        return None
+        if not pid:
+            return None
+    elif classes and (p.get("label_config") or "").strip() != want.strip():
+        # 类别字典改过就把 LS 的标注界面同步过去 —— 否则平台里新增的缺陷类型
+        # 在 LS 标注时根本选不到，删掉的还一直留着。
+        try:
+            _ls_post("/api/projects/%d" % pid, {"label_config": want}, method="PATCH")
+            app.logger.info("已同步「%s」的缺陷类别到 Label Studio（%d 类）", brand, len(classes))
+        except Exception as e:
+            # 已有标注用到了将被删除的类别时 LS 会拒绝，属预期，保留旧配置
+            app.logger.warning("同步缺陷类别到 Label Studio 失败（%s）：%s", brand, e)
     db.execute("UPDATE detect_items SET ls_project_id=? WHERE id=?", (pid, item["id"]))
     db.commit()
     return pid
