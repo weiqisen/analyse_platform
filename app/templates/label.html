@@ -23,6 +23,10 @@
           {% if t.labeling %}
           <a class="btn-link" href="javascript:;" onclick="openPublish({{ t.item_id }},'{{ t.brand }}',{{ t.labeling }})">发布样本集</a>
           {% endif %}
+          {% if t.ls_pid %}
+          <a class="btn-link" style="color:#ff4d4f" href="javascript:;"
+             onclick="openReset({{ t.item_id }},'{{ t.brand }}',{{ t.labeling }})">删除标注项目</a>
+          {% endif %}
           {% elif t.fix_url %}
           <a class="btn-link" href="{{ t.fix_url }}">{{ t.note }} →</a>
           {% else %}
@@ -54,7 +58,32 @@
     </div>
   </div>
 </div>
+<div class="modal-mask" id="resetModal">
+  <div class="modal">
+    <div class="modal-head"><span>删除标注项目</span><span class="close" onclick="closeModal('resetModal')">×</span></div>
+    <div class="modal-body">
+      <p style="margin:0;font-size:14px">确认删除 <b id="rsBrand">—</b> 在 Label Studio 里的标注项目？</p>
+      <p style="margin:8px 0 0;font-size:12.5px;color:#ff4d4f">
+        已标注的 <b id="rsNum">0</b> 张会一并删除，无法恢复。</p>
+      <p style="margin:6px 0 0;font-size:12.5px;color:var(--text-secondary)">
+        MinIO 里的原图不受影响；已发布到 defect-datasets 的样本集也不受影响。
+        再次打开标注页会自动重建项目并重新同步图片。</p>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeModal('resetModal')">取消</button>
+      <form method="post" id="rsForm" action="" style="display:inline">
+        <button class="btn" style="background:#ff4d4f;border-color:#ff4d4f;color:#fff" type="submit">确认删除</button>
+      </form>
+    </div>
+  </div>
+</div>
 <script>
+function openReset(itemId, name, count){
+  document.getElementById('rsBrand').textContent = name;
+  document.getElementById('rsNum').textContent = count;
+  document.getElementById('rsForm').action = '/label/reset/' + itemId;
+  openModal('resetModal');
+}
 function openPublish(itemId, name, count){
   document.getElementById('pubBrand').textContent = name;
   document.getElementById('pubNum').textContent = count;

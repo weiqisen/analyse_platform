@@ -401,7 +401,13 @@ def cur_detect_item():
                        (cur, cur)).fetchone()
         if r:
             return dict(r)
-    r = db.execute("SELECT * FROM detect_items WHERE status=1 ORDER BY id LIMIT 1").fetchone()
+    # 默认落在「配了数据源、且真采到图」的项目上。此前取 id 最小的，正好是空的
+    # 烟支外观 —— 每次打开系统都是一片 0，有真图的项目反而要手动切过去。
+    r = db.execute(
+        "SELECT d.* FROM detect_items d JOIN label_images i ON i.item_id=d.id "
+        "WHERE d.status=1 GROUP BY d.id ORDER BY COUNT(i.id) DESC, d.id LIMIT 1").fetchone()
+    if not r:
+        r = db.execute("SELECT * FROM detect_items WHERE status=1 ORDER BY id LIMIT 1").fetchone()
     return dict(r) if r else None
 
 
@@ -417,8 +423,8 @@ def inject_globals():
     except Exception:
         pass  # 建表前或登录页连不上库时不阻塞页面渲染
     names = [(i["short_name"] or i["name"]) for i in items]
-    cur = request.args.get("item") or (names[0] if names else "")
-    cur_row = next((i for i in items if (i["short_name"] or i["name"]) == cur), None)
+    cur_row = cur_detect_item()   # 与各路由取的是同一个，避免顶栏显示与实际数据不一致
+    cur = (cur_row["short_name"] or cur_row["name"]) if cur_row else ""
     return dict(DETECT_ITEMS=names, DETECT_ITEM_ROWS=items, cur_item=cur,
                 cur_item_id=(cur_row["id"] if cur_row else 0))
 
@@ -1419,6 +1425,33 @@ def cache_label_progress(db, item_id, name, cnt):
         db.execute("INSERT INTO label_tasks(item_id,brand,total,labeling,unlabeled) VALUES(?,?,?,?,?)",
                    (item_id, name, cnt["total"], cnt["done"], cnt["unlabeled"]))
     db.commit()
+
+
+@app.route("/label/reset/<int:item_id>", methods=["POST"])
+@login_required
+def label_reset(item_id):
+    """删除该检测项目的 Label Studio 标注项目，下次打开标注页会重建。
+    LS 里的标注会一并没掉，故前端需二次确认。原图在 MinIO，不受影响。"""
+    db = get_db()
+    item = db.execute("SELECT * FROM detect_items WHERE id=?", (item_id,)).fetchone()
+    if not item:
+        abort(404)
+    name = item["short_name"] or item["name"]
+    pid = item["ls_project_id"] or 0
+    if not pid:
+        flash("检测项目「%s」没有关联的 Label Studio 项目" % name, "error")
+        return redirect(url_for("label", item=name))
+    try:
+        cnt = ls_task_counts(pid)
+        _ls_post("/api/projects/%d" % pid, {}, method="DELETE")
+        db.execute("UPDATE detect_items SET ls_project_id=0 WHERE id=?", (item_id,))
+        db.execute("DELETE FROM label_tasks WHERE item_id=?", (item_id,))
+        db.commit()
+        flash("已删除「%s」的标注项目（含 %d 条标注）。再次打开标注页会重新建立并同步图片。"
+              % (name, cnt["done"]), "success")
+    except Exception as e:
+        flash("删除失败：%s" % str(e)[:120], "error")
+    return redirect(url_for("label", item=name))
 
 
 @app.route("/label/webhook", methods=["POST"])
