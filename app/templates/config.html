@@ -23,7 +23,7 @@
 <table class="table">
   <thead>
   {% if tab == 'items' %}
-    <tr><th>序号</th><th>代码</th><th>名称</th><th>简称</th><th>状态</th><th>操作</th></tr>
+    <tr><th>序号</th><th>代码</th><th>名称</th><th>简称</th><th>数据源目录</th><th>Label Studio</th><th>状态</th><th>操作</th></tr>
   {% elif tab == 'lines' %}
     <tr><th>序号</th><th>产线编码</th><th>名称</th><th>车间</th><th>区域</th><th>状态</th><th>操作</th></tr>
   {% elif tab == 'brands' %}
@@ -42,6 +42,8 @@
     <td>{{ '%02d' % loop.index }}</td>
     {% if tab == 'items' %}
       <td>{{ r.code }}</td><td>{{ r.name }}</td><td>{{ r.short_name }}</td>
+      <td>{% if r.src_prefix %}<code>{{ r.src_prefix }}</code>{% else %}<span style="color:var(--text-secondary)">未配置</span>{% endif %}</td>
+      <td>{% if r.ls_project_id %}<span style="color:#52c41a">● 项目 {{ r.ls_project_id }}</span>{% else %}<span style="color:var(--text-secondary)">未建</span>{% endif %}</td>
     {% elif tab == 'lines' %}
       <td>{{ r.code }}</td><td>{{ r.name }}</td><td>{{ r.workshop }}</td><td>{{ r.area }}</td>
     {% elif tab == 'brands' %}
@@ -83,6 +85,10 @@
         <div class="form-item"><label><span class="req">*</span>代码</label><input class="input" name="code" id="c_code" required></div>
         <div class="form-item"><label><span class="req">*</span>名称</label><input class="input" name="name" id="c_name" required></div>
         <div class="form-item"><label>简称</label><input class="input" name="short_name" id="c_short_name"></div>
+        <div class="form-item"><label>数据源目录</label>
+          <input class="input" name="src_prefix" id="c_src_prefix" placeholder="如 小包外观">
+          <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">
+            对象存储桶内的顶层目录名。配置后该项目的图片才会被采集，并自动建立 Label Studio 标注项目。</div></div>
         {% elif tab == 'lines' %}
         <div class="form-item"><label><span class="req">*</span>产线编码</label><input class="input" name="code" id="c_code" required></div>
         <div class="form-item"><label><span class="req">*</span>名称</label><input class="input" name="name" id="c_name" required></div>
@@ -133,7 +139,7 @@ function fillAreas(ws, selected){
 function editRow(r){
   r = r || {};
   document.getElementById('rowModalTitle').textContent = (r.id ? '修改' : '新增') + '{{ tabname }}';
-  ['id','code','name','short_name','workshop','area','spec'].forEach(function(k){
+  ['id','code','name','short_name','src_prefix','workshop','area','spec'].forEach(function(k){
     var el = document.getElementById('c_' + k);
     if (el) el.value = r[k] || '';
   });

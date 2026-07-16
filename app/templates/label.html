@@ -3,33 +3,33 @@
 {% block content %}
 <div style="display:flex;gap:16px;align-items:flex-start">
   <div style="flex:1">
-    <div class="page-title">② 缺陷分类 & 标注 — 标注任务（按牌号）
+    <div class="page-title">② 缺陷分类 & 标注 — 标注任务（按检测项目）
       {% if has_ls %}<span style="font-size:12px;font-weight:400;color:#52c41a;margin-left:10px">● Label Studio 已连接</span>
       {% else %}<span style="font-size:12px;font-weight:400;color:#ff4d4f;margin-left:10px">● Label Studio 离线，使用内置标注器</span>{% endif %}
     </div>
     <div class="card"><div class="card-body" style="padding:0">
     <table class="table">
       <thead><tr>
-        <th>品规</th><th>样本数量</th><th>已标注</th><th>未标注</th><th>可导出</th><th>操作</th>
+        <th>检测项目</th><th>缺陷类别</th><th>样本数量</th><th>已标注</th><th>未标注</th><th>操作</th>
       </tr></thead>
       <tbody>
       {% for t in tasks %}
       <tr>
-        <td>{{ t.brand }}</td><td>{{ t.total }}</td><td>{{ t.labeling }}</td>
-        <td>{{ t.unlabeled }}</td><td>{{ t.exported }}</td>
+        <td>{{ t.brand }}</td><td>{{ t.classes }}</td><td>{{ t.total }}</td>
+        <td>{{ t.labeling }}</td><td>{{ t.unlabeled }}</td>
         <td style="white-space:nowrap">
-          {% if t.total %}
-          <a class="btn-link" href="{{ url_for('label_anno', brand=t.brand) }}">继续标注</a>
-          {% if t.exported %}
-          <a class="btn-link" href="javascript:;" onclick="openPublish('{{ t.brand }}',{{ t.exported }})">发布样本集</a>
+          {% if t.total and not t.note %}
+          <a class="btn-link" href="{{ url_for('label_anno', item_id=t.item_id) }}">继续标注</a>
+          {% if t.labeling %}
+          <a class="btn-link" href="javascript:;" onclick="openPublish({{ t.item_id }},'{{ t.brand }}',{{ t.labeling }})">发布样本集</a>
           {% endif %}
           {% else %}
-          <span class="btn-link" style="color:var(--text-secondary);cursor:default">数据源无图片</span>
+          <span class="btn-link" style="color:var(--text-secondary);cursor:default">{{ t.note or '数据源无图片' }}</span>
           {% endif %}
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="6" class="empty">暂无标注任务</td></tr>
+      <tr><td colspan="6" class="empty">暂无检测项目，请先到「基础配置 → 检测项目」新建</td></tr>
       {% endfor %}
       </tbody>
     </table>
@@ -50,7 +50,7 @@
     <div class="modal-head"><span>发布样本集</span><span class="close" onclick="closeModal('pubModal')">×</span></div>
     <div class="modal-body">
       <p style="margin:0;font-size:14px">确认将 <b id="pubBrand">—</b> 的 <b id="pubNum">0</b> 张已标注样本发布到 <code>defect-datasets</code> 桶？</p>
-      <p style="margin:8px 0 0;font-size:12.5px;color:var(--text-secondary)">发布后生成版本化样本集（COCO json + 原图），算法训练流水线可直接从桶拉取。</p>
+      <p style="margin:8px 0 0;font-size:12.5px;color:var(--text-secondary)">标注数据实时从 Label Studio 拉取，生成版本化样本集（COCO json + 原图），算法训练流水线可直接从桶读取。</p>
     </div>
     <div class="modal-foot">
       <button class="btn" onclick="closeModal('pubModal')">取消</button>
@@ -61,10 +61,10 @@
   </div>
 </div>
 <script>
-function openPublish(brand, count){
-  document.getElementById('pubBrand').textContent = brand;
+function openPublish(itemId, name, count){
+  document.getElementById('pubBrand').textContent = name;
   document.getElementById('pubNum').textContent = count;
-  document.getElementById('pubForm').action = '/label/export/' + encodeURIComponent(brand);
+  document.getElementById('pubForm').action = '/label/export/' + itemId;
   openModal('pubModal');
 }
 </script>

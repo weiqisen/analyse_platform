@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}系统集成 · 缺陷图片分析平台{% endblock %}
+{% block content %}
+<style>
+  .cfg-hint { font-size: 12px; color: var(--text-secondary); margin-top: 4px; }
+  .cfg-src { font-size: 11.5px; padding: 1px 6px; border-radius: 8px; margin-left: 6px; }
+  .cfg-db { background: var(--primary-bg); color: var(--primary); }
+  .cfg-env { background: #f5f5f5; color: #999; }
+  .cfg-group { border-top: 1px solid var(--border); padding-top: 14px; margin-top: 6px; }
+  .cfg-group:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
+  .cfg-group h4 { margin: 0 0 12px; font-size: 13.5px; }
+  .test-out { font-size: 12.5px; margin-left: 10px; }
+</style>
+<div class="tabs">
+  {% for key, name in tabs %}
+  <a href="{{ url_for('config', tab=key, item=cur_item) }}" class="{{ 'active' if tab==key }}">{{ name }}</a>
+  {% endfor %}
+</div>
+
+<div class="page-title">基础配置 — 系统集成</div>
+<div class="card"><div class="card-body">
+<form method="post" action="{{ url_for('config_integration_save') }}" id="cfgForm">
+
+  {% set groups = [('Label Studio（标注引擎）', ['ls_url','ls_token','ls_user','ls_webhook_url'], 'ls'),
+                   ('算法推理服务', ['infer_url'], 'infer'),
+                   ('CubeStudio（训练调度，预留）', ['cs_url','cs_token'], 'cs')] %}
+  {% for gname, gkeys, gtest in groups %}
+  <div class="cfg-group">
+    <h4>{{ gname }}
+      <button type="button" class="btn btn-sm" onclick="testCfg('{{ gtest }}')">测试连接</button>
+      <span class="test-out" id="out_{{ gtest }}"></span>
+    </h4>
+    {% for r in rows if r.key in gkeys %}
+    <div class="form-item">
+      <label>{{ r.label }}
+        {% if r.from_db %}<span class="cfg-src cfg-db">已配置</span>
+        {% else %}<span class="cfg-src cfg-env">默认值</span>{% endif %}
+      </label>
+      <input class="input" name="{{ r.key }}" id="f_{{ r.key }}" value="{{ r.value }}"
+             {% if r.key == 'ls_webhook_url' %}placeholder="{{ default_webhook }}"{% endif %}>
+      <div class="cfg-hint">{{ r.hint }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endfor %}
+
+  <div style="margin-top:18px">
+    <button class="btn btn-primary" type="submit">保存配置</button>
+    <span class="cfg-hint" style="display:inline;margin-left:10px">保存后即时生效，无需重启服务。</span>
+  </div>
+</form>
+</div></div>
+
+<div class="card" style="margin-top:14px"><div class="card-body">
+  <div style="font-size:12.5px;color:var(--text-secondary);line-height:1.9">
+    <b style="color:var(--text)">说明</b><br>
+    · 标「已配置」的取自本页保存的值；标「默认值」的来自启动环境变量，改这里即可覆盖，不用登服务器。<br>
+    · Label Studio 地址会被浏览器直接访问（标注页内嵌 iframe），<b>必须填 IP，不能填 127.0.0.1</b>。<br>
+    · 推理服务留空时，分析页会用内置模拟判定 —— 仅供演示，<b>不可用于生产统计</b>。<br>
+    · 各检测项目对应的 Label Studio 项目、数据源目录，在「检测项目」页签里按项目单独配置。
+  </div>
+</div></div>
+
+<script>
+function testCfg(what){
+  var out = document.getElementById('out_' + what);
+  out.textContent = '测试中…'; out.style.color = 'var(--text-secondary)';
+  var fd = new FormData(document.getElementById('cfgForm'));
+  fetch('/config/integration/test/' + what, {method:'POST', body: fd})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      out.textContent = d.msg;
+      out.style.color = d.ok ? '#52c41a' : '#ff4d4f';
+    })
+    .catch(function(e){ out.textContent = '请求失败: ' + e; out.style.color = '#ff4d4f'; });
+}
+</script>
+{% endblock %}

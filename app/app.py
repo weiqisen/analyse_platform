@@ -25,19 +25,49 @@ DB_NAME = os.environ.get("DB_NAME", "analyse_platform")
 WS_USER = os.environ.get("WS_USER", "root")
 WS_PASS = os.environ.get("WS_PASS", "hlxd@123")
 
-# 算法推理服务地址（HTTP）。为空时使用内置模拟判定，接入算法平台后配置此项即可
-INFER_URL = os.environ.get("INFER_URL", "")
+# 外部系统集成参数的兜底默认值。运行期一律走 get_cfg()：优先读 integration_config 表
+# （集成配置页可改、即时生效），表里没配才回落到这里的环境变量。
+CFG_DEFAULTS = {
+    "infer_url": os.environ.get("INFER_URL", ""),          # 算法推理服务，为空则用内置模拟
+    "ls_url": os.environ.get("LS_URL", "http://127.0.0.1:8080"),
+    "ls_token": os.environ.get("LS_TOKEN", "cigarette-label-studio-token-2026"),
+    "ls_user": os.environ.get("LS_USER", "admin@cigarette.local"),
+    "ls_webhook_url": os.environ.get("LS_WEBHOOK_URL", ""),  # 本平台回调地址，注册进 LS
+    "cs_url": os.environ.get("CS_URL", ""),                 # CubeStudio（预留）
+    "cs_token": os.environ.get("CS_TOKEN", ""),
+}
+CFG_LABELS = [
+    ("ls_url", "Label Studio 地址", "浏览器与平台都要能访问，故必须用 IP 不能用 127.0.0.1"),
+    ("ls_token", "Label Studio API Token", "LS 1.23+ 需在组织设置里开启 legacy token 才可用"),
+    ("ls_user", "Label Studio 登录账号", "仅用于标注页提示，不参与鉴权"),
+    ("ls_webhook_url", "标注回调地址(Webhook)", "留空则用本机地址推算；LS 标注后回写进度到此"),
+    ("infer_url", "推理服务地址", "留空则用内置模拟判定（仅演示，不可用于生产统计）"),
+    ("cs_url", "CubeStudio 地址", "预留，本机资源不足未部署"),
+    ("cs_token", "CubeStudio Token", "预留"),
+]
 
-# Label Studio 对接（标注引擎）
-LS_URL = os.environ.get("LS_URL", "http://127.0.0.1:8080")
-LS_TOKEN = os.environ.get("LS_TOKEN", "cigarette-label-studio-token-2026")
-LS_USER = os.environ.get("LS_USER", "admin@cigarette.local")  # 仅用于页面提示登录账号
+_cfg_cache = {"t": 0.0, "d": {}}
+
+
+def get_cfg(key, default=None):
+    """读集成配置：integration_config 表优先，未配则回落 CFG_DEFAULTS（环境变量）。
+    带 5 秒缓存，配置页改完刷新即生效，不用重启服务。"""
+    import time
+    now = time.time()
+    if now - _cfg_cache["t"] > 5:
+        try:
+            rows = get_db().execute("SELECT cfg_key, cfg_value FROM integration_config").fetchall()
+            _cfg_cache["d"] = {r["cfg_key"]: r["cfg_value"] for r in rows}
+            _cfg_cache["t"] = now
+        except Exception:
+            pass  # 建表前/连不上库时回落默认值
+    v = _cfg_cache["d"].get(key)
+    return v if v else (CFG_DEFAULTS.get(key, "") if default is None else default)
 
 app = Flask(__name__)
 app.secret_key = "yancao-analyse-platform-secret-2026"
 
-# 检测项目（顶部导航）
-DETECT_ITEMS = ["烟支外观", "五轮成像", "小包CCD", "散包检测", "条外观"]
+# 检测项目改由 detect_items 表驱动，见 inject_globals()
 
 
 # ---------------------------------------------------------------- 数据库
@@ -85,6 +115,45 @@ def close_db(exc=None):
 
 def md5(s):
     return hashlib.md5(s.encode("utf-8")).hexdigest()
+
+
+def _has_column(db, table, column):
+    r = db.execute("SELECT COUNT(*) AS c FROM information_schema.columns "
+                   "WHERE table_schema=? AND table_name=? AND column_name=?",
+                   (DB_NAME, table, column)).fetchone()
+    return bool(r["c"])
+
+
+def migrate_db(db):
+    """给既有表补列。CREATE TABLE IF NOT EXISTS 只建新表不改老表，
+    而 MySQL 8 的 ADD COLUMN 不支持 IF NOT EXISTS，只能先查 information_schema。"""
+    adds = [
+        # 检测项目升级为一等公民：自己挂数据源目录与外部系统项目 id
+        ("detect_items", "src_prefix", "VARCHAR(128) DEFAULT '' COMMENT '数据源顶层目录(如 小包外观)'"),
+        ("detect_items", "ls_project_id", "INT DEFAULT 0 COMMENT '对应 Label Studio 项目ID, 0=未建'"),
+        ("detect_items", "cs_project_id", "VARCHAR(64) DEFAULT '' COMMENT '对应 CubeStudio 项目组(预留)'"),
+        # 缺陷类别与标注图片归属到检测项目
+        ("label_classes", "item_id", "INT DEFAULT 0 COMMENT '所属检测项目(detect_items.id)'"),
+        ("label_images", "item_id", "INT DEFAULT 0 COMMENT '所属检测项目(detect_items.id)'"),
+    ]
+    changed = False
+    for table, col, ddl in adds:
+        if not _has_column(db, table, col):
+            db.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, col, ddl))
+            changed = True
+    if changed:
+        db.commit()
+
+    # 一次性引导：把既有数据归到「小包CCD」项目下（此前 BRAND_MAP 硬编码 小包外观→玉溪（硬））
+    row = db.execute("SELECT COUNT(*) AS c FROM detect_items WHERE src_prefix<>''").fetchone()
+    if not row["c"]:
+        it = db.execute("SELECT id FROM detect_items WHERE short_name=? OR name=?",
+                        ("小包CCD", "小包CCD检测")).fetchone()
+        if it:
+            db.execute("UPDATE detect_items SET src_prefix=? WHERE id=?", ("小包外观", it["id"]))
+            db.execute("UPDATE label_classes SET item_id=? WHERE item_id=0", (it["id"],))
+            db.execute("UPDATE label_images SET item_id=? WHERE item_id=0", (it["id"],))
+            db.commit()
 
 
 def init_db():
@@ -223,10 +292,18 @@ def init_db():
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '推理时间',
             UNIQUE KEY uq_img (image_id)
         ) DEFAULT CHARSET=utf8mb4 COMMENT='推理结果表'""",
+        """CREATE TABLE IF NOT EXISTS integration_config(
+            id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+            cfg_key VARCHAR(64) NOT NULL COMMENT '配置项键',
+            cfg_value TEXT COMMENT '配置项值',
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+            UNIQUE KEY uq_cfg_key (cfg_key)
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='外部系统集成配置表(Label Studio/推理服务/CubeStudio)'""",
     ]
     for stmt in ddl:
         db.execute(stmt)
     db.commit()
+    migrate_db(db)
     if db.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"] == 0:
         db.execute("INSERT INTO users(username,password,realname,role) VALUES(?,?,?,?)",
                    ("admin", md5("admin123"), "管理员", "admin"))
@@ -331,8 +408,20 @@ def admin_required(fn):
 
 @app.context_processor
 def inject_globals():
-    return dict(DETECT_ITEMS=DETECT_ITEMS,
-                cur_item=request.args.get("item", DETECT_ITEMS[0]))
+    """顶栏检测项目下拉。读 detect_items 表 —— 此前是硬编码列表，
+    与 /config/items 的增删改查完全脱节，新建的项目根本进不了导航。"""
+    items = []
+    try:
+        items = [dict(r) for r in get_db().execute(
+            "SELECT id,name,short_name,src_prefix FROM detect_items "
+            "WHERE status=1 ORDER BY id").fetchall()]
+    except Exception:
+        pass  # 建表前或登录页连不上库时不阻塞页面渲染
+    names = [(i["short_name"] or i["name"]) for i in items]
+    cur = request.args.get("item") or (names[0] if names else "")
+    cur_row = next((i for i in items if (i["short_name"] or i["name"]) == cur), None)
+    return dict(DETECT_ITEMS=names, DETECT_ITEM_ROWS=items, cur_item=cur,
+                cur_item_id=(cur_row["id"] if cur_row else 0))
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -448,7 +537,8 @@ def users_delete(uid):
 
 # ---------------------------------------------------------------- 基础配置
 CONFIG_TABS = [("items", "检测项目"), ("lines", "机组/产线"), ("brands", "牌号/品规"),
-               ("workshops", "车间"), ("areas", "区域"), ("defects", "缺陷分类")]
+               ("workshops", "车间"), ("areas", "区域"), ("defects", "缺陷分类"),
+               ("integration", "系统集成")]
 
 
 @app.route("/config/<tab>")
@@ -457,6 +547,13 @@ def config(tab):
     if tab not in dict(CONFIG_TABS):
         abort(404)
     db = get_db()
+    if tab == "integration":
+        rows = [{"key": k, "label": lab, "hint": hint, "value": get_cfg(k),
+                 "from_db": k in _cfg_cache["d"] and bool(_cfg_cache["d"][k])}
+                for k, lab, hint in CFG_LABELS]
+        return render_template("config_integration.html", tab=tab, tabs=CONFIG_TABS,
+                               rows=rows, active="config",
+                               default_webhook=url_for("label_webhook", _external=True))
     data = {
         "items": db.execute("SELECT * FROM detect_items ORDER BY id").fetchall(),
         "lines": db.execute("SELECT * FROM prod_lines ORDER BY id").fetchall(),
@@ -471,6 +568,65 @@ def config(tab):
                            rows=data, workshops=workshops, areas=areas, active="config")
 
 
+@app.route("/config/integration/save", methods=["POST"])
+@login_required
+def config_integration_save():
+    """保存外部系统集成参数到 integration_config，即时生效（get_cfg 带 5 秒缓存）。"""
+    db = get_db()
+    for key, _, _ in CFG_LABELS:
+        val = request.form.get(key, "").strip()
+        db.execute("INSERT INTO integration_config(cfg_key,cfg_value) VALUES(?,?) "
+                   "ON DUPLICATE KEY UPDATE cfg_value=VALUES(cfg_value)", (key, val))
+    db.commit()
+    _cfg_cache["t"] = 0.0  # 立刻失效，不用等缓存过期
+    flash("集成配置已保存，即时生效", "success")
+    return redirect(url_for("config", tab="integration"))
+
+
+@app.route("/config/integration/test/<what>", methods=["POST"])
+@login_required
+def config_integration_test(what):
+    """用表单里的当前值测连通性，不依赖已保存的配置。"""
+    import urllib.request
+    if what == "ls":
+        url = request.form.get("ls_url", "").strip().rstrip("/")
+        token = request.form.get("ls_token", "").strip()
+        try:
+            req = urllib.request.Request(url + "/api/projects?page_size=1",
+                                         headers={"Authorization": "Token " + token})
+            with urllib.request.urlopen(req, timeout=8) as r:
+                n = json.loads(r.read().decode()).get("count", 0)
+            ver = (_ls_get("/api/version") or {}).get("release", "")
+            return jsonify({"ok": True, "msg": "连接成功，Label Studio %s，%d 个项目" % (ver or "?", n)})
+        except Exception as e:
+            hint = ""
+            if "401" in str(e):
+                hint = "（Token 无效，或 LS 1.23+ 未开启 legacy token）"
+            return jsonify({"ok": False, "msg": "连接失败：%s%s" % (str(e)[:100], hint)})
+    if what == "infer":
+        url = request.form.get("infer_url", "").strip()
+        if not url:
+            return jsonify({"ok": False, "msg": "未填写地址；留空将使用内置模拟判定"})
+        try:
+            health = url.rsplit("/", 1)[0] + "/health"
+            with urllib.request.urlopen(health, timeout=8) as r:
+                d = json.loads(r.read().decode())
+            return jsonify({"ok": True, "msg": "连接成功，底库 %s 张 / %s 类"
+                            % (d.get("gallery", "?"), d.get("classes", "?"))})
+        except Exception as e:
+            return jsonify({"ok": False, "msg": "连接失败：%s" % str(e)[:110]})
+    if what == "cs":
+        url = request.form.get("cs_url", "").strip()
+        if not url:
+            return jsonify({"ok": False, "msg": "未配置。CubeStudio 需独立部署（磁盘≥500G、Docker≥19.03、建议带 GPU）"})
+        try:
+            with urllib.request.urlopen(url, timeout=8) as r:
+                return jsonify({"ok": True, "msg": "地址可达（HTTP %d）" % r.status})
+        except Exception as e:
+            return jsonify({"ok": False, "msg": "连接失败：%s" % str(e)[:110]})
+    return jsonify({"ok": False, "msg": "未知测试项"}), 400
+
+
 @app.route("/config/<tab>/save", methods=["POST"])
 @login_required
 def config_save(tab):
@@ -479,11 +635,13 @@ def config_save(tab):
     rid = f.get("id")
     if tab == "items":
         if rid:
-            db.execute("UPDATE detect_items SET code=?,name=?,short_name=? WHERE id=?",
-                       (f["code"], f["name"], f.get("short_name", ""), rid))
+            db.execute("UPDATE detect_items SET code=?,name=?,short_name=?,src_prefix=? WHERE id=?",
+                       (f["code"], f["name"], f.get("short_name", ""),
+                        f.get("src_prefix", "").strip().strip("/"), rid))
         else:
-            db.execute("INSERT INTO detect_items(code,name,short_name) VALUES(?,?,?)",
-                       (f["code"], f["name"], f.get("short_name", "")))
+            db.execute("INSERT INTO detect_items(code,name,short_name,src_prefix) VALUES(?,?,?,?)",
+                       (f["code"], f["name"], f.get("short_name", ""),
+                        f.get("src_prefix", "").strip().strip("/")))
     elif tab == "lines":
         if rid:
             db.execute("UPDATE prod_lines SET code=?,name=?,workshop=?,area=? WHERE id=?",
@@ -860,48 +1018,42 @@ def collect_test_terminal():
 
 
 # ---------------------------------------------------------------- Label Studio 对接
-def _ls_req(method, path, data=None):
-    """调 Label Studio REST API。"""
-    import urllib.request
-    body = json.dumps(data).encode("utf-8") if data else None
-    req = urllib.request.Request(LS_URL + path, data=body,
-                                 headers={"Authorization": "Token " + LS_TOKEN,
-                                          "Content-Type": "application/json"})
-    req.get_method = lambda: method.upper()
-    try:
-        with urllib.request.urlopen(req, timeout=15) as r:
-            if r.status == 204:
-                return {}
-            return json.loads(r.read().decode("utf-8")) if r.status not in (200, 201) else _ls_req._resp or {}
-    except urllib.request.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")[:200]
-        raise Exception("LS %s %s → %d: %s" % (method, path, e.code, body))
+def _ls_headers():
+    return {"Authorization": "Token " + get_cfg("ls_token"),
+            "Content-Type": "application/json"}
 
 
 def _ls_get(path):
+    """GET Label Studio API，失败返回空 dict（调用方据此降级）。"""
+    import urllib.request
     try:
-        r = __import__("urllib.request").request.Request(
-            LS_URL + path, headers={"Authorization": "Token " + LS_TOKEN})
-        r.get_method = lambda: "GET"
-        with __import__("urllib.request").request.urlopen(r, timeout=12) as resp:
+        req = urllib.request.Request(get_cfg("ls_url").rstrip("/") + path, headers=_ls_headers())
+        req.get_method = lambda: "GET"
+        with urllib.request.urlopen(req, timeout=12) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except Exception:
         return {}
 
 
-def _ls_post(path, data):
+def _ls_post(path, data, method="POST"):
     import urllib.request
     body = json.dumps(data).encode("utf-8")
-    req = urllib.request.Request(LS_URL + path, data=body,
-                                 headers={"Authorization": "Token " + LS_TOKEN,
-                                          "Content-Type": "application/json"})
-    req.get_method = lambda: "POST"
-    with urllib.request.urlopen(req, timeout=15) as r:
-        return json.loads(r.read().decode("utf-8"))
+    req = urllib.request.Request(get_cfg("ls_url").rstrip("/") + path, data=body,
+                                 headers=_ls_headers())
+    req.get_method = lambda: method
+    with urllib.request.urlopen(req, timeout=30) as r:
+        txt = r.read().decode("utf-8")
+        return json.loads(txt) if txt else {}
 
 
-def ls_ensure_project(brand, classes, scfg):
-    """为某牌号确保 Label Studio 标注项目存在，返回 (project_id, task_count)。"""
+def ls_ensure_project(item, classes):
+    """为某检测项目确保 Label Studio 标注项目存在，返回 project_id。
+    优先用 detect_items.ls_project_id 直接命中，避免改名后重复建项目。"""
+    db = get_db()
+    brand = item["short_name"] or item["name"]
+    pid = item["ls_project_id"] or 0
+    if pid and (_ls_get("/api/projects/%d" % pid) or {}).get("id"):
+        return pid
     r = _ls_get("/api/projects?page_size=200") or {}
     pid = None
     for p in r.get("results", []):
@@ -919,23 +1071,25 @@ def ls_ensure_project(brand, classes, scfg):
                      "description": "卷烟厂缺陷标注 · %s · %d类缺陷" % (brand, len(classes))})
         pid = p.get("id")
     if not pid:
-        return None, 0
-    total = (_ls_get("/api/projects/%d" % pid) or {}).get("task_number", 0)
-    return pid, total
+        return None
+    db.execute("UPDATE detect_items SET ls_project_id=? WHERE id=?", (pid, item["id"]))
+    db.commit()
+    return pid
 
 
-def ls_ensure_s3_storage(pid, scfg):
+def ls_ensure_s3_storage(pid, scfg, prefix=""):
     """给 LS 项目挂 MinIO 源存储（幂等）。LS 自己列桶建任务、每次访问现签 URL，
-    平台不再枚举图片。新建时触发一次同步，返回 (storage_id, 是否新建)。"""
+    平台不再枚举图片。新建时触发一次同步，返回 (storage_id, 是否新建)。
+    prefix 限定只同步本检测项目自己的目录，否则多个项目会互相灌入对方的图。"""
     r = _ls_get("/api/storages/s3?project=%d" % pid)
     for s in (r if isinstance(r, list) else r.get("results", []) if isinstance(r, dict) else []):
-        if s.get("bucket") == scfg["in_bucket"]:
+        if s.get("bucket") == scfg["in_bucket"] and (s.get("prefix") or "") == prefix:
             return s.get("id"), False
     s = _ls_post("/api/storages/s3", {
         "project": pid,
-        "title": "MinIO %s" % scfg["in_bucket"],
+        "title": "MinIO %s/%s" % (scfg["in_bucket"], prefix or "*"),
         "bucket": scfg["in_bucket"],
-        "prefix": "",
+        "prefix": prefix,
         "s3_endpoint": "http://" + scfg["server_addr"],
         "aws_access_key_id": scfg["username"],
         "aws_secret_access_key": scfg["password"],
@@ -974,13 +1128,16 @@ def sync_label_images(force=False):
     _last_sync_ts[0] = now
     db = get_db()
     existing = {r["src_key"] for r in db.execute("SELECT src_key FROM label_images").fetchall()}
-    BRAND_MAP = {"小包外观": "玉溪（硬）"}
+    # 数据源顶层目录 → 检测项目。此前是硬编码 BRAND_MAP={"小包外观":"玉溪（硬）"}，
+    # 既写死了映射、又把检测项目冒充成牌号；现在由 detect_items.src_prefix 配置驱动。
+    prefix_map = {r["src_prefix"]: r["id"] for r in db.execute(
+        "SELECT id, src_prefix FROM detect_items WHERE src_prefix<>''").fetchall()}
     rows = []
     for l in db.execute("SELECT * FROM prod_lines").fetchall():
         scfg = db.execute("SELECT * FROM storage_config WHERE line_id=?", (l["id"],)).fetchone()
         tcfg = db.execute("SELECT * FROM terminal_config WHERE line_id=?", (l["id"],)).fetchone()
         if scfg and scfg["server_addr"]:
-            # 对象存储产线：分页列全部对象，顶层目录=牌号
+            # 对象存储产线：分页列全部对象，顶层目录=检测项目
             try:
                 s3, _ = get_s3(scfg)
                 tok = None
@@ -992,16 +1149,17 @@ def sync_label_images(force=False):
                     for o in r.get("Contents", []):
                         k = o["Key"]
                         if "/" in k and k.lower().endswith((".jpg", ".jpeg", ".png", ".bmp")):
-                            b = BRAND_MAP.get(k.split("/")[0], k.split("/")[0])
-                            rows.append(("minio", k, b, l["name"]))
+                            iid = prefix_map.get(k.split("/")[0])
+                            if iid:
+                                rows.append(("minio", k, iid, l["name"]))
                     if r.get("IsTruncated"):
                         tok = r.get("NextContinuationToken")
                     else:
                         break
-            except Exception:
-                pass
+            except Exception as e:
+                app.logger.warning("扫描对象存储失败（产线 %s）：%s", l["name"], e)
         elif tcfg:
-            # 工控机产线：SFTP 全量 walk，相对路径顶层=牌号
+            # 工控机产线：SFTP 全量 walk，相对路径顶层=检测项目
             root = (tcfg["ng_dir"] or "").rstrip("/")
             try:
                 t, sftp = _ws_sftp(tcfg)
@@ -1017,21 +1175,21 @@ def sync_label_images(force=False):
                             walk(full)
                         elif e.filename.lower().endswith((".jpg", ".jpeg", ".png", ".bmp")):
                             rel = full[len(root):].lstrip("/")
-                            b = rel.split("/")[0] if "/" in rel else ""
-                            brand = BRAND_MAP.get(b, b)
-                            rows.append(("terminal", full, brand, l["name"]))
+                            iid = prefix_map.get(rel.split("/")[0]) if "/" in rel else None
+                            if iid:
+                                rows.append(("terminal", full, iid, l["name"]))
                 try:
                     walk(root)
                 finally:
                     t.close()
-            except Exception:
-                pass
+            except Exception as e:
+                app.logger.warning("扫描工控机失败（产线 %s）：%s", l["name"], e)
     added = False
-    for source, key, brand, line in rows:
-        if brand and key not in existing:
+    for source, key, item_id, line in rows:
+        if key not in existing:
             try:
-                db.execute("INSERT INTO label_images(brand,source,src_key,line_name) VALUES(?,?,?,?)",
-                           (brand, source, key, line))
+                db.execute("INSERT INTO label_images(item_id,brand,source,src_key,line_name) "
+                           "VALUES(?,?,?,?,?)", (item_id, "", source, key, line))
                 added = True
             except IntegrityError:
                 pass
@@ -1049,37 +1207,45 @@ def label_image_url(img):
 def label():
     db = get_db()
     sync_label_images()
-    classes = [dict(c) for c in db.execute("SELECT * FROM label_classes WHERE status=1 ORDER BY id").fetchall()]
     scfg = db.execute("SELECT * FROM storage_config LIMIT 1").fetchone()
-    ls_ok = False
-    try:
-        r = _ls_get("/api/version")
-        if r and isinstance(r, dict) and "label-studio" in str(r).lower():
-            ls_ok = True
-    except Exception:
-        pass
+    ls_ok = "label-studio" in str(_ls_get("/api/version")).lower()
     tasks = []
-    for b in db.execute("SELECT spec FROM brands WHERE status=1 ORDER BY id").fetchall():
-        brand = b["spec"]
-        total_db = db.execute("SELECT COUNT(*) AS c FROM label_images WHERE brand=?",
-                              (brand,)).fetchone()["c"] or 0
-        pid = None
+    # 标注任务按检测项目组织（此前遍历 brands 牌号表，新建检测项目永远联动不到 LS）
+    for item in db.execute("SELECT * FROM detect_items WHERE status=1 ORDER BY id").fetchall():
+        item = dict(item)
+        name = item["short_name"] or item["name"]
+        classes = [dict(c) for c in db.execute(
+            "SELECT * FROM label_classes WHERE status=1 AND item_id=? ORDER BY id",
+            (item["id"],)).fetchall()]
+        total_db = db.execute("SELECT COUNT(*) AS c FROM label_images WHERE item_id=?",
+                              (item["id"],)).fetchone()["c"] or 0
+        pid = item["ls_project_id"] or None
         ls_total = ls_done = 0
-        if ls_ok and scfg and total_db:
+        note = ""
+        if not item["src_prefix"]:
+            note = "未配置数据源目录"
+        elif not classes:
+            note = "未配置缺陷类别"
+        elif ls_ok and scfg and total_db:
             try:
-                pid, _ = ls_ensure_project(brand, classes, scfg)
+                pid = ls_ensure_project(item, classes)
                 if pid:
-                    ls_ensure_s3_storage(pid, scfg)
+                    ls_ensure_s3_storage(pid, scfg, item["src_prefix"] + "/")
                     cnt = ls_task_counts(pid)
                     ls_total, ls_done = cnt["total"], cnt["done"]
             except Exception as e:
-                app.logger.warning("Label Studio 对接失败（牌号 %s）：%s", brand, e)
-        tasks.append({"brand": brand, "total": ls_total or total_db,
+                app.logger.warning("Label Studio 对接失败（检测项目 %s）：%s", name, e)
+                note = "Label Studio 对接失败"
+        elif not total_db:
+            note = "数据源中暂无图片"
+        tasks.append({"item_id": item["id"], "brand": name, "total": ls_total or total_db,
                       "labeling": ls_done, "unlabeled": max(0, (ls_total or total_db) - ls_done),
-                      "exported": ls_done, "ls_pid": pid, "ls_ok": ls_ok})
-    has_ls = ls_ok
-    return render_template("label.html", tasks=tasks, classes=classes, active="label",
-                           LS_URL=LS_URL, has_ls=has_ls)
+                      "exported": ls_done, "ls_pid": pid, "ls_ok": ls_ok,
+                      "classes": len(classes), "note": note})
+    all_classes = [dict(c) for c in db.execute(
+        "SELECT * FROM label_classes WHERE status=1 ORDER BY id").fetchall()]
+    return render_template("label.html", tasks=tasks, classes=all_classes, active="label",
+                           LS_URL=get_cfg("ls_url"), has_ls=ls_ok)
 
 
 @app.route("/label/class/add", methods=["POST"])
@@ -1088,7 +1254,14 @@ def label_class_add():
     name = request.form.get("name", "").strip()
     if name:
         db = get_db()
-        db.execute("INSERT INTO label_classes(name) VALUES(?)", (name,))
+        # 缺陷类别归属当前检测项目：不同检测项目的缺陷类型本就不同
+        item_id = request.form.get("item_id", type=int) or 0
+        if not item_id:
+            cur = request.args.get("item") or ""
+            r = db.execute("SELECT id FROM detect_items WHERE short_name=? OR name=?",
+                           (cur, cur)).fetchone()
+            item_id = r["id"] if r else 0
+        db.execute("INSERT INTO label_classes(name,item_id) VALUES(?,?)", (name, item_id))
         db.commit()
         flash("分类已添加", "success")
     return redirect(url_for("label"))
@@ -1103,33 +1276,33 @@ def label_class_delete(cid):
     return redirect(url_for("label"))
 
 
-@app.route("/label/anno/<brand>")
+@app.route("/label/anno/<int:item_id>")
 @login_required
-def label_anno(brand):
+def label_anno(item_id):
     """标注入口：Label Studio 可用时内嵌其项目页（保留平台导航），否则降级内置标注器。"""
     db = get_db()
-    try:
-        r = _ls_get("/api/projects?page_size=200") or {}
-        for p in r.get("results", []):
-            if p.get("title") == brand:
-                return render_template("label_ls.html", brand=brand, active="label",
-                                       ls_src=LS_URL.rstrip("/") + "/projects/%d/data" % p["id"],
-                                       ls_user=LS_USER, cnt=ls_task_counts(p["id"]))
-    except Exception as e:
-        app.logger.warning("Label Studio 项目查询失败（牌号 %s）：%s", brand, e)
-    imgs = db.execute("SELECT * FROM label_images WHERE brand=? AND src_key LIKE ? ORDER BY id", (brand, "%/正常/%")).fetchall()
+    item = db.execute("SELECT * FROM detect_items WHERE id=?", (item_id,)).fetchone()
+    if not item:
+        abort(404)
+    item = dict(item)
+    name = item["short_name"] or item["name"]
+    pid = item["ls_project_id"] or 0
+    if pid and (_ls_get("/api/projects/%d" % pid) or {}).get("id"):
+        return render_template("label_ls.html", brand=name, active="label",
+                               ls_src=get_cfg("ls_url").rstrip("/") + "/projects/%d/data" % pid,
+                               ls_user=get_cfg("ls_user"), cnt=ls_task_counts(pid))
+    # LS 不可用时降级到内置标注器
+    imgs = db.execute("SELECT * FROM label_images WHERE item_id=? ORDER BY id", (item_id,)).fetchall()
     if not imgs:
-        sync_label_images()
-        imgs = db.execute("SELECT * FROM label_images WHERE brand=? AND src_key LIKE ? ORDER BY id", (brand, "%/正常/%")).fetchall()
-    if not imgs:
-        flash("牌号「%s」在数据源中未找到图片" % brand, "error")
+        flash("检测项目「%s」在数据源中未找到图片" % name, "error")
         return redirect(url_for("label"))
     idx = request.args.get("i", type=int) or 0
     idx = max(0, min(idx, len(imgs) - 1))
     img = imgs[idx]
-    classes = [dict(c) for c in db.execute("SELECT * FROM label_classes ORDER BY id").fetchall()]
+    classes = [dict(c) for c in db.execute(
+        "SELECT * FROM label_classes WHERE item_id=? ORDER BY id", (item_id,)).fetchall()]
     annos = db.execute("SELECT * FROM annotations WHERE image_id=? ORDER BY id", (img["id"],)).fetchall()
-    return render_template("label_anno.html", brand=brand, img=dict(img), img_url=label_image_url(img),
+    return render_template("label_anno.html", brand=name, img=dict(img), img_url=label_image_url(img),
                            idx=idx, total=len(imgs), classes=classes,
                            annos=[dict(a) for a in annos], active="label")
 
@@ -1138,7 +1311,7 @@ def label_anno(brand):
 def label_webhook():
     """Label Studio 标注事件回写 —— 更新图片标注计数（免登 token 验证）。"""
     hdr = request.headers.get("Authorization", "")
-    if hdr != "Token " + LS_TOKEN:
+    if hdr != "Token " + get_cfg("ls_token"):
         return jsonify({"error": "unauthorized"}), 403
     try:
         data = request.get_json(force=True) or {}
@@ -1149,11 +1322,13 @@ def label_webhook():
             if pid:
                 cnt = ls_task_counts(pid)
                 db = get_db()
-                p = _ls_get("/api/projects/%d" % pid) or {}
-                brand = p.get("title", "")
-                if brand:
+                # 按 ls_project_id 反查检测项目，比拿 LS 项目标题去匹配可靠（改名不会断）
+                it = db.execute("SELECT id,name,short_name FROM detect_items WHERE ls_project_id=?",
+                                (pid,)).fetchone()
+                if it:
+                    name = it["short_name"] or it["name"]
                     db.execute("UPDATE label_tasks SET total=?,labeling=?,unlabeled=? WHERE brand=?",
-                               (cnt["total"], cnt["done"], cnt["unlabeled"], brand))
+                               (cnt["total"], cnt["done"], cnt["unlabeled"], name))
                     db.commit()
     except Exception as e:
         app.logger.warning("Label Studio webhook 处理失败：%s", e)
@@ -1180,66 +1355,97 @@ def label_save(image_id):
     return jsonify({"ok": True})
 
 
-@app.route("/label/export/<brand>", methods=["POST"])
-@login_required
-def label_export(brand):
-    """持久化导出标注样本集到 defect-datasets 桶（算法训练流水线直接读取）。"""
-    db = get_db()
-    imgs = db.execute("SELECT * FROM label_images WHERE brand=? AND annotated=1 AND src_key LIKE ? ORDER BY id",
-                      (brand, "%/正常/%")).fetchall()
-    if not imgs:
-        flash("该牌号暂无可导出的已标注样本", "error")
-        return redirect(url_for("label"))
-    cats = db.execute("SELECT * FROM label_classes ORDER BY id").fetchall()
-    # 版本号：查询当前牌号已有版本数 +1
-    ver_n = db.execute("SELECT COUNT(*) c FROM model_versions WHERE brand=?", (brand,)).fetchone()["c"] + 1
-    version = "v%d" % ver_n
-    prefix = "%s/%s/" % (brand, version)
-
-    # 组装 COCO
+def ls_export_coco(pid, classes):
+    """从 Label Studio 拉已标注任务并转成 COCO，返回 (coco, 图片key列表)。
+    注意 LS 的 x/y/width/height 是相对原图的百分比，必须按 original_width/height
+    换算成像素，COCO 的 bbox 要的是绝对像素。"""
+    tasks = _ls_get("/api/projects/%d/export?exportType=JSON&download_all_tasks=false" % pid)
+    if not isinstance(tasks, list):
+        return None, []
+    cat_id = {c["name"]: c["id"] for c in classes}
     coco = {"images": [], "annotations": [],
-            "categories": [{"id": c["id"], "name": c["name"]} for c in cats]}
-    aid = 1
-    for im in imgs:
-        coco["images"].append({"id": im["id"], "file_name": im["src_key"],
-                               "width": im["width"], "height": im["height"]})
-        for a in db.execute("SELECT * FROM annotations WHERE image_id=?", (im["id"],)).fetchall():
-            seg = []
-            if a["shape"] == "polygon" and a["points"]:
-                pts = json.loads(a["points"])
-                seg = [[c for p in pts for c in p]]
+            "categories": [{"id": c["id"], "name": c["name"]} for c in classes]}
+    keys, aid = [], 1
+    for t in tasks:
+        uri = ((t.get("data") or {}).get("image") or "")
+        if not uri:
+            continue
+        key = uri.split("/", 3)[-1] if uri.startswith("s3://") else uri  # s3://桶/键 → 键
+        boxes, W, H = [], 0, 0
+        for a in (t.get("annotations") or []):
+            for r in (a.get("result") or []):
+                if r.get("type") != "rectanglelabels":
+                    continue
+                W = r.get("original_width") or W
+                H = r.get("original_height") or H
+                v = r.get("value") or {}
+                names = v.get("rectanglelabels") or []
+                if names:
+                    boxes.append((names[0], v))
+        if not boxes or not W or not H:
+            continue
+        img_id = len(coco["images"]) + 1
+        coco["images"].append({"id": img_id, "file_name": key, "width": W, "height": H})
+        keys.append(key)
+        for name, v in boxes:
+            x, y = v.get("x", 0) / 100.0 * W, v.get("y", 0) / 100.0 * H
+            w, h = v.get("width", 0) / 100.0 * W, v.get("height", 0) / 100.0 * H
             coco["annotations"].append({
-                "id": aid, "image_id": im["id"], "category_id": a["class_id"],
-                "bbox": [a["bbox_x"], a["bbox_y"], a["bbox_w"], a["bbox_h"]],
-                "area": a["bbox_w"] * a["bbox_h"], "iscrowd": 0, "segmentation": seg})
+                "id": aid, "image_id": img_id, "category_id": cat_id.get(name),
+                "bbox": [round(x, 2), round(y, 2), round(w, 2), round(h, 2)],
+                "area": round(w * h, 2), "iscrowd": 0, "segmentation": []})
             aid += 1
+    return coco, keys
 
-    # 写入 defect-datasets 桶（COCO json + 复制对应图片）
+
+@app.route("/label/export/<int:item_id>", methods=["POST"])
+@login_required
+def label_export(item_id):
+    """把 Label Studio 里的标注导出为 COCO 样本集，发布到 defect-datasets 桶。
+    标注数据在 LS 里，不再读平台自带标注器的 annotations 表（那张表已不再写入）。"""
+    db = get_db()
+    item = db.execute("SELECT * FROM detect_items WHERE id=?", (item_id,)).fetchone()
+    if not item:
+        abort(404)
+    item = dict(item)
+    name = item["short_name"] or item["name"]
+    pid = item["ls_project_id"] or 0
+    if not pid:
+        flash("检测项目「%s」尚未建立 Label Studio 项目" % name, "error")
+        return redirect(url_for("label"))
+    classes = [dict(c) for c in db.execute(
+        "SELECT * FROM label_classes WHERE item_id=? ORDER BY id", (item_id,)).fetchall()]
+    try:
+        coco, keys = ls_export_coco(pid, classes)
+    except Exception as e:
+        flash("从 Label Studio 拉取标注失败：%s" % str(e)[:120], "error")
+        return redirect(url_for("label"))
+    if not coco or not coco["images"]:
+        flash("检测项目「%s」在 Label Studio 中暂无已标注样本" % name, "error")
+        return redirect(url_for("label"))
+
+    ver_n = db.execute("SELECT COUNT(*) c FROM model_versions WHERE brand=?", (name,)).fetchone()["c"] + 1
+    version = "v%d" % ver_n
+    prefix = "%s/%s/" % (name, version)
     try:
         scfg = db.execute("SELECT * FROM storage_config LIMIT 1").fetchone()
         if not scfg:
             flash("未找到对象存储配置", "error")
             return redirect(url_for("label"))
-        import boto3
-        from botocore.client import Config
-        s3 = boto3.client("s3", endpoint_url="http://" + scfg["server_addr"],
-                          aws_access_key_id=scfg["username"], aws_secret_access_key=scfg["password"],
-                          region_name="us-east-1",
-                          config=Config(signature_version="s3v4", connect_timeout=10, read_timeout=30))
-        dst_bucket = "defect-datasets"
-        # COCO json
+        s3, _ = get_s3(scfg)
+        dst = "defect-datasets"
         body = json.dumps(coco, ensure_ascii=False, indent=2).encode("utf-8")
-        s3.put_object(Bucket=dst_bucket, Key=prefix + "coco.json", Body=body, ContentType="application/json")
-        # 复制原图（从 defect-raw）
-        for im in imgs:
-            s3.copy_object(Bucket=dst_bucket, Key=prefix + im["src_key"],
-                           CopySource={"Bucket": "defect-raw", "Key": im["src_key"]})
-        # 注册模型版本
+        s3.put_object(Bucket=dst, Key=prefix + "coco.json", Body=body, ContentType="application/json")
+        for k in keys:
+            s3.copy_object(Bucket=dst, Key=prefix + k,
+                           CopySource={"Bucket": scfg["in_bucket"], "Key": k})
         db.execute("INSERT INTO model_versions(brand,version,pub_date,note,status) VALUES(?,?,?,?,?)",
-                   (brand, version, datetime.now().strftime("%Y-%m-%d"),
-                    "从 %d 张已标注样本导出" % len(imgs), "测试"))
+                   (name, version, datetime.now().strftime("%Y-%m-%d"),
+                    "从 Label Studio 导出 %d 张标注图 / %d 个标注框" % (
+                        len(coco["images"]), len(coco["annotations"])), "测试"))
         db.commit()
-        flash("样本集 %s%s 已发布到 defect-datasets，含 %d 张标注图" % (brand, version, len(imgs)), "success")
+        flash("样本集 %s%s 已发布到 defect-datasets：%d 张图、%d 个标注框" % (
+            name, version, len(coco["images"]), len(coco["annotations"])), "success")
     except Exception as e:
         flash("导出失败: %s" % str(e)[:120], "error")
     return redirect(url_for("label"))
@@ -1284,19 +1490,20 @@ def analysis(tab):
     infer_total = db.execute("SELECT COUNT(*) AS c FROM inference_results").fetchone()["c"]
     return render_template("analysis.html", tab=tab, tabs=ANALYSIS_TABS,
                            lines=lines, cur_line=cur_line, active="analysis",
-                           infer_total=infer_total, using_mock=(not INFER_URL),
+                           infer_total=infer_total, using_mock=(not get_cfg("infer_url")),
                            today=datetime.now().strftime("%Y/%m/%d"))
 
 
 def run_inference_one(img, classes):
     """对一张 NG 图推理，返回判定 dict；配了算法服务但本张失败时返回 None（跳过，不编造）。
-    INFER_URL 为空则用内置模拟，仅供未接算法服务时演示。"""
-    if INFER_URL:
+    推理服务地址为空则用内置模拟，仅供未接算法服务时演示。"""
+    infer_url = get_cfg("infer_url")
+    if infer_url:
         try:
             import urllib.request
             body = json.dumps({"image_id": img["id"], "src_key": img["src_key"],
                                "line": img["line_name"], "brand": img["brand"]}).encode("utf-8")
-            req = urllib.request.Request(INFER_URL, data=body,
+            req = urllib.request.Request(infer_url, data=body,
                                          headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=30) as r:
                 d = json.loads(r.read().decode("utf-8"))
@@ -1346,7 +1553,11 @@ def analysis_infer():
                     res["is_defect"], res["class_id"], res["class_name"], res["confidence"], ver))
         n += 1
     db.commit()
-    tip = "推理完成，本次新增 %d 条结果" % n + ("（内置模拟判定）" if not INFER_URL else "")
+    tip = "推理完成，本次新增 %d 条结果" % n
+    if not get_cfg("infer_url"):
+        tip += "（内置模拟判定，仅演示）"
+    if skipped:
+        tip += "；%d 张推理服务读不到已跳过（未编造结果）" % skipped
     flash(tip, "success")
     return redirect(request.referrer or url_for("analysis", tab="shift"))
 
