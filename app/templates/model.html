@@ -1,99 +1,72 @@
 {% extends "base.html" %}
-{% block title %}模型训练&版本 · 缺陷图片分析平台{% endblock %}
+{% block title %}模型管理 · 缺陷图片分析平台{% endblock %}
+{% block sider %}
+<aside class="layout-sider">
+  <div class="sider-title">选择牌号</div>
+  <nav class="sider-menu">
+    {% for b in brands %}
+    <a href="{{ url_for('model', brand=b.spec, item=cur_item) }}" class="{{ 'active' if cur_brand==b.spec }}">{{ b.spec }}</a>
+    {% else %}
+    <div style="padding:10px;color:var(--text-secondary);font-size:13px">暂无牌号</div>
+    {% endfor %}
+  </nav>
+</aside>
+{% endblock %}
 {% block content %}
 <div class="toolbar">
-  <div class="page-title" style="margin:0">③ 模型训练 & 版本 — {{ cur_brand }}</div>
-  <button class="btn btn-primary" onclick="openTrain('new')">+ 发起训练</button>
+  <div class="page-title" style="margin:0">③ 模型管理 — {{ cur_brand or '（未选牌号）' }}
+    {% if cs_online %}<span style="font-size:12px;font-weight:400;color:#52c41a;margin-left:10px">● CubeStudio 已连接</span>
+    {% else %}<span style="font-size:12px;font-weight:400;color:#ff4d4f;margin-left:10px">● CubeStudio 离线</span>{% endif %}
+  </div>
 </div>
+<div style="font-size:12.5px;color:var(--text-secondary);margin-bottom:12px">
+  每个「牌号 × 相机面」单元的模型由对方 CubeStudio 训练产出。在这里选一个训好的版本绑定，绑定即上线推理服务，供④推理统计调用。
+</div>
+
 <div class="card"><div class="card-body" style="padding:0">
 <table class="table">
-  <thead><tr><th>版本号</th><th>发布时间</th><th>说明</th><th>当前状态</th><th>操作</th></tr></thead>
+  <thead><tr><th>相机面</th><th>已绑定模型</th><th>CubeStudio 可用模型</th><th>操作</th></tr></thead>
   <tbody>
-  {% for m in rows %}
+  {% for r in rows %}
   <tr>
-    <td><strong>{{ m.version }}</strong></td>
-    <td>{{ m.pub_date }}</td>
-    <td>{{ m.note }}</td>
+    <td><b>{{ r.face_name }}</b></td>
     <td>
-      {% if m.status == '推理' %}<span class="tag">推理</span>
-      {% elif m.status == '测试' %}<span class="tag tag-orange">测试</span>
-      {% else %}<span class="tag tag-gray">停用</span>{% endif %}
+      {% if r.bound_version %}<span style="color:#52c41a">● {{ r.bound_version }}</span>
+        {% if r.bound_endpoint %}<div style="font-size:11px;color:var(--text-secondary)">已上线</div>{% endif %}
+      {% else %}<span style="color:var(--text-secondary)">未绑定</span>{% endif %}
     </td>
     <td>
-      <button class="btn-link" onclick="openTrain('tune','{{ m.version }}')">调参</button>
-      <button class="btn-link" onclick="openExport('{{ m.version }}')">导出</button>
-      <form method="post" action="{{ url_for('model_status', mid=m.id) }}" style="display:inline">
-        <select class="select input btn-sm" name="status" onchange="this.form.submit()"
-                style="width:auto;height:26px;padding:0 6px;font-size:13px">
-          {% for st in ['测试','推理','停用'] %}
-          <option {{ 'selected' if m.status==st }}>{{ st }}</option>
-          {% endfor %}
-        </select>
+      {% if r.models %}
+        {% for m in r.models %}
+        <div style="margin:2px 0;font-size:13px">
+          <b>{{ m.model_version }}</b>
+          <span class="tag {{ 'tag-orange' if m.model_status in ('test','debug') else '' }} {{ 'tag-gray' if m.model_status=='offline' }}">{{ m.model_status }}</span>
+          {% if m.metrics %}<span style="color:var(--text-secondary);font-size:12px">mAP {{ m.metrics.map }}</span>{% endif %}
+          {% if m.model_id != r.bound_model %}
+          <form method="post" action="{{ url_for('model_bind') }}" style="display:inline">
+            <input type="hidden" name="unit_id" value="{{ r.unit_id }}">
+            <input type="hidden" name="model_id" value="{{ m.model_id }}">
+            <input type="hidden" name="version" value="{{ m.model_version }}">
+            <button class="btn-link" type="submit">绑定</button>
+          </form>
+          {% else %}<span style="color:#52c41a;font-size:12px">当前</span>{% endif %}
+        </div>
+        {% endfor %}
+      {% else %}
+        <span style="color:var(--text-secondary);font-size:12.5px">暂无 —— 需在②标注页训练</span>
+      {% endif %}
+    </td>
+    <td style="white-space:nowrap">
+      <form method="post" action="{{ url_for('model_train') }}" style="display:inline">
+        <input type="hidden" name="unit_id" value="{{ r.unit_id }}">
+        <button class="btn-link" type="submit" {{ 'disabled' if not cs_online }}>触发训练</button>
       </form>
     </td>
   </tr>
   {% else %}
-  <tr><td colspan="5" class="empty">该牌号暂无模型版本</td></tr>
+  <tr><td colspan="4" class="empty">该牌号暂无建模单元，请先到「②缺陷标注」为相机面建模</td></tr>
   {% endfor %}
   </tbody>
 </table>
 </div></div>
-
-<div class="modal-mask" id="trainModal">
-  <div class="modal">
-    <div class="modal-head"><span id="trainTitle">发起新训练</span><span class="close" onclick="closeModal('trainModal')">×</span></div>
-    <div class="modal-body">
-      <div class="form-item"><label>牌号</label><input class="input" value="{{ cur_brand }}" readonly></div>
-      <div class="form-item"><label>基础版本</label>
-        <select class="select input" id="baseVer">
-          <option value="">从头训练</option>
-          {% for m in rows %}<option>{{ m.version }}</option>{% endfor %}
-        </select></div>
-      <div class="form-grid">
-        <div class="form-item"><label>学习率</label><input class="input" value="0.001"></div>
-        <div class="form-item"><label>迭代轮数</label><input class="input" type="number" value="100"></div>
-        <div class="form-item"><label>批大小</label><input class="input" type="number" value="16"></div>
-        <div class="form-item"><label>置信度阈值</label><input class="input" value="0.5"></div>
-      </div>
-    </div>
-    <div class="modal-foot">
-      <button class="btn" onclick="closeModal('trainModal')">取消</button>
-      <button class="btn btn-primary" onclick="submitTrain()">提交训练</button>
-    </div>
-  </div>
-</div>
-
-<div class="modal-mask" id="exportModal">
-  <div class="modal">
-    <div class="modal-head"><span id="exportTitle">导出模型</span><span class="close" onclick="closeModal('exportModal')">×</span></div>
-    <div class="modal-body">
-      <div class="form-item"><label>导出格式</label>
-        <select class="select input"><option>ONNX</option><option>TorchScript</option><option>TensorRT</option></select></div>
-    </div>
-    <div class="modal-foot">
-      <button class="btn" onclick="closeModal('exportModal')">取消</button>
-      <button class="btn btn-primary" onclick="submitExport()">导出</button>
-    </div>
-  </div>
-</div>
-
-<script>
-function toast(m){
-  var w = document.querySelector('.msg-wrap') || document.body;
-  var d = document.createElement('div'); d.className = 'msg success';
-  d.innerHTML = '<span class="dot"></span>' + m; w.appendChild(d);
-  setTimeout(function(){ d.remove(); }, 3000);
-}
-function openTrain(mode, ref){
-  document.getElementById('trainTitle').textContent = mode === 'tune' ? ('调参训练 — ' + ref) : '发起新训练';
-  if(mode === 'tune' && ref){ document.getElementById('baseVer').value = ref; }
-  openModal('trainModal');
-}
-function openExport(ver){
-  document.getElementById('exportTitle').textContent = '导出模型 — ' + ver;
-  openModal('exportModal');
-}
-function submitTrain(){ closeModal('trainModal'); toast('训练请求已提交，将由算法平台执行'); }
-function submitExport(){ closeModal('exportModal'); toast('导出任务已提交'); }
-</script>
 {% endblock %}

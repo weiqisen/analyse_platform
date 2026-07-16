@@ -1798,24 +1798,67 @@ def label_export(item_id):
 @app.route("/model")
 @login_required
 def model():
-    """模型版本按检测项目看 —— 模型是为某个检测项目训的，与牌号无关。
-    此前按牌号切换，且查不到时会静默列出全部版本（等于过滤条件失效）。"""
+    """模型管理（新架构）：按牌号列出各相机面建模单元，从对方 CubeStudio 拉训出的
+    模型列表，绑定到单元供推理用。模型是为「牌号×相机面」训的。"""
     db = get_db()
-    it = cur_detect_item()
-    rows = db.execute("SELECT * FROM model_versions WHERE item_id=? ORDER BY id DESC",
-                      (it["id"] if it else 0,)).fetchall()
-    return render_template("model.html", rows=rows, active="model",
-                           cur_brand=(it["short_name"] or it["name"]) if it else "")
+    brands = [dict(b) for b in db.execute(
+        "SELECT * FROM brands WHERE status=1 ORDER BY id").fetchall()]
+    cur_brand = request.args.get("brand") or (brands[0]["spec"] if brands else "")
+    cs_online = cs_ok()
+    rows = []
+    for u in db.execute("""SELECT mu.*, cf.face_name, cf.sort_order FROM model_units mu
+                           JOIN camera_faces cf ON cf.id=mu.face_id
+                           WHERE mu.brand=? ORDER BY cf.sort_order, cf.id""", (cur_brand,)).fetchall():
+        u = dict(u)
+        models = cs_project_models(u["cs_project_id"]) if (cs_online and u["cs_project_id"]) else []
+        rows.append({"unit_id": u["id"], "face_name": u["face_name"],
+                     "bound_model": u["model_id"], "bound_version": u["model_version"],
+                     "bound_endpoint": u["model_endpoint"], "models": models})
+    return render_template("model.html", brands=brands, cur_brand=cur_brand,
+                           rows=rows, cs_online=cs_online, active="model")
 
 
-@app.route("/model/status/<int:mid>", methods=["POST"])
+@app.route("/model/bind", methods=["POST"])
 @login_required
-def model_status(mid):
-    st = request.form.get("status", "停用")
+def model_bind():
+    """把对方的某个模型绑定到建模单元，并触发部署拿到推理地址。"""
     db = get_db()
-    db.execute("UPDATE model_versions SET status=? WHERE id=?", (st, mid))
+    unit_id = request.form.get("unit_id", type=int)
+    model_id = request.form.get("model_id", "").strip()
+    version = request.form.get("version", "").strip()
+    u = db.execute("SELECT * FROM model_units WHERE id=?", (unit_id,)).fetchone()
+    if not u or not model_id:
+        abort(400)
+    endpoint = ""
+    try:
+        # 部署该模型拿推理地址（真系统里模型可能已部署，deploy 幂等返回地址）
+        r = _cs_req("POST", "/api/models/%s/deploy" % model_id)
+        endpoint = (r or {}).get("inference_host_url", "")
+    except Exception as e:
+        flash("部署模型失败：%s" % str(e)[:120], "error")
+        return redirect(url_for("model", brand=u["brand"]))
+    db.execute("UPDATE model_units SET model_id=?,model_version=?,model_endpoint=? WHERE id=?",
+               (model_id, version, endpoint, unit_id))
     db.commit()
-    return redirect(request.referrer or url_for("model"))
+    flash("已绑定模型 %s 并上线推理服务" % version, "success")
+    return redirect(url_for("model", brand=u["brand"]))
+
+
+@app.route("/model/train", methods=["POST"])
+@login_required
+def model_train():
+    """触发对方训练（占位演示：mock 立刻产出模型；真系统是异步）。"""
+    db = get_db()
+    unit_id = request.form.get("unit_id", type=int)
+    u = db.execute("SELECT * FROM model_units WHERE id=?", (unit_id,)).fetchone()
+    if not u or not u["cs_project_id"]:
+        abort(400)
+    try:
+        r = _cs_req("POST", "/api/projects/%s/train" % u["cs_project_id"])
+        flash("已触发训练（run: %s）" % (r or {}).get("run_id", ""), "success")
+    except Exception as e:
+        flash("触发训练失败：%s" % str(e)[:120], "error")
+    return redirect(url_for("model", brand=u["brand"]))
 
 
 # ---------------------------------------------------------------- 分析结果
