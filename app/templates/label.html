@@ -23,6 +23,8 @@
           {% if t.labeling %}
           <a class="btn-link" href="javascript:;" onclick="openPublish({{ t.item_id }},'{{ t.brand }}',{{ t.labeling }})">发布样本集</a>
           {% endif %}
+          {% elif t.fix_url %}
+          <a class="btn-link" href="{{ t.fix_url }}">{{ t.note }} →</a>
           {% else %}
           <span class="btn-link" style="color:var(--text-secondary);cursor:default">{{ t.note or '数据源无图片' }}</span>
           {% endif %}

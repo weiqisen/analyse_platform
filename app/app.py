@@ -1312,11 +1312,14 @@ def label():
                               (item["id"],)).fetchone()["c"] or 0
         pid = item["ls_project_id"] or None
         ls_total = ls_done = 0
-        note = ""
+        note = fix_url = ""
+        # 空状态要说清「为什么空」并给出去哪修，否则新用户只看到一片 0
         if not item["src_prefix"]:
-            note = "未配置数据源目录"
+            note = "未配置数据源目录，去配置"
+            fix_url = url_for("config", tab="items", item=name)
         elif not classes:
-            note = "未配置缺陷类别"
+            note = "未配置缺陷类别，去添加"
+            fix_url = url_for("config", tab="defects", item=name)
         elif ls_ok and scfg and total_db:
             try:
                 pid = ls_ensure_project(item, classes)
@@ -1330,11 +1333,11 @@ def label():
                 app.logger.warning("Label Studio 对接失败（检测项目 %s）：%s", name, e)
                 note = "Label Studio 对接失败"
         elif not total_db:
-            note = "数据源中暂无图片"
+            note = "数据源「%s/」下没有图片" % item["src_prefix"]
         tasks.append({"item_id": item["id"], "brand": name, "total": ls_total or total_db,
                       "labeling": ls_done, "unlabeled": max(0, (ls_total or total_db) - ls_done),
                       "exported": ls_done, "ls_pid": pid, "ls_ok": ls_ok,
-                      "classes": len(classes), "note": note})
+                      "classes": len(classes), "note": note, "fix_url": fix_url})
     all_classes = [dict(c) for c in db.execute(
         "SELECT * FROM label_classes WHERE status=1 ORDER BY id").fetchall()]
     return render_template("label.html", tasks=tasks, classes=all_classes, active="label",
