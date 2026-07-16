@@ -38,6 +38,8 @@ CACHE = os.environ.get("GALLERY_CACHE", "/data/gallery.npz")
 TOPK = int(os.environ.get("TOPK", "5"))
 NORMAL_CLASS = os.environ.get("NORMAL_CLASS", "正常")  # 该目录名不算缺陷
 IMG_EXT = (".jpg", ".jpeg", ".png", ".bmp")
+# 随结果返回，让每条推理结果能追溯到具体是哪个模型算的
+MODEL_VERSION = os.environ.get("MODEL_VERSION", "resnet18-knn-1.0")
 
 app = Flask(__name__)
 torch.set_num_threads(int(os.environ.get("TORCH_THREADS", "4")))
@@ -168,7 +170,8 @@ def classify(key, feat):
 @app.route("/health")
 def health():
     return jsonify({"ok": True, "gallery": len(GALLERY["keys"]),
-                    "classes": len(set(GALLERY["labels"])), "topk": TOPK})
+                    "classes": len(set(GALLERY["labels"])), "topk": TOPK,
+                    "model_version": MODEL_VERSION})
 
 
 @app.route("/infer", methods=["POST"])
@@ -189,7 +192,8 @@ def infer():
     if not name:
         return jsonify({"error": "gallery empty"}), 503
     return jsonify({"is_defect": 0 if name == NORMAL_CLASS else 1,
-                    "class_name": name, "confidence": conf})
+                    "class_name": name, "confidence": conf,
+                    "model_version": MODEL_VERSION})
 
 
 build_gallery()

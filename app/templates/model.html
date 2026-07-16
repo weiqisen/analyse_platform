@@ -1,15 +1,5 @@
 {% extends "base.html" %}
 {% block title %}模型训练&版本 · 缺陷图片分析平台{% endblock %}
-{% block sider %}
-<aside class="layout-sider">
-  <div class="sider-title">选择牌号</div>
-  <nav class="sider-menu">
-    {% for b in brands %}
-    <a href="{{ url_for('model', brand=b, item=cur_item) }}" class="{{ 'active' if cur_brand==b }}">{{ b }}</a>
-    {% endfor %}
-  </nav>
-</aside>
-{% endblock %}
 {% block content %}
 <div class="toolbar">
   <div class="page-title" style="margin:0">③ 模型训练 & 版本 — {{ cur_brand }}</div>

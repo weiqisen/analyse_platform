@@ -30,8 +30,10 @@
     <button class="btn btn-primary" type="submit">运行推理</button>
   </form>
 </div>
-{% if infer_total == 0 %}
-<div class="hint">暂无推理结果，点击右上角「运行推理」对已采集的 NG 图进行分析{% if using_mock %}（当前 INFER_URL 未配置，使用内置模拟判定；接入算法推理服务后即为真实结果）{% endif %}。</div>
+{% if using_mock %}
+<div class="hint">未配置推理服务地址，无法运行推理。请到「基础配置 → 系统集成」填写。</div>
+{% elif infer_total == 0 %}
+<div class="hint">暂无推理结果，点击右上角「运行推理」对已采集的 NG 图进行分析。</div>
 {% endif %}
 <div class="card"><div class="card-body">
   <div id="chart" class="chart"></div>

@@ -135,14 +135,25 @@ def migrate_db(db):
         # 缺陷类别与标注图片归属到检测项目
         ("label_classes", "item_id", "INT DEFAULT 0 COMMENT '所属检测项目(detect_items.id)'"),
         ("label_images", "item_id", "INT DEFAULT 0 COMMENT '所属检测项目(detect_items.id)'"),
+        ("label_tasks", "item_id", "INT DEFAULT 0 COMMENT '所属检测项目(detect_items.id)'"),
+        ("inference_results", "item_id", "INT DEFAULT 0 COMMENT '所属检测项目(detect_items.id)'"),
+        ("model_versions", "item_id", "INT DEFAULT 0 COMMENT '所属检测项目(detect_items.id)'"),
     ]
-    changed = False
+    added = set()
     for table, col, ddl in adds:
         if not _has_column(db, table, col):
             db.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, col, ddl))
-            changed = True
-    if changed:
+            added.add(table)
+    if added:
         db.commit()
+
+    # 老数据按牌号存（牌号是 BRAND_MAP 编出来的），归到第一个配了数据源目录的检测
+    # 项目。只在刚加列时回填一次，避免误伤之后 item_id 合法为 0 的行。
+    if "model_versions" in added:
+        it = db.execute("SELECT id FROM detect_items WHERE src_prefix<>'' ORDER BY id LIMIT 1").fetchone()
+        if it:
+            db.execute("UPDATE model_versions SET item_id=? WHERE item_id=0", (it["id"],))
+            db.commit()
 
     # 一次性引导：把既有数据归到「小包CCD」项目下（此前 BRAND_MAP 硬编码 小包外观→玉溪（硬））
     row = db.execute("SELECT COUNT(*) AS c FROM detect_items WHERE src_prefix<>''").fetchone()
@@ -232,14 +243,8 @@ def init_db():
             note VARCHAR(255) DEFAULT '' COMMENT '备注说明',
             status VARCHAR(16) DEFAULT '停用' COMMENT '状态: 测试/推理/停用'
         ) DEFAULT CHARSET=utf8mb4 COMMENT='模型版本表'""",
-        """CREATE TABLE IF NOT EXISTS collect_history(
-            id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
-            line VARCHAR(32) COMMENT '产线名称',
-            date VARCHAR(32) COMMENT '采集日期',
-            shift VARCHAR(16) COMMENT '班次',
-            brand VARCHAR(64) COMMENT '牌号',
-            img_count INT COMMENT '采集图片数量'
-        ) DEFAULT CHARSET=utf8mb4 COMMENT='历史采集记录表'""",
+        # collect_history 表已废弃：历史采集页直接按 label_images 实时聚合，
+        # 该表只存过种子假数据，无任何代码读取。
         """CREATE TABLE IF NOT EXISTS label_images(
             id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
             brand VARCHAR(64) NOT NULL COMMENT '牌号',
@@ -359,30 +364,10 @@ def init_db():
                       "无商标", "无封签", "烟支外漏", "缺封签", "顶部内衬破损"]
         for c in xb_classes:
             db.execute("INSERT INTO label_classes(name) VALUES(?)", (c,))
-        for b in ["中华（软）", "玉溪（软）", "玉溪（创客）", "云烟（紫）"]:
-            db.execute("INSERT INTO label_tasks(brand,total,labeling,unlabeled) VALUES(?,?,?,?)",
-                       (b, 98, 59, 39))
-        seed_models = [
-            ("V1.3", "2026-06-30", "在前一版本基础上调整学习率与数据增强", "测试"),
-            ("V1.2", "2026-05-31", "在前一版本基础上补充翘边样本", "推理"),
-            ("V1.1", "2026-04-30", "在前一版本基础上调整置信度阈值", "停用"),
-            ("V1.0", "2026-03-31", "在前一版本基础上扩充训练集", "停用"),
-            ("V0.5", "2026-02-28", "在前一版本基础上调整骨干网络", "停用"),
-            ("V0.1", "2026-01-31", "对10种缺陷识别准确率90%", "停用"),
-        ]
-        for v, d, n, s in seed_models:
-            db.execute("INSERT INTO model_versions(brand,version,pub_date,note,status) VALUES(?,?,?,?,?)",
-                       ("中华（软）", v, d, n, s))
-        # 历史采集记录
-        rnd = random.Random(42)
-        brands = ["中华（软）", "玉溪（软）", "玉溪（创客）", "云烟（紫）"]
-        today = datetime.now()
-        for d in range(14):
-            day = (today - timedelta(days=d)).strftime("%Y/%m/%d")
-            for shift in ["早班", "中班", "晚班"]:
-                db.execute("INSERT INTO collect_history(line,date,shift,brand,img_count) VALUES(?,?,?,?,?)",
-                           ("A%02d" % rnd.randint(1, 3), day, shift,
-                            rnd.choice(brands), rnd.randint(80, 420)))
+        # 不灌模型版本 / 标注进度 / 历史采集的种子数据：
+        # 这些表只应由真实动作写入 —— 模型版本来自「发布样本集」，标注进度来自
+        # Label Studio 回写，历史采集来自实际扫描数据源。编造的演示数据混在里面
+        # 分不清真假，比空表更糟。
         db.commit()
     db.close()
 
@@ -404,6 +389,20 @@ def admin_required(fn):
             abort(403)
         return fn(*a, **kw)
     return wrapper
+
+
+def cur_detect_item():
+    """顶栏选中的检测项目行。整套流程（采集→标注→模型→分析）都是在某个检测项目
+    之下进行的，各页面据此过滤；此前这个下拉框选了不起任何作用。"""
+    db = get_db()
+    cur = request.args.get("item") or ""
+    if cur:
+        r = db.execute("SELECT * FROM detect_items WHERE (short_name=? OR name=?) AND status=1",
+                       (cur, cur)).fetchone()
+        if r:
+            return dict(r)
+    r = db.execute("SELECT * FROM detect_items WHERE status=1 ORDER BY id LIMIT 1").fetchone()
+    return dict(r) if r else None
 
 
 @app.context_processor
@@ -461,14 +460,24 @@ def index():
                    "count": db.execute("SELECT COUNT(*) AS c FROM label_images WHERE line_name=?",
                                        (l["name"],)).fetchone()["c"]} for l in lines]
     total_imgs = db.execute("SELECT COUNT(*) AS c FROM label_images").fetchone()["c"]
-    annotated = db.execute("SELECT COUNT(*) AS c FROM label_images WHERE annotated=1").fetchone()["c"]
     infer = db.execute("SELECT COUNT(*) AS c FROM model_versions WHERE status='推理'").fetchone()["c"]
     classes = db.execute("SELECT COUNT(*) AS c FROM label_classes").fetchone()["c"]
+    # 标注进度按检测项目，读 label_tasks 缓存（由 LS webhook 与 /label 刷新），
+    # 首页因此不必逐个项目调 LS。label_images.annotated 是内置标注器时代的字段，
+    # 换 LS 后不再写入，读它只会恒为 0。
     brand_prog = []
-    for b in db.execute("SELECT DISTINCT brand FROM label_images ORDER BY brand").fetchall():
-        r = db.execute("SELECT COUNT(*) AS t, COALESCE(SUM(annotated),0) AS d "
-                       "FROM label_images WHERE brand=?", (b["brand"],)).fetchone()
-        brand_prog.append({"brand": b["brand"], "total": r["t"] or 0, "done": int(r["d"] or 0)})
+    annotated = 0
+    for it in db.execute("SELECT * FROM detect_items WHERE status=1 ORDER BY id").fetchall():
+        n_img = db.execute("SELECT COUNT(*) AS c FROM label_images WHERE item_id=?",
+                           (it["id"],)).fetchone()["c"] or 0
+        if not n_img:
+            continue
+        c = db.execute("SELECT total,labeling FROM label_tasks WHERE item_id=?",
+                       (it["id"],)).fetchone()
+        done = c["labeling"] if c else 0
+        annotated += done
+        brand_prog.append({"brand": it["short_name"] or it["name"],
+                           "total": (c["total"] if c else 0) or n_img, "done": done})
     max_count = max([s["count"] for s in line_stats] + [1])
     return render_template("index.html", active="home", line_stats=line_stats,
                            total_imgs=total_imgs, annotated=annotated, infer=infer,
@@ -784,6 +793,7 @@ def collect(tab):
     ctx["lines"] = lines
     cur_line = request.args.get("line", "all")
     ctx["cur_line"] = cur_line
+    cur_item_row = cur_detect_item()   # 采集的三个页签都只看当前检测项目的数据
 
     if tab == "config":
         if request.method == "POST":
@@ -819,33 +829,39 @@ def collect(tab):
         sync_label_images()
         ctx["cams"] = []; ctx["err"] = None
         ctx["by_line"] = (cur_line == "all")
+        iid = cur_item_row["id"] if cur_item_row else 0
         if cur_line == "all":
             for l in lines:
-                c = db.execute("SELECT COUNT(*) AS c FROM label_images WHERE line_name=?",
-                               (l["name"],)).fetchone()["c"]
+                c = db.execute("SELECT COUNT(*) AS c FROM label_images WHERE line_name=? AND item_id=?",
+                               (l["name"], iid)).fetchone()["c"]
                 ctx["cams"].append({"name": l["name"], "count": c})
         else:
             from collections import Counter
             cnt = Counter()
-            for im in db.execute("SELECT src_key FROM label_images WHERE line_name=?",
-                                 (cur_line,)).fetchall():
+            for im in db.execute("SELECT src_key FROM label_images WHERE line_name=? AND item_id=?",
+                                 (cur_line, iid)).fetchall():
                 parts = im["src_key"].split("/")
                 cnt[parts[-2] if len(parts) >= 2 else "?"] += 1
             ctx["cams"] = [{"name": k, "count": v} for k, v in sorted(cnt.items())]
     elif tab == "history":
         sync_label_images()
         from collections import defaultdict
+        # 按检测项目聚合，不按牌号：图片路径里只有检测项目，没有牌号信息
+        # （此前显示的牌号是 BRAND_MAP 硬编码映射出来的，并非真实数据）
+        items = {r["id"]: (r["short_name"] or r["name"]) for r in
+                 db.execute("SELECT id,name,short_name FROM detect_items").fetchall()}
         agg = defaultdict(int)
-        q = "SELECT brand, src_key, line_name FROM label_images"
-        params = ()
+        q = "SELECT item_id, src_key, line_name FROM label_images WHERE item_id=?"
+        params = (cur_item_row["id"] if cur_item_row else 0,)
         if cur_line != "all":
-            q += " WHERE line_name=?"
-            params = (cur_line,)
+            q += " AND line_name=?"
+            params += (cur_line,)
         for im in db.execute(q, params).fetchall():
             parts = im["src_key"].split("/")
             if len(parts) < 4:
                 continue
-            agg[(im["line_name"], parts[-4], parts[-3], im["brand"])] += 1  # (产线, 日期, 班次, 牌号)
+            agg[(im["line_name"], parts[-4], parts[-3],
+                 items.get(im["item_id"], ""))] += 1  # (产线, 日期, 班次, 检测项目)
 
         def _fmt(d):
             return d[:4] + "/" + d[4:6] + "/" + d[6:8] if len(d) == 8 and d.isdigit() else d
@@ -867,14 +883,17 @@ def collect(tab):
         path = request.args.get("path", "").strip("/")
         ctx["cur_path"] = path
         ctx["crumbs"] = path.split("/") if path else []
-        ctx["root_label"] = tcfg["ng_dir"] if tcfg else (scfg["in_bucket"] if scfg else "根目录")
+        # 浏览起点是当前检测项目的目录，往下就是 日期→班次→缺陷类型→图片。
+        # 此前从桶根开始，第一级还要再点一次检测项目，且不受顶栏选择影响。
+        base = (cur_item_row["src_prefix"] if cur_item_row else "") or ""
+        ctx["root_label"] = (cur_item_row["short_name"] or cur_item_row["name"]) if cur_item_row else "根目录"
         ctx["server_addr"] = tcfg["sys_addr"] if tcfg else (scfg["server_addr"] if scfg else "")
         ctx["dirs"] = []; ctx["pics"] = []; ctx["total"] = 0; ctx["err"] = None; ctx["online"] = False
         try:
             if tcfg:
                 import stat as _st
                 root = (tcfg["ng_dir"] or "").rstrip("/")
-                full = root + ("/" + path if path else "")
+                full = root + ("/" + base if base else "") + ("/" + path if path else "")
                 t, sftp = _ws_sftp(tcfg)
                 try:
                     for e in sorted(sftp.listdir_attr(full), key=lambda x: x.filename):
@@ -888,11 +907,11 @@ def collect(tab):
                     t.close()
             elif scfg:
                 s3, cfg = get_s3(scfg)
-                prefix = (path + "/") if path else ""
+                prefix = (base + "/" if base else "") + ((path + "/") if path else "")
                 r = s3.list_objects_v2(Bucket=cfg["in_bucket"], Prefix=prefix, Delimiter="/", MaxKeys=1000)
                 for cp in r.get("CommonPrefixes", []):
                     name = cp["Prefix"][len(prefix):].rstrip("/")
-                    ctx["dirs"].append({"name": name, "path": (prefix + name).strip("/")})
+                    ctx["dirs"].append({"name": name, "path": (path + "/" + name).strip("/")})
                 for o in r.get("Contents", []):
                     if o["Key"] == prefix:
                         continue
@@ -1105,6 +1124,41 @@ def ls_ensure_s3_storage(pid, scfg, prefix=""):
     return sid, True
 
 
+def ls_webhook_url():
+    """LS 回调本平台的地址。优先用集成配置里手填的；没填则按当前请求推算。
+    注意这个地址是 LS 容器去访问的，不能是 127.0.0.1。"""
+    u = get_cfg("ls_webhook_url")
+    if u:
+        return u
+    try:
+        return url_for("label_webhook", _external=True)
+    except Exception:
+        return ""
+
+
+def ls_ensure_webhook(pid):
+    """把本平台的回调地址注册进 Label Studio（幂等）。
+    没有这一步，标注完不会回写平台 —— 端点白写。"""
+    url = ls_webhook_url()
+    if not url or "127.0.0.1" in url or "localhost" in url:
+        return False  # LS 容器访问不到，注册了也是死链
+    existing = _ls_get("/api/webhooks/")
+    for w in (existing if isinstance(existing, list) else []):
+        if w.get("url") == url:
+            return True
+    _ls_post("/api/webhooks/", {
+        "url": url,
+        "project": pid,
+        "send_payload": True,
+        "send_for_all_actions": False,
+        "actions": ["ANNOTATION_CREATED", "ANNOTATION_UPDATED", "ANNOTATIONS_DELETED",
+                    "TASKS_CREATED", "TASKS_DELETED"],
+        "headers": {"Authorization": "Token " + get_cfg("ls_token")},
+        "is_active": True,
+    })
+    return True
+
+
 def ls_task_counts(pid):
     """读 LS 项目的标注进度。"""
     p = _ls_get("/api/projects/%d" % pid) or {}
@@ -1210,9 +1264,10 @@ def label():
     scfg = db.execute("SELECT * FROM storage_config LIMIT 1").fetchone()
     ls_ok = "label-studio" in str(_ls_get("/api/version")).lower()
     tasks = []
-    # 标注任务按检测项目组织（此前遍历 brands 牌号表，新建检测项目永远联动不到 LS）
-    for item in db.execute("SELECT * FROM detect_items WHERE status=1 ORDER BY id").fetchall():
-        item = dict(item)
+    # 只处理顶栏选中的检测项目 —— 整个 ①②③④ 流程都是在它之下进行的。
+    # （此前遍历 brands 牌号表，新建检测项目永远联动不到 LS）
+    cur = cur_detect_item()
+    for item in ([cur] if cur else []):
         name = item["short_name"] or item["name"]
         classes = [dict(c) for c in db.execute(
             "SELECT * FROM label_classes WHERE status=1 AND item_id=? ORDER BY id",
@@ -1231,8 +1286,10 @@ def label():
                 pid = ls_ensure_project(item, classes)
                 if pid:
                     ls_ensure_s3_storage(pid, scfg, item["src_prefix"] + "/")
+                    ls_ensure_webhook(pid)
                     cnt = ls_task_counts(pid)
                     ls_total, ls_done = cnt["total"], cnt["done"]
+                    cache_label_progress(db, item["id"], name, cnt)
             except Exception as e:
                 app.logger.warning("Label Studio 对接失败（检测项目 %s）：%s", name, e)
                 note = "Label Studio 对接失败"
@@ -1307,29 +1364,42 @@ def label_anno(item_id):
                            annos=[dict(a) for a in annos], active="label")
 
 
+# LS 实际发出的动作名。曾错写成 ANNOTATION_DELETED / TASK_CREATED / TASK_DELETED
+# （少了复数 S），这三种事件会被静默忽略。以 /api/webhooks/info/ 返回的为准。
+LS_WEBHOOK_ACTIONS = ["ANNOTATION_CREATED", "ANNOTATIONS_CREATED", "ANNOTATION_UPDATED",
+                      "ANNOTATIONS_DELETED", "TASKS_CREATED", "TASKS_DELETED"]
+
+
+def cache_label_progress(db, item_id, name, cnt):
+    """把标注进度写进 label_tasks 当缓存，首页据此免去逐个项目调 LS。"""
+    n = db.execute("SELECT COUNT(*) AS c FROM label_tasks WHERE item_id=?", (item_id,)).fetchone()["c"]
+    if n:
+        db.execute("UPDATE label_tasks SET brand=?,total=?,labeling=?,unlabeled=? WHERE item_id=?",
+                   (name, cnt["total"], cnt["done"], cnt["unlabeled"], item_id))
+    else:
+        db.execute("INSERT INTO label_tasks(item_id,brand,total,labeling,unlabeled) VALUES(?,?,?,?,?)",
+                   (item_id, name, cnt["total"], cnt["done"], cnt["unlabeled"]))
+    db.commit()
+
+
 @app.route("/label/webhook", methods=["POST"])
 def label_webhook():
-    """Label Studio 标注事件回写 —— 更新图片标注计数（免登 token 验证）。"""
-    hdr = request.headers.get("Authorization", "")
-    if hdr != "Token " + get_cfg("ls_token"):
+    """Label Studio 标注事件回调 —— 刷新平台侧的标注进度缓存。
+    LS 侧的注册见 ls_ensure_webhook()；鉴权靠注册时带上的 Authorization 头。"""
+    if request.headers.get("Authorization", "") != "Token " + get_cfg("ls_token"):
         return jsonify({"error": "unauthorized"}), 403
     try:
         data = request.get_json(force=True) or {}
-        action = data.get("action", "")
-        if action in ("ANNOTATION_CREATED", "ANNOTATION_UPDATED", "ANNOTATION_DELETED",
-                      "TASK_CREATED", "TASK_DELETED"):
-            pid = data.get("project", {}).get("id")
+        if data.get("action", "") in LS_WEBHOOK_ACTIONS:
+            pid = (data.get("project") or {}).get("id")
             if pid:
-                cnt = ls_task_counts(pid)
                 db = get_db()
                 # 按 ls_project_id 反查检测项目，比拿 LS 项目标题去匹配可靠（改名不会断）
                 it = db.execute("SELECT id,name,short_name FROM detect_items WHERE ls_project_id=?",
                                 (pid,)).fetchone()
                 if it:
-                    name = it["short_name"] or it["name"]
-                    db.execute("UPDATE label_tasks SET total=?,labeling=?,unlabeled=? WHERE brand=?",
-                               (cnt["total"], cnt["done"], cnt["unlabeled"], name))
-                    db.commit()
+                    cache_label_progress(db, it["id"], it["short_name"] or it["name"],
+                                         ls_task_counts(pid))
     except Exception as e:
         app.logger.warning("Label Studio webhook 处理失败：%s", e)
     return jsonify({"ok": True})
@@ -1439,8 +1509,9 @@ def label_export(item_id):
         for k in keys:
             s3.copy_object(Bucket=dst, Key=prefix + k,
                            CopySource={"Bucket": scfg["in_bucket"], "Key": k})
-        db.execute("INSERT INTO model_versions(brand,version,pub_date,note,status) VALUES(?,?,?,?,?)",
-                   (name, version, datetime.now().strftime("%Y-%m-%d"),
+        db.execute("INSERT INTO model_versions(item_id,brand,version,pub_date,note,status) "
+                   "VALUES(?,?,?,?,?,?)",
+                   (item_id, name, version, datetime.now().strftime("%Y-%m-%d"),
                     "从 Label Studio 导出 %d 张标注图 / %d 个标注框" % (
                         len(coco["images"]), len(coco["annotations"])), "测试"))
         db.commit()
@@ -1455,14 +1526,14 @@ def label_export(item_id):
 @app.route("/model")
 @login_required
 def model():
+    """模型版本按检测项目看 —— 模型是为某个检测项目训的，与牌号无关。
+    此前按牌号切换，且查不到时会静默列出全部版本（等于过滤条件失效）。"""
     db = get_db()
-    brands = [r["spec"] for r in db.execute("SELECT spec FROM brands WHERE status=1").fetchall()]
-    cur_brand = request.args.get("brand") or (brands[0] if brands else "")
-    rows = db.execute("SELECT * FROM model_versions WHERE brand=? ORDER BY id DESC", (cur_brand,)).fetchall()
-    if not rows:
-        rows = db.execute("SELECT * FROM model_versions ORDER BY id DESC").fetchall()
-    return render_template("model.html", brands=brands, cur_brand=cur_brand,
-                           rows=rows, active="model")
+    it = cur_detect_item()
+    rows = db.execute("SELECT * FROM model_versions WHERE item_id=? ORDER BY id DESC",
+                      (it["id"] if it else 0,)).fetchall()
+    return render_template("model.html", rows=rows, active="model",
+                           cur_brand=(it["short_name"] or it["name"]) if it else "")
 
 
 @app.route("/model/status/<int:mid>", methods=["POST"])
@@ -1487,53 +1558,50 @@ def analysis(tab):
     db = get_db()
     lines = db.execute("SELECT * FROM prod_lines WHERE status=1 ORDER BY id").fetchall()
     cur_line = request.args.get("line", "all")
-    infer_total = db.execute("SELECT COUNT(*) AS c FROM inference_results").fetchone()["c"]
+    it = cur_detect_item()
+    infer_total = db.execute("SELECT COUNT(*) AS c FROM inference_results WHERE item_id=?",
+                             (it["id"] if it else 0,)).fetchone()["c"]
     return render_template("analysis.html", tab=tab, tabs=ANALYSIS_TABS,
                            lines=lines, cur_line=cur_line, active="analysis",
                            infer_total=infer_total, using_mock=(not get_cfg("infer_url")),
                            today=datetime.now().strftime("%Y/%m/%d"))
 
 
-def run_inference_one(img, classes):
-    """对一张 NG 图推理，返回判定 dict；配了算法服务但本张失败时返回 None（跳过，不编造）。
-    推理服务地址为空则用内置模拟，仅供未接算法服务时演示。"""
-    infer_url = get_cfg("infer_url")
-    if infer_url:
-        try:
-            import urllib.request
-            body = json.dumps({"image_id": img["id"], "src_key": img["src_key"],
-                               "line": img["line_name"], "brand": img["brand"]}).encode("utf-8")
-            req = urllib.request.Request(infer_url, data=body,
-                                         headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=30) as r:
-                d = json.loads(r.read().decode("utf-8"))
-            cname = d.get("class_name", "")
-            cid = d.get("class_id")
-            if cid is None and cname:  # 算法服务只回类名，平台自己查字典映射 id
-                cid = next((c["id"] for c in classes if c["name"] == cname), None)
-            return {"is_defect": int(d.get("is_defect", 1)), "class_id": cid,
-                    "class_name": cname, "confidence": float(d.get("confidence", 0))}
-        except Exception as e:
-            # 配了算法服务却调用失败时宁可跳过，也不能编造结果灌进分析库
-            app.logger.warning("推理服务调用失败，跳过（%s）：%s", img["src_key"], e)
-            return None
-    h = int(hashlib.md5(img["src_key"].encode("utf-8")).hexdigest(), 16)
-    cls = classes[h % len(classes)] if classes else None
-    return {"is_defect": 0 if h % 5 == 0 else 1,
-            "class_id": cls["id"] if cls else None,
-            "class_name": cls["name"] if cls else "",
-            "confidence": round(0.6 + (h % 40) / 100.0, 3)}
+def run_inference_one(img, infer_url, classes):
+    """调算法服务对一张 NG 图推理，返回判定 dict；本张失败返回 None（跳过）。
+    没有内置模拟兜底 —— 推理结果会进分析库当统计依据，编造的数据一旦混进去
+    就再也分不清真假，宁可少一条也不能假一条。"""
+    try:
+        import urllib.request
+        body = json.dumps({"image_id": img["id"], "src_key": img["src_key"],
+                           "line": img["line_name"], "brand": img["brand"]}).encode("utf-8")
+        req = urllib.request.Request(infer_url, data=body,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            d = json.loads(r.read().decode("utf-8"))
+        cname = d.get("class_name", "")
+        cid = d.get("class_id")
+        if cid is None and cname:  # 算法服务只回类名，平台自己查字典映射 id
+            cid = next((c["id"] for c in classes if c["name"] == cname), None)
+        return {"is_defect": int(d.get("is_defect", 1)), "class_id": cid,
+                "class_name": cname, "confidence": float(d.get("confidence", 0)),
+                "model_version": d.get("model_version", "")}
+    except Exception as e:
+        app.logger.warning("推理服务调用失败，跳过（%s）：%s", img["src_key"], e)
+        return None
 
 
 @app.route("/analysis/infer", methods=["POST"])
 @login_required
 def analysis_infer():
     db = get_db()
+    infer_url = get_cfg("infer_url")
+    if not infer_url:
+        flash("未配置推理服务地址，无法推理。请到「基础配置 → 系统集成」填写。", "error")
+        return redirect(request.referrer or url_for("analysis", tab="shift"))
     sync_label_images(force=True)
     classes = [dict(c) for c in db.execute("SELECT * FROM label_classes ORDER BY id").fetchall()]
     done = {r["image_id"] for r in db.execute("SELECT image_id FROM inference_results").fetchall()}
-    v = db.execute("SELECT version FROM model_versions WHERE status='推理' ORDER BY id DESC LIMIT 1").fetchone()
-    ver = v["version"] if v else ""
     n = 0
     skipped = 0
     for img in db.execute("SELECT * FROM label_images").fetchall():
@@ -1542,22 +1610,21 @@ def analysis_infer():
         parts = img["src_key"].split("/")
         date = parts[-4] if len(parts) >= 4 else ""
         shift = parts[-3] if len(parts) >= 3 else ""
-        res = run_inference_one(img, classes)
+        res = run_inference_one(img, infer_url, classes)
         if res is None:
             skipped += 1
             continue
-        db.execute("INSERT INTO inference_results(image_id,line_name,brand,img_date,shift,"
+        db.execute("INSERT INTO inference_results(image_id,item_id,line_name,brand,img_date,shift,"
                    "is_defect,class_id,class_name,confidence,model_version) "
-                   "VALUES(?,?,?,?,?,?,?,?,?,?)",
-                   (img["id"], img["line_name"], img["brand"], date, shift,
-                    res["is_defect"], res["class_id"], res["class_name"], res["confidence"], ver))
+                   "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                   (img["id"], img["item_id"], img["line_name"], img["brand"], date, shift,
+                    res["is_defect"], res["class_id"], res["class_name"], res["confidence"],
+                    res["model_version"]))  # 版本取自算法服务自报，能追溯到具体模型
         n += 1
     db.commit()
     tip = "推理完成，本次新增 %d 条结果" % n
-    if not get_cfg("infer_url"):
-        tip += "（内置模拟判定，仅演示）"
     if skipped:
-        tip += "；%d 张推理服务读不到已跳过（未编造结果）" % skipped
+        tip += "；%d 张推理服务读不到已跳过" % skipped
     flash(tip, "success")
     return redirect(request.referrer or url_for("analysis", tab="shift"))
 
@@ -1567,8 +1634,9 @@ def analysis_infer():
 def api_analysis(tab):
     db = get_db()
     line = request.args.get("line", "all")
-    base = "FROM inference_results WHERE is_defect=1"
-    params = []
+    it = cur_detect_item()
+    base = "FROM inference_results WHERE is_defect=1 AND item_id=?"
+    params = [it["id"] if it else 0]
     if line != "all":
         base += " AND line_name=?"
         params.append(line)
