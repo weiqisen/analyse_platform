@@ -31,6 +31,7 @@ INFER_URL = os.environ.get("INFER_URL", "")
 # Label Studio 对接（标注引擎）
 LS_URL = os.environ.get("LS_URL", "http://127.0.0.1:8080")
 LS_TOKEN = os.environ.get("LS_TOKEN", "cigarette-label-studio-token-2026")
+LS_USER = os.environ.get("LS_USER", "admin@cigarette.local")  # 仅用于页面提示登录账号
 
 app = Flask(__name__)
 app.secret_key = "yancao-analyse-platform-secret-2026"
@@ -1105,15 +1106,17 @@ def label_class_delete(cid):
 @app.route("/label/anno/<brand>")
 @login_required
 def label_anno(brand):
-    """标注入口：Label Studio 可用时跳转其项目页，否则用平台内置标注器。"""
+    """标注入口：Label Studio 可用时内嵌其项目页（保留平台导航），否则降级内置标注器。"""
     db = get_db()
     try:
         r = _ls_get("/api/projects?page_size=200") or {}
         for p in r.get("results", []):
             if p.get("title") == brand:
-                return redirect(LS_URL.rstrip("/") + "/projects/%d/data?tab=1" % p["id"])
-    except Exception:
-        pass
+                return render_template("label_ls.html", brand=brand, active="label",
+                                       ls_src=LS_URL.rstrip("/") + "/projects/%d/data" % p["id"],
+                                       ls_user=LS_USER, cnt=ls_task_counts(p["id"]))
+    except Exception as e:
+        app.logger.warning("Label Studio 项目查询失败（牌号 %s）：%s", brand, e)
     imgs = db.execute("SELECT * FROM label_images WHERE brand=? AND src_key LIKE ? ORDER BY id", (brand, "%/正常/%")).fetchall()
     if not imgs:
         sync_label_images()
