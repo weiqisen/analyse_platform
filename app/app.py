@@ -1289,7 +1289,8 @@ def analysis(tab):
 
 
 def run_inference_one(img, classes):
-    """对一张 NG 图推理，返回判定 dict。INFER_URL 有则调算法服务，否则内置模拟。"""
+    """对一张 NG 图推理，返回判定 dict；配了算法服务但本张失败时返回 None（跳过，不编造）。
+    INFER_URL 为空则用内置模拟，仅供未接算法服务时演示。"""
     if INFER_URL:
         try:
             import urllib.request
@@ -1297,12 +1298,18 @@ def run_inference_one(img, classes):
                                "line": img["line_name"], "brand": img["brand"]}).encode("utf-8")
             req = urllib.request.Request(INFER_URL, data=body,
                                          headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=10) as r:
+            with urllib.request.urlopen(req, timeout=30) as r:
                 d = json.loads(r.read().decode("utf-8"))
-            return {"is_defect": int(d.get("is_defect", 1)), "class_id": d.get("class_id"),
-                    "class_name": d.get("class_name", ""), "confidence": float(d.get("confidence", 0))}
-        except Exception:
-            pass
+            cname = d.get("class_name", "")
+            cid = d.get("class_id")
+            if cid is None and cname:  # 算法服务只回类名，平台自己查字典映射 id
+                cid = next((c["id"] for c in classes if c["name"] == cname), None)
+            return {"is_defect": int(d.get("is_defect", 1)), "class_id": cid,
+                    "class_name": cname, "confidence": float(d.get("confidence", 0))}
+        except Exception as e:
+            # 配了算法服务却调用失败时宁可跳过，也不能编造结果灌进分析库
+            app.logger.warning("推理服务调用失败，跳过（%s）：%s", img["src_key"], e)
+            return None
     h = int(hashlib.md5(img["src_key"].encode("utf-8")).hexdigest(), 16)
     cls = classes[h % len(classes)] if classes else None
     return {"is_defect": 0 if h % 5 == 0 else 1,
@@ -1321,6 +1328,7 @@ def analysis_infer():
     v = db.execute("SELECT version FROM model_versions WHERE status='推理' ORDER BY id DESC LIMIT 1").fetchone()
     ver = v["version"] if v else ""
     n = 0
+    skipped = 0
     for img in db.execute("SELECT * FROM label_images").fetchall():
         if img["id"] in done:
             continue
@@ -1328,6 +1336,9 @@ def analysis_infer():
         date = parts[-4] if len(parts) >= 4 else ""
         shift = parts[-3] if len(parts) >= 3 else ""
         res = run_inference_one(img, classes)
+        if res is None:
+            skipped += 1
+            continue
         db.execute("INSERT INTO inference_results(image_id,line_name,brand,img_date,shift,"
                    "is_defect,class_id,class_name,confidence,model_version) "
                    "VALUES(?,?,?,?,?,?,?,?,?,?)",
