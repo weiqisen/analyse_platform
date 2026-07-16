@@ -240,6 +240,21 @@ def init_db():
             name VARCHAR(64) NOT NULL COMMENT '缺陷分类名称',
             status INT DEFAULT 1 COMMENT '状态: 1启用 0停用'
         ) DEFAULT CHARSET=utf8mb4 COMMENT='缺陷标注分类表'""",
+        """CREATE TABLE IF NOT EXISTS model_units(
+            id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+            brand VARCHAR(64) NOT NULL COMMENT '牌号/品规',
+            face_id INT NOT NULL COMMENT '相机面(camera_faces.id)',
+            cs_project_id VARCHAR(64) DEFAULT '' COMMENT '对方CubeStudio项目ID(标注/训练)',
+            cs_project_url VARCHAR(512) DEFAULT '' COMMENT '对方项目内嵌URL',
+            model_id VARCHAR(64) DEFAULT '' COMMENT '已绑定的推理模型ID(来自对方)',
+            model_version VARCHAR(64) DEFAULT '' COMMENT '已绑定模型版本',
+            model_endpoint VARCHAR(512) DEFAULT '' COMMENT '推理服务地址',
+            annotated INT DEFAULT 0 COMMENT '已标注数(轮询对方刷新)',
+            total INT DEFAULT 0 COMMENT '任务总数(轮询对方刷新)',
+            status INT DEFAULT 1 COMMENT '状态: 1启用 0停用',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+            UNIQUE KEY uq_brand_face (brand, face_id)
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='建模单元(牌号×相机面), 菜单②③④枢纽'""",
         """CREATE TABLE IF NOT EXISTS camera_faces(
             id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
             raw_name VARCHAR(128) NOT NULL COMMENT 'MinIO 里的原始相机面目录名, 如 is7600C_D',
@@ -1171,6 +1186,74 @@ def collect_test_terminal():
         return jsonify({"ok": False, "msg": str(e)[:160]})
 
 
+# ---------------------------------------------------------------- 对方 CubeStudio 对接
+# 对方系统融合了 Label Studio，负责 标注→训练→部署推理。我们是它的业务客户端：
+# 建项目、轮询标注进度、拉模型列表、调推理。对方没就绪时用 cubestudio_mock 顶。
+def _cs_req(method, path, data=None, timeout=15):
+    """调对方 CubeStudio API。基址取自集成配置 cs_url，可随时切到真地址。"""
+    import urllib.request
+    base = get_cfg("cs_url").rstrip("/")
+    if not base:
+        raise Exception("未配置 CubeStudio 地址（基础配置→系统集成）")
+    headers = {"Content-Type": "application/json"}
+    token = get_cfg("cs_token")
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    body = json.dumps(data).encode("utf-8") if data is not None else None
+    req = urllib.request.Request(base + path, data=body, headers=headers)
+    req.get_method = lambda: method
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        txt = r.read().decode("utf-8")
+        d = json.loads(txt) if txt else {}
+    # cube-studio 风格：{status, result, message}，status!=0 视为失败；自动解包 result
+    if isinstance(d, dict) and "status" in d and "result" in d:
+        if d.get("status") not in (0, "0", None):
+            raise Exception("CubeStudio %s: %s" % (path, d.get("message", "")))
+        return d["result"]
+    return d
+
+
+def cs_ok():
+    try:
+        return bool((_cs_req("GET", "/health") or {}).get("ok"))
+    except Exception:
+        return False
+
+
+def cs_ensure_project(unit, brand, face):
+    """为建模单元(牌号×相机面)确保对方项目存在，返回 (project_id, embed_url)。"""
+    if unit["cs_project_id"]:
+        return unit["cs_project_id"], unit["cs_project_url"]
+    r = _cs_req("POST", "/api/projects", {
+        "brand": brand, "face_code": face["face_code"], "face_name": face["face_name"],
+        "title": "%s · %s" % (brand, face["face_name"])})
+    pid, url = r.get("project_id", ""), r.get("embed_url", "")
+    if pid:
+        db = get_db()
+        db.execute("UPDATE model_units SET cs_project_id=?,cs_project_url=? WHERE id=?",
+                   (pid, url, unit["id"]))
+        db.commit()
+    return pid, url
+
+
+def cs_project_stats(pid):
+    try:
+        r = _cs_req("GET", "/api/projects/%s/stats" % pid) or {}
+        return int(r.get("total", 0)), int(r.get("annotated", 0))
+    except Exception as e:
+        app.logger.warning("拉 CubeStudio 标注进度失败（%s）：%s", pid, e)
+        return 0, 0
+
+
+def cs_project_models(pid):
+    try:
+        r = _cs_req("GET", "/api/projects/%s/models" % pid)
+        return r if isinstance(r, list) else []
+    except Exception as e:
+        app.logger.warning("拉 CubeStudio 模型列表失败（%s）：%s", pid, e)
+        return []
+
+
 # ---------------------------------------------------------------- Label Studio 对接
 def _ls_headers():
     return {"Authorization": "Token " + get_cfg("ls_token"),
@@ -1409,53 +1492,54 @@ def label_image_url(img):
 @app.route("/label")
 @login_required
 def label():
+    """缺陷标注（新架构）：左侧牌号下拉，右侧该牌号的相机面=建模单元。
+    每个单元对接对方 CubeStudio（建项目→内嵌标注→轮询进度）。"""
     db = get_db()
-    sync_label_images()
-    scfg = db.execute("SELECT * FROM storage_config LIMIT 1").fetchone()
-    ls_ok = "label-studio" in str(_ls_get("/api/version")).lower()
-    tasks = []
-    # 只处理顶栏选中的检测项目 —— 整个 ①②③④ 流程都是在它之下进行的。
-    # （此前遍历 brands 牌号表，新建检测项目永远联动不到 LS）
-    cur = cur_detect_item()
-    for item in ([cur] if cur else []):
-        name = item["short_name"] or item["name"]
-        classes = [dict(c) for c in db.execute(
-            "SELECT * FROM label_classes WHERE status=1 AND item_id=? ORDER BY id",
-            (item["id"],)).fetchall()]
-        total_db = db.execute("SELECT COUNT(*) AS c FROM label_images WHERE item_id=?",
-                              (item["id"],)).fetchone()["c"] or 0
-        pid = item["ls_project_id"] or None
-        ls_total = ls_done = 0
-        note = fix_url = ""
-        # 空状态要说清「为什么空」并给出去哪修，否则新用户只看到一片 0
-        if not item["src_prefix"]:
-            note = "未配置数据源目录，去配置"
-            fix_url = url_for("config", tab="items", item=name)
-        elif not classes:
-            note = "未配置缺陷类别，去添加"
-            fix_url = url_for("config", tab="defects", item=name)
-        elif ls_ok and scfg and total_db:
-            try:
-                pid = ls_ensure_project(item, classes)
-                if pid:
-                    ls_ensure_s3_storage(pid, scfg, item["src_prefix"] + "/")
-                    ls_ensure_webhook(pid)
-                    cnt = ls_task_counts(pid)
-                    ls_total, ls_done = cnt["total"], cnt["done"]
-                    cache_label_progress(db, item["id"], name, cnt)
-            except Exception as e:
-                app.logger.warning("Label Studio 对接失败（检测项目 %s）：%s", name, e)
-                note = "Label Studio 对接失败"
-        elif not total_db:
-            note = "数据源「%s/」下没有图片" % item["src_prefix"]
-        tasks.append({"item_id": item["id"], "brand": name, "total": ls_total or total_db,
-                      "labeling": ls_done, "unlabeled": max(0, (ls_total or total_db) - ls_done),
-                      "exported": ls_done, "ls_pid": pid, "ls_ok": ls_ok,
-                      "classes": len(classes), "note": note, "fix_url": fix_url})
-    all_classes = [dict(c) for c in db.execute(
-        "SELECT * FROM label_classes WHERE status=1 ORDER BY id").fetchall()]
-    return render_template("label.html", tasks=tasks, classes=all_classes, active="label",
-                           LS_URL=get_cfg("ls_url"), has_ls=ls_ok)
+    brands = [dict(b) for b in db.execute(
+        "SELECT * FROM brands WHERE status=1 ORDER BY id").fetchall()]
+    cur_brand = request.args.get("brand") or (brands[0]["spec"] if brands else "")
+    faces = [dict(f) for f in db.execute(
+        "SELECT * FROM camera_faces WHERE status=1 ORDER BY sort_order, id").fetchall()]
+    cs_online = cs_ok()
+    units = []
+    for f in faces:
+        u = db.execute("SELECT * FROM model_units WHERE brand=? AND face_id=?",
+                       (cur_brand, f["id"])).fetchone()
+        units.append({
+            "face_id": f["id"], "face_name": f["face_name"], "face_code": f["face_code"],
+            "raw_name": f["raw_name"],
+            "exists": bool(u), "unit_id": u["id"] if u else 0,
+            "cs_project_id": u["cs_project_id"] if u else "",
+            "annotated": u["annotated"] if u else 0, "total": u["total"] if u else 0,
+            "model_version": u["model_version"] if u else "",
+        })
+    return render_template("label.html", brands=brands, cur_brand=cur_brand,
+                           units=units, cs_online=cs_online, active="label")
+
+
+@app.route("/label/unit/create", methods=["POST"])
+@login_required
+def label_unit_create():
+    """为(牌号×相机面)建立建模单元，并在对方 CubeStudio 建对应项目。"""
+    db = get_db()
+    brand = request.form.get("brand", "").strip()
+    face_id = request.form.get("face_id", type=int)
+    if not brand or not face_id:
+        abort(400)
+    face = db.execute("SELECT * FROM camera_faces WHERE id=?", (face_id,)).fetchone()
+    if not face:
+        abort(404)
+    u = db.execute("SELECT * FROM model_units WHERE brand=? AND face_id=?", (brand, face_id)).fetchone()
+    if not u:
+        db.execute("INSERT INTO model_units(brand,face_id) VALUES(?,?)", (brand, face_id))
+        db.commit()
+        u = db.execute("SELECT * FROM model_units WHERE brand=? AND face_id=?", (brand, face_id)).fetchone()
+    try:
+        cs_ensure_project(dict(u), brand, dict(face))
+        flash("已为「%s · %s」建立标注项目" % (brand, face["face_name"]), "success")
+    except Exception as e:
+        flash("对接 CubeStudio 失败：%s" % str(e)[:120], "error")
+    return redirect(url_for("label", brand=brand))
 
 
 @app.route("/label/class/add", methods=["POST"])
@@ -1486,35 +1570,43 @@ def label_class_delete(cid):
     return redirect(url_for("label"))
 
 
-@app.route("/label/anno/<int:item_id>")
+@app.route("/label/anno/<int:unit_id>")
 @login_required
-def label_anno(item_id):
-    """标注入口：Label Studio 可用时内嵌其项目页（保留平台导航），否则降级内置标注器。"""
+def label_anno(unit_id):
+    """标注入口：内嵌对方 CubeStudio 的标注界面（保留平台导航）。"""
     db = get_db()
-    item = db.execute("SELECT * FROM detect_items WHERE id=?", (item_id,)).fetchone()
-    if not item:
+    u = db.execute("SELECT * FROM model_units WHERE id=?", (unit_id,)).fetchone()
+    if not u:
         abort(404)
-    item = dict(item)
-    name = item["short_name"] or item["name"]
-    pid = item["ls_project_id"] or 0
-    if pid and (_ls_get("/api/projects/%d" % pid) or {}).get("id"):
-        return render_template("label_ls.html", brand=name, active="label",
-                               ls_src=get_cfg("ls_url").rstrip("/") + "/projects/%d/data" % pid,
-                               ls_user=get_cfg("ls_user"), cnt=ls_task_counts(pid))
-    # LS 不可用时降级到内置标注器
-    imgs = db.execute("SELECT * FROM label_images WHERE item_id=? ORDER BY id", (item_id,)).fetchall()
-    if not imgs:
-        flash("检测项目「%s」在数据源中未找到图片" % name, "error")
-        return redirect(url_for("label"))
-    idx = request.args.get("i", type=int) or 0
-    idx = max(0, min(idx, len(imgs) - 1))
-    img = imgs[idx]
-    classes = [dict(c) for c in db.execute(
-        "SELECT * FROM label_classes WHERE item_id=? ORDER BY id", (item_id,)).fetchall()]
-    annos = db.execute("SELECT * FROM annotations WHERE image_id=? ORDER BY id", (img["id"],)).fetchall()
-    return render_template("label_anno.html", brand=name, img=dict(img), img_url=label_image_url(img),
-                           idx=idx, total=len(imgs), classes=classes,
-                           annos=[dict(a) for a in annos], active="label")
+    u = dict(u)
+    face = db.execute("SELECT * FROM camera_faces WHERE id=?", (u["face_id"],)).fetchone()
+    title = "%s · %s" % (u["brand"], face["face_name"] if face else "?")
+    try:
+        pid, embed = cs_ensure_project(u, u["brand"], dict(face) if face else {})
+    except Exception as e:
+        flash("对接 CubeStudio 失败：%s" % str(e)[:120], "error")
+        return redirect(url_for("label", brand=u["brand"]))
+    # embed_url 可能是相对路径，拼成绝对地址给 iframe
+    src = embed if embed.startswith("http") else get_cfg("cs_url").rstrip("/") + embed
+    total, annotated = cs_project_stats(pid)
+    db.execute("UPDATE model_units SET total=?,annotated=? WHERE id=?", (total, annotated, unit_id))
+    db.commit()
+    return render_template("label_cs.html", title=title, unit_id=unit_id, active="label",
+                           cs_src=src, total=total, annotated=annotated)
+
+
+@app.route("/api/label/unit/<int:unit_id>/stats")
+@login_required
+def api_label_unit_stats(unit_id):
+    """定时轮询：从对方 CubeStudio 拉最新标注进度并刷新。"""
+    db = get_db()
+    u = db.execute("SELECT * FROM model_units WHERE id=?", (unit_id,)).fetchone()
+    if not u or not u["cs_project_id"]:
+        return jsonify({"total": 0, "annotated": 0})
+    total, annotated = cs_project_stats(u["cs_project_id"])
+    db.execute("UPDATE model_units SET total=?,annotated=? WHERE id=?", (total, annotated, unit_id))
+    db.commit()
+    return jsonify({"total": total, "annotated": annotated})
 
 
 # LS 实际发出的动作名。曾错写成 ANNOTATION_DELETED / TASK_CREATED / TASK_DELETED

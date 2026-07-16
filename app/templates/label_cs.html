@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}标注 · 缺陷图片分析平台{% endblock %}
+{% block content %}
+<style>
+  .cs-frame-wrap { height: calc(100vh - 200px); min-height: 460px; }
+  .cs-frame-wrap iframe { width: 100%; height: 100%; border: 0; display: block; }
+</style>
+<div class="toolbar">
+  <div class="page-title" style="margin:0">缺陷标注 — {{ title }}
+    <span style="font-size:13px;color:var(--text-secondary);font-weight:400">（标注 <b id="anno">{{ annotated }}</b> / <span id="total">{{ total }}</span> · CubeStudio）</span>
+  </div>
+  <div class="form-inline">
+    <a class="btn btn-sm" href="{{ cs_src }}" target="_blank" rel="noopener">↗ 新窗口打开</a>
+    <a class="btn btn-sm" href="{{ url_for('label') }}">« 返回列表</a>
+  </div>
+</div>
+
+<div class="card"><div class="card-body" style="padding:0">
+  <div class="cs-frame-wrap">
+    <iframe src="{{ cs_src }}" title="CubeStudio" allow="clipboard-read; clipboard-write; fullscreen"></iframe>
+  </div>
+</div></div>
+
+<div style="margin-top:10px;font-size:12.5px;color:var(--text-secondary)">
+  上方为对方 CubeStudio 的标注/训练界面：选图上传 → 标注（可选预标注模型）→ 一键训练 → 一键部署推理。
+  标注进度每 10 秒自动从 CubeStudio 刷新一次。
+</div>
+
+<script>
+// 定时轮询对方的标注进度，回显到平台
+setInterval(function(){
+  fetch('{{ url_for("api_label_unit_stats", unit_id=unit_id) }}')
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      document.getElementById('anno').textContent = d.annotated;
+      document.getElementById('total').textContent = d.total;
+    }).catch(function(){});
+}, 10000);
+</script>
+{% endblock %}

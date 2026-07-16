@@ -1,94 +1,57 @@
 {% extends "base.html" %}
-{% block title %}缺陷分类&标注 · 缺陷图片分析平台{% endblock %}
+{% block title %}缺陷标注 · 缺陷图片分析平台{% endblock %}
+{% block sider %}
+<aside class="layout-sider">
+  <div class="sider-title">选择牌号</div>
+  <nav class="sider-menu">
+    {% for b in brands %}
+    <a href="{{ url_for('label', brand=b.spec, item=cur_item) }}" class="{{ 'active' if cur_brand==b.spec }}">{{ b.spec }}</a>
+    {% else %}
+    <div style="padding:10px;color:var(--text-secondary);font-size:13px">暂无牌号，请到<br>基础配置→牌号维护</div>
+    {% endfor %}
+  </nav>
+</aside>
+{% endblock %}
 {% block content %}
-<div style="display:flex;gap:16px;align-items:flex-start">
-  <div style="flex:1">
-    <div class="page-title">② 缺陷分类 & 标注 — 标注任务（按检测项目）
-      {% if has_ls %}<span style="font-size:12px;font-weight:400;color:#52c41a;margin-left:10px">● Label Studio 已连接</span>
-      {% else %}<span style="font-size:12px;font-weight:400;color:#ff4d4f;margin-left:10px">● Label Studio 离线，使用内置标注器</span>{% endif %}
-    </div>
-    <div class="card"><div class="card-body" style="padding:0">
-    <table class="table">
-      <thead><tr>
-        <th>检测项目</th><th>缺陷类别</th><th>样本数量</th><th>已标注</th><th>未标注</th><th>操作</th>
-      </tr></thead>
-      <tbody>
-      {% for t in tasks %}
-      <tr>
-        <td>{{ t.brand }}</td><td>{{ t.classes }}</td><td>{{ t.total }}</td>
-        <td>{{ t.labeling }}</td><td>{{ t.unlabeled }}</td>
-        <td style="white-space:nowrap">
-          {% if t.total and not t.note %}
-          <a class="btn-link" href="{{ url_for('label_anno', item_id=t.item_id) }}">继续标注</a>
-          {% if t.labeling %}
-          <a class="btn-link" href="javascript:;" onclick="openPublish({{ t.item_id }},'{{ t.brand }}',{{ t.labeling }})">发布样本集</a>
-          {% endif %}
-          {% if t.ls_pid %}
-          <a class="btn-link" style="color:#ff4d4f" href="javascript:;"
-             onclick="openReset({{ t.item_id }},'{{ t.brand }}',{{ t.labeling }})">删除标注项目</a>
-          {% endif %}
-          {% elif t.fix_url %}
-          <a class="btn-link" href="{{ t.fix_url }}">{{ t.note }} →</a>
-          {% else %}
-          <span class="btn-link" style="color:var(--text-secondary);cursor:default">{{ t.note or '数据源无图片' }}</span>
-          {% endif %}
-        </td>
-      </tr>
-      {% else %}
-      <tr><td colspan="6" class="empty">暂无检测项目，请先到「基础配置 → 检测项目」新建</td></tr>
-      {% endfor %}
-      </tbody>
-    </table>
-    </div></div>
+<div class="toolbar">
+  <div class="page-title" style="margin:0">② 缺陷标注 — {{ cur_brand or '（未选牌号）' }}
+    {% if cs_online %}<span style="font-size:12px;font-weight:400;color:#52c41a;margin-left:10px">● CubeStudio 已连接</span>
+    {% else %}<span style="font-size:12px;font-weight:400;color:#ff4d4f;margin-left:10px">● CubeStudio 离线</span>{% endif %}
   </div>
+</div>
+<div style="font-size:12.5px;color:var(--text-secondary);margin-bottom:12px">
+  以「牌号 × 相机面」为单位建立模型，一个牌号 6 个面。点「开始标注」进入 CubeStudio 完成上传/标注/训练/部署，标注进度自动回显。
 </div>
 
-<div class="modal-mask" id="pubModal">
-  <div class="modal">
-    <div class="modal-head"><span>发布样本集</span><span class="close" onclick="closeModal('pubModal')">×</span></div>
-    <div class="modal-body">
-      <p style="margin:0;font-size:14px">确认将 <b id="pubBrand">—</b> 的 <b id="pubNum">0</b> 张已标注样本发布到 <code>defect-datasets</code> 桶？</p>
-      <p style="margin:8px 0 0;font-size:12.5px;color:var(--text-secondary)">标注数据实时从 Label Studio 拉取，生成版本化样本集（COCO json + 原图），算法训练流水线可直接从桶读取。</p>
-    </div>
-    <div class="modal-foot">
-      <button class="btn" onclick="closeModal('pubModal')">取消</button>
-      <form method="post" id="pubForm" action="" style="display:inline">
-        <button class="btn btn-primary" type="submit">确认发布</button>
+<div class="card"><div class="card-body" style="padding:0">
+<table class="table">
+  <thead><tr><th>相机面</th><th>原始目录</th><th>建模单元</th><th>标注进度</th><th>已绑定模型</th><th>操作</th></tr></thead>
+  <tbody>
+  {% for u in units %}
+  <tr>
+    <td><b>{{ u.face_name }}</b></td>
+    <td><code style="font-size:12px">{{ u.raw_name }}</code></td>
+    <td>{% if u.exists %}<span class="tag">已建</span>{% else %}<span class="tag tag-gray">未建</span>{% endif %}</td>
+    <td>{% if u.exists %}{{ u.annotated }} / {{ u.total }}{% else %}—{% endif %}</td>
+    <td>{% if u.model_version %}<span style="color:#52c41a">{{ u.model_version }}</span>{% else %}<span style="color:var(--text-secondary)">未绑定</span>{% endif %}</td>
+    <td style="white-space:nowrap">
+      {% if not cs_online %}
+      <span style="color:var(--text-secondary);font-size:12.5px">CubeStudio 离线</span>
+      {% elif u.exists %}
+      <a class="btn-link" href="{{ url_for('label_anno', unit_id=u.unit_id) }}">开始标注</a>
+      {% else %}
+      <form method="post" action="{{ url_for('label_unit_create') }}" style="display:inline">
+        <input type="hidden" name="brand" value="{{ cur_brand }}">
+        <input type="hidden" name="face_id" value="{{ u.face_id }}">
+        <button class="btn-link" type="submit">建模型并标注</button>
       </form>
-    </div>
-  </div>
-</div>
-<div class="modal-mask" id="resetModal">
-  <div class="modal">
-    <div class="modal-head"><span>删除标注项目</span><span class="close" onclick="closeModal('resetModal')">×</span></div>
-    <div class="modal-body">
-      <p style="margin:0;font-size:14px">确认删除 <b id="rsBrand">—</b> 在 Label Studio 里的标注项目？</p>
-      <p style="margin:8px 0 0;font-size:12.5px;color:#ff4d4f">
-        已标注的 <b id="rsNum">0</b> 张会一并删除，无法恢复。</p>
-      <p style="margin:6px 0 0;font-size:12.5px;color:var(--text-secondary)">
-        MinIO 里的原图不受影响；已发布到 defect-datasets 的样本集也不受影响。
-        再次打开标注页会自动重建项目并重新同步图片。</p>
-    </div>
-    <div class="modal-foot">
-      <button class="btn" onclick="closeModal('resetModal')">取消</button>
-      <form method="post" id="rsForm" action="" style="display:inline">
-        <button class="btn" style="background:#ff4d4f;border-color:#ff4d4f;color:#fff" type="submit">确认删除</button>
-      </form>
-    </div>
-  </div>
-</div>
-<script>
-function openReset(itemId, name, count){
-  document.getElementById('rsBrand').textContent = name;
-  document.getElementById('rsNum').textContent = count;
-  document.getElementById('rsForm').action = '/label/reset/' + itemId;
-  openModal('resetModal');
-}
-function openPublish(itemId, name, count){
-  document.getElementById('pubBrand').textContent = name;
-  document.getElementById('pubNum').textContent = count;
-  document.getElementById('pubForm').action = '/label/export/' + itemId;
-  openModal('pubModal');
-}
-</script>
+      {% endif %}
+    </td>
+  </tr>
+  {% else %}
+  <tr><td colspan="6" class="empty">未配置相机面，请到「基础配置 → 相机面映射」维护</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div></div>
 {% endblock %}
