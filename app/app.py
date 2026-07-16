@@ -28,6 +28,10 @@ WS_PASS = os.environ.get("WS_PASS", "hlxd@123")
 # 算法推理服务地址（HTTP）。为空时使用内置模拟判定，接入算法平台后配置此项即可
 INFER_URL = os.environ.get("INFER_URL", "")
 
+# Label Studio 对接（标注引擎）
+LS_URL = os.environ.get("LS_URL", "http://127.0.0.1:8080")
+LS_TOKEN = os.environ.get("LS_TOKEN", "cigarette-label-studio-token-2026")
+
 app = Flask(__name__)
 app.secret_key = "yancao-analyse-platform-secret-2026"
 
@@ -854,6 +858,116 @@ def collect_test_terminal():
         return jsonify({"ok": False, "msg": str(e)[:160]})
 
 
+# ---------------------------------------------------------------- Label Studio 对接
+def _ls_req(method, path, data=None):
+    """调 Label Studio REST API。"""
+    import urllib.request
+    body = json.dumps(data).encode("utf-8") if data else None
+    req = urllib.request.Request(LS_URL + path, data=body,
+                                 headers={"Authorization": "Token " + LS_TOKEN,
+                                          "Content-Type": "application/json"})
+    req.get_method = lambda: method.upper()
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            if r.status == 204:
+                return {}
+            return json.loads(r.read().decode("utf-8")) if r.status not in (200, 201) else _ls_req._resp or {}
+    except urllib.request.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")[:200]
+        raise Exception("LS %s %s → %d: %s" % (method, path, e.code, body))
+
+
+def _ls_get(path):
+    try:
+        r = __import__("urllib.request").request.Request(
+            LS_URL + path, headers={"Authorization": "Token " + LS_TOKEN})
+        r.get_method = lambda: "GET"
+        with __import__("urllib.request").request.urlopen(r, timeout=12) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return {}
+
+
+def _ls_post(path, data):
+    import urllib.request
+    body = json.dumps(data).encode("utf-8")
+    req = urllib.request.Request(LS_URL + path, data=body,
+                                 headers={"Authorization": "Token " + LS_TOKEN,
+                                          "Content-Type": "application/json"})
+    req.get_method = lambda: "POST"
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def ls_ensure_project(brand, classes, scfg):
+    """为某牌号确保 Label Studio 标注项目存在，返回 (project_id, task_count)。"""
+    r = _ls_get("/api/projects?page_size=200") or {}
+    pid = None
+    for p in r.get("results", []):
+        if p.get("title") == brand:
+            pid = p["id"]
+            break
+    if not pid:
+        labels = [{"value": c["name"], "background": "#%02x%02x%02x" %
+                   tuple((int(c["id"]) * 47 * (i + 1) + 40) % 200 + 30 for i in range(3))} for c in classes]
+        label_config = '<View>\n  <Image name="image" value="$image"/>\n  <RectangleLabels name="tag" toName="image">\n'
+        for l in labels:
+            label_config += '    <Label value="%s" background="%s"/>\n' % (l["value"], l["background"])
+        label_config += '  </RectangleLabels>\n</View>'
+        p = _ls_post("/api/projects", {"title": brand, "label_config": label_config,
+                     "description": "卷烟厂缺陷标注 · %s · %d类缺陷" % (brand, len(classes))})
+        pid = p.get("id")
+    if not pid:
+        return None, 0
+    total = (_ls_get("/api/projects/%d" % pid) or {}).get("task_number", 0)
+    return pid, total
+
+
+def ls_import_images(pid, brand, scfg):
+    """从 MinIO 导入某牌号「正常」图片 presigned URL 到 Label Studio 项目（幂等）。"""
+    import boto3
+    from botocore.client import Config
+    s3 = boto3.client("s3", endpoint_url="http://" + scfg["server_addr"],
+                      aws_access_key_id=scfg["username"], aws_secret_access_key=scfg["password"],
+                      region_name="us-east-1",
+                      config=Config(signature_version="s3v4", connect_timeout=8, read_timeout=20))
+    # 列出桶里已有任务，避免重复导入
+    existing = set()
+    try:
+        r = _ls_get("/api/projects/%d/tasks?page_size=5000" % pid) or {}
+        for t in r.get("results", []):
+            url = (t.get("data") or {}).get("image", "")
+            if url:
+                existing.add(url.split("?")[0].rsplit("/", 1)[-1])
+    except Exception:
+        pass
+
+    tasks = []
+    tok = None
+    while True:
+        kw = {"Bucket": scfg["in_bucket"], "Prefix": brand + "/", "MaxKeys": 1000}
+        if tok:
+            kw["ContinuationToken"] = tok
+        r = s3.list_objects_v2(**kw)
+        for o in r.get("Contents", []):
+            k = o["Key"]
+            if "/正常/" not in k or not k.lower().endswith((".jpg", ".jpeg", ".png", ".bmp")):
+                continue
+            if k.rsplit("/", 1)[-1] in existing:
+                continue
+            url = s3.generate_presigned_url("get_object", Params={"Bucket": scfg["in_bucket"], "Key": k}, ExpiresIn=86400)
+            tasks.append({"data": {"image": url}})
+        if r.get("IsTruncated"):
+            tok = r.get("NextContinuationToken")
+        else:
+            break
+    if not tasks:
+        return 0
+    for i in range(0, len(tasks), 100):
+        _ls_post("/api/projects/%d/import" % pid, tasks[i:i + 100])
+    return len(tasks)
+
+
 # ---------------------------------------------------------------- 缺陷标注
 _last_sync_ts = [0.0]
 
@@ -944,16 +1058,37 @@ def label_image_url(img):
 def label():
     db = get_db()
     sync_label_images()
-    classes = db.execute("SELECT * FROM label_classes ORDER BY id").fetchall()
+    classes = [dict(c) for c in db.execute("SELECT * FROM label_classes WHERE status=1 ORDER BY id").fetchall()]
+    scfg = db.execute("SELECT * FROM storage_config LIMIT 1").fetchone()
+    ls_ok = False
+    try:
+        r = _ls_get("/api/version")
+        if r and isinstance(r, dict) and "label-studio" in str(r).lower():
+            ls_ok = True
+    except Exception:
+        pass
     tasks = []
     for b in db.execute("SELECT spec FROM brands WHERE status=1 ORDER BY id").fetchall():
         brand = b["spec"]
-        row = db.execute("SELECT COUNT(*) AS t, COALESCE(SUM(annotated),0) AS d "
-                         "FROM label_images WHERE brand=? AND src_key LIKE ?", (brand, "%/正常/%")).fetchone()
-        total, done = row["t"] or 0, int(row["d"] or 0)
-        tasks.append({"brand": brand, "total": total, "labeling": done,
-                      "unlabeled": total - done, "exported": done})
-    return render_template("label.html", tasks=tasks, classes=classes, active="label")
+        total_db = db.execute("SELECT COUNT(*) AS c FROM label_images WHERE brand=?",
+                              (brand,)).fetchone()["c"] or 0
+        pid = None
+        ls_total = ls_done = 0
+        if ls_ok and scfg and total_db:
+            try:
+                pid, _ = ls_ensure_project(brand, classes, scfg)
+                if pid:
+                    ls_import_images(pid, brand, scfg)
+                    cnt = ls_task_counts(pid)
+                    ls_total, ls_done = cnt["total"], cnt["done"]
+            except Exception:
+                pass
+        tasks.append({"brand": brand, "total": ls_total or total_db,
+                      "labeling": ls_done, "unlabeled": max(0, (ls_total or total_db) - ls_done),
+                      "exported": ls_done, "ls_pid": pid, "ls_ok": ls_ok})
+    has_ls = ls_ok
+    return render_template("label.html", tasks=tasks, classes=classes, active="label",
+                           LS_URL=LS_URL, has_ls=has_ls)
 
 
 @app.route("/label/class/add", methods=["POST"])
@@ -980,7 +1115,15 @@ def label_class_delete(cid):
 @app.route("/label/anno/<brand>")
 @login_required
 def label_anno(brand):
+    """标注入口：Label Studio 可用时跳转其项目页，否则用平台内置标注器。"""
     db = get_db()
+    try:
+        r = _ls_get("/api/projects?page_size=200") or {}
+        for p in r.get("results", []):
+            if p.get("title") == brand:
+                return redirect(LS_URL.rstrip("/") + "/projects/%d/data?tab=1" % p["id"])
+    except Exception:
+        pass
     imgs = db.execute("SELECT * FROM label_images WHERE brand=? AND src_key LIKE ? ORDER BY id", (brand, "%/正常/%")).fetchall()
     if not imgs:
         sync_label_images()
@@ -996,6 +1139,32 @@ def label_anno(brand):
     return render_template("label_anno.html", brand=brand, img=dict(img), img_url=label_image_url(img),
                            idx=idx, total=len(imgs), classes=classes,
                            annos=[dict(a) for a in annos], active="label")
+
+
+@app.route("/label/webhook", methods=["POST"])
+def label_webhook():
+    """Label Studio 标注事件回写 —— 更新图片标注计数（免登 token 验证）。"""
+    hdr = request.headers.get("Authorization", "")
+    if hdr != "Token " + LS_TOKEN:
+        return jsonify({"error": "unauthorized"}), 403
+    try:
+        data = request.get_json(force=True) or {}
+        action = data.get("action", "")
+        if action in ("ANNOTATION_CREATED", "ANNOTATION_UPDATED", "ANNOTATION_DELETED",
+                      "TASK_CREATED", "TASK_DELETED"):
+            pid = data.get("project", {}).get("id")
+            if pid:
+                cnt = ls_task_counts(pid)
+                db = get_db()
+                p = _ls_get("/api/projects/%d" % pid) or {}
+                brand = p.get("title", "")
+                if brand:
+                    db.execute("UPDATE label_tasks SET total=?,labeling=?,unlabeled=? WHERE brand=?",
+                               (cnt["total"], cnt["done"], cnt["unlabeled"], brand))
+                    db.commit()
+    except Exception:
+        pass
+    return jsonify({"ok": True})
 
 
 @app.route("/label/save/<int:image_id>", methods=["POST"])
