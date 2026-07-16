@@ -564,7 +564,9 @@ def config(tab):
                                rows=rows, active="config",
                                default_webhook=url_for("label_webhook", _external=True))
     data = {
-        "items": db.execute("SELECT * FROM detect_items ORDER BY id").fetchall(),
+        "items": [dict(r, img_count=db.execute(
+            "SELECT COUNT(*) AS c FROM label_images WHERE item_id=?", (r["id"],)).fetchone()["c"])
+            for r in db.execute("SELECT * FROM detect_items ORDER BY id").fetchall()],
         "lines": db.execute("SELECT * FROM prod_lines ORDER BY id").fetchall(),
         "brands": db.execute("SELECT * FROM brands ORDER BY id").fetchall(),
         "workshops": db.execute("SELECT * FROM workshops ORDER BY id").fetchall(),
@@ -575,6 +577,40 @@ def config(tab):
     areas = [dict(a) for a in db.execute("SELECT * FROM areas WHERE status=1 ORDER BY id").fetchall()]
     return render_template("config.html", tab=tab, tabs=CONFIG_TABS,
                            rows=data, workshops=workshops, areas=areas, active="config")
+
+
+@app.route("/config/items/sources")
+@login_required
+def config_item_sources():
+    """探测各产线数据源里实际存在的顶层目录，供「数据源目录」下拉选择。
+    手填字符串打错一个字就静默采不到图，且完全看不出哪里错了。"""
+    db = get_db()
+    found, errs = {}, []
+    for l in db.execute("SELECT * FROM prod_lines WHERE status=1 ORDER BY id").fetchall():
+        scfg = db.execute("SELECT * FROM storage_config WHERE line_id=?", (l["id"],)).fetchone()
+        tcfg = db.execute("SELECT * FROM terminal_config WHERE line_id=?", (l["id"],)).fetchone()
+        try:
+            if scfg and scfg["server_addr"]:
+                s3, cfg = get_s3(scfg)
+                r = s3.list_objects_v2(Bucket=cfg["in_bucket"], Delimiter="/", MaxKeys=1000)
+                for cp in r.get("CommonPrefixes", []):
+                    found.setdefault(cp["Prefix"].rstrip("/"), []).append(l["name"])
+            elif tcfg and tcfg["sys_addr"]:
+                import stat as _st
+                t, sftp = _ws_sftp(tcfg)
+                try:
+                    for e in sftp.listdir_attr((tcfg["ng_dir"] or "").rstrip("/")):
+                        if _st.S_ISDIR(e.st_mode):
+                            found.setdefault(e.filename, []).append(l["name"])
+                finally:
+                    t.close()
+        except Exception as e:
+            errs.append("%s: %s" % (l["name"], str(e)[:60]))
+            app.logger.warning("探测数据源目录失败（产线 %s）：%s", l["name"], e)
+    used = {r["src_prefix"]: (r["short_name"] or r["name"]) for r in
+            db.execute("SELECT * FROM detect_items WHERE src_prefix<>''").fetchall()}
+    return jsonify({"dirs": [{"name": d, "lines": ls, "used_by": used.get(d, "")}
+                             for d, ls in sorted(found.items())], "errors": errs})
 
 
 @app.route("/config/integration/save", methods=["POST"])

@@ -42,7 +42,10 @@
     <td>{{ '%02d' % loop.index }}</td>
     {% if tab == 'items' %}
       <td>{{ r.code }}</td><td>{{ r.name }}</td><td>{{ r.short_name }}</td>
-      <td>{% if r.src_prefix %}<code>{{ r.src_prefix }}</code>{% else %}<span style="color:var(--text-secondary)">未配置</span>{% endif %}</td>
+      <td>{% if r.src_prefix %}<code>{{ r.src_prefix }}</code>
+            <span style="font-size:11.5px;color:{{ '#52c41a' if r.img_count else '#faad14' }}">
+              {{ r.img_count ~ ' 张' if r.img_count else '未采到图' }}</span>
+          {% else %}<span style="color:var(--text-secondary)">未配置</span>{% endif %}</td>
       <td>{% if r.ls_project_id %}<span style="color:#52c41a">● 项目 {{ r.ls_project_id }}</span>{% else %}<span style="color:var(--text-secondary)">未建</span>{% endif %}</td>
     {% elif tab == 'lines' %}
       <td>{{ r.code }}</td><td>{{ r.name }}</td><td>{{ r.workshop }}</td><td>{{ r.area }}</td>
@@ -86,9 +89,11 @@
         <div class="form-item"><label><span class="req">*</span>名称</label><input class="input" name="name" id="c_name" required></div>
         <div class="form-item"><label>简称</label><input class="input" name="short_name" id="c_short_name"></div>
         <div class="form-item"><label>数据源目录</label>
-          <input class="input" name="src_prefix" id="c_src_prefix" placeholder="如 小包外观">
-          <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">
-            对象存储桶内的顶层目录名。配置后该项目的图片才会被采集，并自动建立 Label Studio 标注项目。</div></div>
+          <select class="select input" name="src_prefix" id="c_src_prefix">
+            <option value="">加载中…</option>
+          </select>
+          <div style="font-size:12px;color:var(--text-secondary);margin-top:4px" id="srcHint">
+            从各产线数据源实时探测到的顶层目录。选定后该项目才会采集图片，并自动建立 Label Studio 标注项目。</div></div>
         {% elif tab == 'lines' %}
         <div class="form-item"><label><span class="req">*</span>产线编码</label><input class="input" name="code" id="c_code" required></div>
         <div class="form-item"><label><span class="req">*</span>名称</label><input class="input" name="name" id="c_name" required></div>
@@ -136,13 +141,48 @@ function fillAreas(ws, selected){
     sel.appendChild(o);
   });
 }
+function fillSources(selected){
+  var sel = document.getElementById('c_src_prefix');
+  if (!sel) return;
+  var hint = document.getElementById('srcHint');
+  sel.innerHTML = '<option value="">加载中…</option>';
+  fetch('/config/items/sources').then(function(r){ return r.json(); }).then(function(d){
+    sel.innerHTML = '';
+    var none = document.createElement('option');
+    none.value = ''; none.textContent = '（不配置 —— 该项目不采集图片）';
+    sel.appendChild(none);
+    var hit = false;
+    d.dirs.forEach(function(x){
+      var o = document.createElement('option');
+      o.value = x.name;
+      o.textContent = x.name + '  · 产线 ' + x.lines.join('/') +
+        (x.used_by && x.used_by !== '{{ tabname }}' ? '  · 已被「' + x.used_by + '」使用' : '');
+      if (x.name === selected) { o.selected = true; hit = true; }
+      sel.appendChild(o);
+    });
+    // 当前值在数据源里已不存在时保留它，否则一保存就把配置弄丢了
+    if (selected && !hit) {
+      var o = document.createElement('option');
+      o.value = selected; o.textContent = selected + '  · ⚠ 数据源中未找到';
+      o.selected = true; sel.appendChild(o);
+    }
+    var msg = d.dirs.length ? ('探测到 ' + d.dirs.length + ' 个顶层目录。选定后该项目才会采集图片，并自动建立 Label Studio 标注项目。')
+                            : '未探测到任何目录 —— 请先在「图片采集 → 采集配置」为产线配好数据源。';
+    if (d.errors && d.errors.length) msg += ' 部分产线读取失败：' + d.errors.join('；');
+    if (hint) hint.textContent = msg;
+  }).catch(function(e){
+    sel.innerHTML = '<option value="' + (selected || '') + '">' + (selected || '') + '</option>';
+    if (hint) hint.textContent = '探测数据源失败：' + e;
+  });
+}
 function editRow(r){
   r = r || {};
   document.getElementById('rowModalTitle').textContent = (r.id ? '修改' : '新增') + '{{ tabname }}';
-  ['id','code','name','short_name','src_prefix','workshop','area','spec'].forEach(function(k){
+  ['id','code','name','short_name','workshop','area','spec'].forEach(function(k){
     var el = document.getElementById('c_' + k);
     if (el) el.value = r[k] || '';
   });
+  if (document.getElementById('c_src_prefix')) fillSources(r.src_prefix || '');
   var wsEl = document.getElementById('c_workshop');
   if (wsEl && document.getElementById('c_area')) { fillAreas(r.workshop || '', r.area || ''); }
   openModal('rowModal');
