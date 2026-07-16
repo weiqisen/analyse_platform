@@ -147,6 +147,19 @@ def migrate_db(db):
     if added:
         db.commit()
 
+    # 相机面映射种子：现场用 is7600C_x 技术码，首次预置这 6 面（is7600C 机型）
+    if not db.execute("SELECT COUNT(*) AS c FROM camera_faces").fetchone()["c"]:
+        seed_faces = [
+            ("is7600C_D", "正面", "front", 1), ("is7600C_U", "反面", "back", 2),
+            ("is7600C_L", "前部", "left", 3), ("is7600C_R", "尾部", "right", 4),
+            ("is7600C_zuo", "六面相机左", "six_left", 5),
+            ("is7600C_you", "六面相机右", "six_right", 6),
+        ]
+        for raw, name, code, order in seed_faces:
+            db.execute("INSERT INTO camera_faces(raw_name,face_name,face_code,machine_model,sort_order) "
+                       "VALUES(?,?,?,?,?)", (raw, name, code, "is7600C", order))
+        db.commit()
+
     # 老数据按牌号存（牌号是 BRAND_MAP 编出来的），归到第一个配了数据源目录的检测
     # 项目。只在刚加列时回填一次，避免误伤之后 item_id 合法为 0 的行。
     if "model_versions" in added:
@@ -227,6 +240,16 @@ def init_db():
             name VARCHAR(64) NOT NULL COMMENT '缺陷分类名称',
             status INT DEFAULT 1 COMMENT '状态: 1启用 0停用'
         ) DEFAULT CHARSET=utf8mb4 COMMENT='缺陷标注分类表'""",
+        """CREATE TABLE IF NOT EXISTS camera_faces(
+            id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+            raw_name VARCHAR(128) NOT NULL COMMENT 'MinIO 里的原始相机面目录名, 如 is7600C_D',
+            face_name VARCHAR(64) NOT NULL COMMENT '标准面名(界面显示), 如 正面',
+            face_code VARCHAR(32) NOT NULL COMMENT '标准面编码(传对方模型接口), 如 front',
+            machine_model VARCHAR(64) DEFAULT '' COMMENT '机型, 如 is7600C',
+            sort_order INT DEFAULT 0 COMMENT '面序号 1-6',
+            status INT DEFAULT 1 COMMENT '状态: 1启用 0停用',
+            UNIQUE KEY uq_raw (raw_name)
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='相机面映射表(原始目录名→标准面)'""",
         """CREATE TABLE IF NOT EXISTS label_tasks(
             id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
             brand VARCHAR(64) NOT NULL COMMENT '牌号',
@@ -553,7 +576,7 @@ def users_delete(uid):
 # ---------------------------------------------------------------- 基础配置
 CONFIG_TABS = [("items", "检测项目"), ("lines", "机组/产线"), ("brands", "牌号/品规"),
                ("workshops", "车间"), ("areas", "区域"), ("defects", "缺陷分类"),
-               ("integration", "系统集成")]
+               ("faces", "相机面映射"), ("integration", "系统集成")]
 
 
 @app.route("/config/<tab>")
@@ -578,7 +601,11 @@ def config(tab):
         "workshops": db.execute("SELECT * FROM workshops ORDER BY id").fetchall(),
         "areas": db.execute("SELECT * FROM areas ORDER BY id").fetchall(),
         "defects": db.execute("SELECT * FROM label_classes ORDER BY id").fetchall(),
+        "faces": db.execute("SELECT * FROM camera_faces ORDER BY machine_model, sort_order, id").fetchall(),
     }[tab]
+    if tab == "faces":
+        return render_template("config_faces.html", tab=tab, tabs=CONFIG_TABS,
+                               rows=[dict(r) for r in data], active="config")
     workshops = [dict(w) for w in db.execute("SELECT * FROM workshops WHERE status=1 ORDER BY id").fetchall()]
     areas = [dict(a) for a in db.execute("SELECT * FROM areas WHERE status=1 ORDER BY id").fetchall()]
     return render_template("config.html", tab=tab, tabs=CONFIG_TABS,
@@ -617,6 +644,49 @@ def config_item_sources():
             db.execute("SELECT * FROM detect_items WHERE src_prefix<>''").fetchall()}
     return jsonify({"dirs": [{"name": d, "lines": ls, "used_by": used.get(d, "")}
                              for d, ls in sorted(found.items())], "errors": errs})
+
+
+@app.route("/config/faces/discover")
+@login_required
+def config_faces_discover():
+    """扫数据源里第 7 层(相机面)的实际目录名，标出哪些已映射、哪些待映射。
+    现场路径：车间/产线/检测项目/日期/班组/班次/相机面/文件，相机面是倒数第二级。"""
+    db = get_db()
+    raw_faces, errs = {}, []
+    for l in db.execute("SELECT * FROM prod_lines WHERE status=1 ORDER BY id").fetchall():
+        scfg = db.execute("SELECT * FROM storage_config WHERE line_id=?", (l["id"],)).fetchone()
+        if not (scfg and scfg["server_addr"]):
+            continue
+        try:
+            s3, cfg = get_s3(scfg)
+            # 列一批对象，取倒数第二级作为相机面（比逐层下钻省事且够用）
+            tok = None
+            seen = 0
+            while seen < 3000:
+                kw = {"Bucket": cfg["in_bucket"], "MaxKeys": 1000}
+                if tok:
+                    kw["ContinuationToken"] = tok
+                r = s3.list_objects_v2(**kw)
+                for o in r.get("Contents", []):
+                    parts = o["Key"].split("/")
+                    if len(parts) >= 2 and "." in parts[-1]:
+                        raw_faces.setdefault(parts[-2], set()).add(l["name"])
+                    seen += 1
+                if not r.get("IsTruncated"):
+                    break
+                tok = r.get("NextContinuationToken")
+        except Exception as e:
+            errs.append("%s: %s" % (l["name"], str(e)[:60]))
+            app.logger.warning("探测相机面失败（产线 %s）：%s", l["name"], e)
+    mapped = {r["raw_name"]: (r["face_name"], r["face_code"]) for r in
+              db.execute("SELECT * FROM camera_faces").fetchall()}
+    out = []
+    for raw in sorted(raw_faces):
+        m = mapped.get(raw)
+        out.append({"raw_name": raw, "lines": sorted(raw_faces[raw]),
+                    "face_name": m[0] if m else "", "face_code": m[1] if m else "",
+                    "mapped": bool(m)})
+    return jsonify({"faces": out, "errors": errs})
 
 
 @app.route("/config/integration/save", methods=["POST"])
@@ -720,6 +790,18 @@ def config_save(tab):
             db.execute("UPDATE label_classes SET name=? WHERE id=?", (f["name"], rid))
         else:
             db.execute("INSERT INTO label_classes(name) VALUES(?)", (f["name"],))
+    elif tab == "faces":
+        vals = (f["raw_name"].strip(), f["face_name"].strip(), f.get("face_code", "").strip(),
+                f.get("machine_model", "").strip(), f.get("sort_order", 0) or 0)
+        if rid:
+            db.execute("UPDATE camera_faces SET raw_name=?,face_name=?,face_code=?,"
+                       "machine_model=?,sort_order=? WHERE id=?", vals + (rid,))
+        else:
+            # 自动发现里「一键映射」也走这里，同名目录已存在则更新，避免唯一键冲突
+            db.execute("INSERT INTO camera_faces(raw_name,face_name,face_code,machine_model,sort_order) "
+                       "VALUES(?,?,?,?,?) ON DUPLICATE KEY UPDATE "
+                       "face_name=VALUES(face_name),face_code=VALUES(face_code),"
+                       "machine_model=VALUES(machine_model),sort_order=VALUES(sort_order)", vals)
     db.commit()
     flash("保存成功", "success")
     return redirect(url_for("config", tab=tab))
@@ -729,7 +811,8 @@ def config_save(tab):
 @login_required
 def config_delete(tab, rid):
     table = {"items": "detect_items", "lines": "prod_lines", "brands": "brands",
-             "workshops": "workshops", "areas": "areas", "defects": "label_classes"}.get(tab)
+             "workshops": "workshops", "areas": "areas", "defects": "label_classes",
+             "faces": "camera_faces"}.get(tab)
     if not table:
         abort(404)
     db = get_db()
@@ -743,7 +826,8 @@ def config_delete(tab, rid):
 @login_required
 def config_toggle(tab, rid):
     table = {"items": "detect_items", "lines": "prod_lines", "brands": "brands",
-             "workshops": "workshops", "areas": "areas", "defects": "label_classes"}.get(tab)
+             "workshops": "workshops", "areas": "areas", "defects": "label_classes",
+             "faces": "camera_faces"}.get(tab)
     if not table:
         abort(404)
     db = get_db()

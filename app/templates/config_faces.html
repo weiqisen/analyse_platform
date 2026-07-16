@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% block title %}相机面映射 · 缺陷图片分析平台{% endblock %}
+{% block sider %}
+<aside class="layout-sider">
+  <div class="sider-title">基础数据维护</div>
+  <nav class="sider-menu">
+    {% for key, name in tabs %}
+    <a href="{{ url_for('config', tab=key) }}" class="{{ 'active' if tab==key }}">{{ name }}</a>
+    {% endfor %}
+  </nav>
+</aside>
+{% endblock %}
+{% block content %}
+<style>
+  .face-badge { font-size:11.5px; padding:1px 7px; border-radius:8px; }
+  .fb-mapped { background:var(--primary-bg); color:var(--primary); }
+  .fb-new { background:#fff7e6; color:#faad14; }
+</style>
+<div class="toolbar">
+  <div class="page-title" style="margin:0">相机面映射</div>
+  <div class="form-inline">
+    <button class="btn" onclick="discover()">🔍 从数据源自动发现</button>
+    <button class="btn btn-primary" onclick="editRow()">+ 新增</button>
+  </div>
+</div>
+<div style="font-size:12.5px;color:var(--text-secondary);margin-bottom:10px">
+  MinIO 里相机面目录是机型专属技术码（如 <code>is7600C_D</code>），换机型整套变、且命名无规律，只能查表。
+  这里把原始目录名映射到统一的「标准面名」。<b>面编码</b>是传给对方模型接口的稳定英文码，不随中文名变。
+</div>
+
+<div id="discoverBox" class="card" style="display:none;margin-bottom:12px"><div class="card-body">
+  <div style="font-weight:600;margin-bottom:8px">数据源里探测到的相机面 <span id="dcErr" style="color:#ff4d4f;font-size:12px"></span></div>
+  <table class="table"><thead><tr><th>原始目录名</th><th>出现在产线</th><th>映射状态</th><th>操作</th></tr></thead>
+    <tbody id="dcBody"><tr><td colspan="4" class="empty">探测中…</td></tr></tbody>
+  </table>
+</div></div>
+
+<div class="card"><div class="card-body" style="padding:0">
+<table class="table">
+  <thead><tr><th>序号</th><th>原始目录名</th><th>标准面名</th><th>面编码</th><th>机型</th><th>序号</th><th>状态</th><th>操作</th></tr></thead>
+  <tbody>
+  {% for r in rows %}
+  <tr>
+    <td>{{ '%02d' % loop.index }}</td>
+    <td><code>{{ r.raw_name }}</code></td>
+    <td>{{ r.face_name }}</td>
+    <td><code>{{ r.face_code }}</code></td>
+    <td>{{ r.machine_model or '—' }}</td>
+    <td>{{ r.sort_order }}</td>
+    <td>{% if r.status %}<span class="tag">启用</span>{% else %}<span class="tag tag-gray">停用</span>{% endif %}</td>
+    <td>
+      <button class="btn-link" onclick='editRow({{ r|tojson }})'>修改</button>
+      <form method="post" action="{{ url_for('config_toggle', tab=tab, rid=r.id) }}" style="display:inline">
+        <button class="btn-link" type="submit">{{ '停用' if r.status else '启用' }}</button>
+      </form>
+      <form method="post" action="{{ url_for('config_delete', tab=tab, rid=r.id) }}" style="display:inline"
+            onsubmit="return confirm('确认删除？')">
+        <button class="btn-link danger" type="submit">删除</button>
+      </form>
+    </td>
+  </tr>
+  {% else %}
+  <tr><td colspan="8" class="empty">暂无映射，点「从数据源自动发现」一键导入</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div></div>
+
+<div class="modal-mask" id="rowModal">
+  <div class="modal">
+    <div class="modal-head"><span id="rowModalTitle">新增相机面映射</span>
+      <span class="close" onclick="closeModal('rowModal')">×</span></div>
+    <form method="post" action="{{ url_for('config_save', tab=tab) }}">
+      <div class="modal-body">
+        <input type="hidden" name="id" id="c_id">
+        <div class="form-item"><label><span class="req">*</span>原始目录名</label>
+          <input class="input" name="raw_name" id="c_raw_name" placeholder="如 is7600C_D" required></div>
+        <div class="form-item"><label><span class="req">*</span>标准面名</label>
+          <input class="input" name="face_name" id="c_face_name" placeholder="如 正面" required></div>
+        <div class="form-item"><label>面编码</label>
+          <input class="input" name="face_code" id="c_face_code" placeholder="如 front（传对方模型接口用）"></div>
+        <div class="form-item"><label>机型</label>
+          <input class="input" name="machine_model" id="c_machine_model" placeholder="如 is7600C"></div>
+        <div class="form-item"><label>序号</label>
+          <input class="input" name="sort_order" id="c_sort_order" type="number" placeholder="1-6"></div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn" type="button" onclick="closeModal('rowModal')">取消</button>
+        <button class="btn btn-primary" type="submit">保存</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+function editRow(r){
+  r = r || {};
+  document.getElementById('rowModalTitle').textContent = (r.id ? '修改' : '新增') + '相机面映射';
+  ['id','raw_name','face_name','face_code','machine_model','sort_order'].forEach(function(k){
+    var el = document.getElementById('c_' + k);
+    if (el) el.value = (r[k] === undefined || r[k] === null) ? '' : r[k];
+  });
+  openModal('rowModal');
+}
+function discover(){
+  var box = document.getElementById('discoverBox'), body = document.getElementById('dcBody');
+  box.style.display = 'block';
+  body.innerHTML = '<tr><td colspan="4" class="empty">探测中…</td></tr>';
+  fetch('/config/faces/discover').then(function(r){ return r.json(); }).then(function(d){
+    document.getElementById('dcErr').textContent = (d.errors && d.errors.length) ? ('部分失败: ' + d.errors.join('；')) : '';
+    if(!d.faces.length){ body.innerHTML = '<tr><td colspan="4" class="empty">未探测到相机面目录 —— 请先在采集配置里配好数据源</td></tr>'; return; }
+    body.innerHTML = '';
+    d.faces.forEach(function(x){
+      var tr = document.createElement('tr');
+      var status = x.mapped
+        ? '<span class="face-badge fb-mapped">已映射 → ' + x.face_name + '</span>'
+        : '<span class="face-badge fb-new">待映射</span>';
+      var act = x.mapped ? '<span style="color:var(--text-secondary);font-size:12px">—</span>'
+        : '<button class="btn-link" onclick="mapNew(this)" data-raw="' + x.raw_name + '">映射此面 →</button>';
+      tr.innerHTML = '<td><code>' + x.raw_name + '</code></td><td>' + x.lines.join(' / ') + '</td><td>' + status + '</td><td>' + act + '</td>';
+      body.appendChild(tr);
+    });
+  }).catch(function(e){ body.innerHTML = '<tr><td colspan="4" class="empty">探测失败: ' + e + '</td></tr>'; });
+}
+function mapNew(btn){
+  // 猜一下机型（技术码里 _ 前的部分）和序号，填进表单让用户确认
+  var raw = btn.getAttribute('data-raw');
+  editRow({raw_name: raw, machine_model: raw.indexOf('_') > 0 ? raw.split('_')[0] : ''});
+}
+</script>
+{% endblock %}
