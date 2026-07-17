@@ -167,14 +167,14 @@ function doTrain(){
   var e=0,bar=document.getElementById('trBar'),msg=document.getElementById('trMsg');
   var t=setInterval(function(){
     e+=8; if(e>=100){e=100;clearInterval(t);
-      fetch('/embed/action',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({project:PID,action:'train'})})
+      fetch('/api/projects/'+PID+'/train',{method:'POST'})
         .then(function(r){return r.json();}).then(function(d){
           st.model=d.result;
+          var mp=(st.model.metrics&&st.model.metrics.map)||'-', pr=(st.model.metrics&&st.model.metrics.precision)||'-';
           document.getElementById('trDone').innerHTML=
             '<div style="margin-top:12px"><span class="ok">✓ 训练完成，产出 '+st.model.model_version+'</span>'
-            +'<div style="margin:10px 0"><span class="metric">mAP <b>'+st.model.metrics.map+'</b></span>'
-            +'<span class="metric">precision <b>'+st.model.metrics.precision+'</b></span></div>'
+            +'<div style="margin:10px 0"><span class="metric">mAP <b>'+mp+'</b></span>'
+            +'<span class="metric">precision <b>'+pr+'</b></span></div>'
             +'<button onclick="go(4)">部署上线 →</button></div>';
         });
       msg.textContent='训练完成';
@@ -320,13 +320,16 @@ class H(BaseHTTPRequestHandler):
             if not p:
                 return self._err("project not found")
             mid = _mid()  # 立刻产出"训练完成"模型（真实系统异步）
-            MODELS[mid] = {"project_id": parts[2],
-                           "model_name": "%s-%s" % (p["brand"], p["face_code"]),
-                           "model_version": "v%d" % (len(MODELS) + 1),
-                           "model_status": "test", "inference_host_url": "",
-                           "metrics": {"map": round(random.uniform(0.75, 0.95), 3),
-                                       "precision": round(random.uniform(0.8, 0.97), 3)}}
-            return self._ok({"run_id": "run-%s" % mid, "model_id": mid})
+            m = {"project_id": parts[2],
+                 "model_name": "%s-%s" % (p["brand"], p["face_code"]),
+                 "model_version": "v%d" % (len(MODELS) + 1),
+                 "model_status": "test", "inference_host_url": "",
+                 "metrics": {"map": round(random.uniform(0.75, 0.95), 3),
+                             "precision": round(random.uniform(0.8, 0.97), 3)}}
+            MODELS[mid] = m
+            # 返回训练结果 + 模型详情（向导要 model_version/metrics 显示，deploy 要 model_id）
+            return self._ok({"run_id": "run-%s" % mid, "model_id": mid,
+                             "model_version": m["model_version"], "metrics": m["metrics"]})
 
         # POST /api/models/{mid}/deploy  部署推理
         if len(parts) == 4 and parts[1] == "models" and parts[3] == "deploy":
