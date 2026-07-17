@@ -11,6 +11,8 @@
   .ctx-select { position: relative; display: flex; flex-direction: column; gap: 1px; padding: 5px 13px;
     border-radius: 8px; background: rgba(255,255,255,.14); cursor: pointer; line-height: 1.25; }
   .ctx-select:hover { background: rgba(255,255,255,.24); }
+  .layout-header > .ctx-select { margin-left: 18px; }
+  .layout-header > .ctx-select .ctx-menu { left: 0; right: auto; }
   .ctx-select .ctx-label { font-size: 10.5px; color: rgba(255,255,255,.7); letter-spacing: .04em; }
   .ctx-select .ctx-value { font-size: 13.5px; color: #fff; font-weight: 600; display: flex; align-items: center; gap: 6px; }
   .caret { font-size: 8px; opacity: .85; }
@@ -54,6 +56,17 @@
 
 <header class="layout-header">
   <div class="logo">{{ leaf_logo() }}<span>缺陷图片分析平台</span></div>
+  {% if G_DET_ITEMS %}
+  <div class="ctx-select" id="ctxSel" onclick="toggleDD(event,'ctxSel')" title="检测项目（工作上下文）">
+    <span class="ctx-label">检测项目</span>
+    <span class="ctx-value">{{ g_cur_det_name or '未选' }}<span class="caret">▼</span></span>
+    <div class="ctx-menu">
+      {% for it in G_DET_ITEMS %}
+      <a href="?det={{ it.id }}" class="{{ 'on' if it.id==g_cur_det }}">{{ it.short_name or it.name }}</a>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
   <nav class="header-nav">
     <a href="{{ url_for('collect', tab='config') }}" class="{{ 'active' if active=='collect' }}">图片采集</a>
     <a href="{{ url_for('label') }}" class="{{ 'active' if active=='label' }}">缺陷标注</a>

@@ -2,16 +2,10 @@
 {% block title %}缺陷标注 · 缺陷图片分析平台{% endblock %}
 {% block sider %}
 <aside class="layout-sider">
-  <div class="sider-title">检测项目</div>
-  <nav class="sider-menu">
-    {% for it in det_items %}
-    <a href="{{ url_for('label', det=it.id, brand=cur_brand) }}" class="{{ 'active' if cur_det==it.id }}">{{ it.short_name or it.name }}</a>
-    {% endfor %}
-  </nav>
-  <div class="sider-title" style="margin-top:16px">牌号</div>
+  <div class="sider-title">牌号</div>
   <nav class="sider-menu">
     {% for b in brands %}
-    <a href="{{ url_for('label', det=cur_det, brand=b.spec) }}" class="{{ 'active' if cur_brand==b.spec }}">{{ b.spec }}</a>
+    <a href="{{ url_for('label', brand=b.spec) }}" class="{{ 'active' if cur_brand==b.spec }}">{{ b.spec }}</a>
     {% else %}
     <div style="padding:10px;color:var(--text-secondary);font-size:13px">暂无牌号</div>
     {% endfor %}

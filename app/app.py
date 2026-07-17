@@ -529,20 +529,22 @@ def cur_detect_item():
 
 @app.context_processor
 def inject_globals():
-    """顶栏检测项目下拉。读 detect_items 表 —— 此前是硬编码列表，
-    与 /config/items 的增删改查完全脱节，新建的项目根本进不了导航。"""
-    items = []
+    """顶栏检测项目全局下拉（工作上下文）。det_items 供下拉，g_cur_det 是当前选中，
+    存 session 跨页保持。cur_item/cur_item_id 兼容采集页旧用法。"""
+    items, cur_id, cur_name = [], 0, ""
     try:
-        items = [dict(r) for r in get_db().execute(
-            "SELECT id,name,short_name,src_prefix FROM detect_items "
-            "WHERE status=1 ORDER BY id").fetchall()]
+        db = get_db()
+        items = [dict(r) for r in db.execute(
+            "SELECT id,name,short_name,src_prefix FROM detect_items WHERE status=1 ORDER BY id").fetchall()]
+        if items:
+            _, cur_id = detect_item_ctx(db)
+            row = next((i for i in items if i["id"] == cur_id), None)
+            cur_name = (row["short_name"] or row["name"]) if row else ""
     except Exception:
         pass  # 建表前或登录页连不上库时不阻塞页面渲染
-    names = [(i["short_name"] or i["name"]) for i in items]
-    cur_row = cur_detect_item()   # 与各路由取的是同一个，避免顶栏显示与实际数据不一致
-    cur = (cur_row["short_name"] or cur_row["name"]) if cur_row else ""
-    return dict(DETECT_ITEMS=names, DETECT_ITEM_ROWS=items, cur_item=cur,
-                cur_item_id=(cur_row["id"] if cur_row else 0))
+    return dict(G_DET_ITEMS=items, g_cur_det=cur_id, g_cur_det_name=cur_name,
+                cur_item=cur_name, cur_item_id=cur_id,
+                DETECT_ITEMS=[(i["short_name"] or i["name"]) for i in items])
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -1540,15 +1542,22 @@ def unit_det_id(db, u):
 
 
 def detect_item_ctx(db):
-    """②③④ 的检测项目上下文：返回 (det_items列表, 当前det_id)。
-    默认落在配了相机面的检测项目上。检测项目由相机面的 item_id 隐含，是工作上下文而非顶层筛选。"""
+    """检测项目=全局工作上下文（业界通用的工作区/项目切换器模式）：顶部下拉切换，
+    存 session 跨页保持。返回 (det_items列表, 当前det_id)。检测项目由相机面 item_id 隐含。"""
     det_items = [dict(r) for r in db.execute(
         "SELECT * FROM detect_items WHERE status=1 ORDER BY id").fetchall()]
+    valid = {i["id"] for i in det_items}
+    # 顶栏切换会带 det → 写入 session；否则读 session；都没有才用默认
     cur = request.args.get("det", type=int)
+    if cur and cur in valid:
+        session["cur_det"] = cur
+    else:
+        cur = session.get("cur_det") if session.get("cur_det") in valid else None
     if not cur:
         r = db.execute("SELECT di.id FROM detect_items di JOIN camera_faces cf ON cf.item_id=di.id "
                        "WHERE di.status=1 AND cf.status=1 GROUP BY di.id ORDER BY di.id LIMIT 1").fetchone()
         cur = r["id"] if r else (det_items[0]["id"] if det_items else 0)
+        session["cur_det"] = cur
     return det_items, cur
 
 
