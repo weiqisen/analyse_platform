@@ -70,6 +70,7 @@
   {% endfor %}
   </tbody>
 </table>
+{% if pg %}<div class="pager" data-page="{{ pg.page }}" data-pages="{{ pg.pages }}" data-total="{{ pg.total }}"></div>{% endif %}
 </div></div>
 
 <div class="modal-mask" id="rowModal">

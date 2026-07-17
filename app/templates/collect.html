@@ -178,6 +178,7 @@ function cfgTestWs(){
   {% endfor %}
   </tbody>
 </table>
+{% if pg %}<div class="pager" data-page="{{ pg.page }}" data-pages="{{ pg.pages }}" data-total="{{ pg.total }}"></div>{% endif %}
 </div></div>
 
 {# ---------------- 图片查询（层级浏览） ---------------- #}
@@ -224,6 +225,7 @@ function cfgTestWs(){
     </div>
     {% endfor %}
   </div>
+  {% if pg %}<div class="pager" data-page="{{ pg.page }}" data-pages="{{ pg.pages }}" data-total="{{ pg.total }}"></div>{% endif %}
   {% endif %}
   {% if not dirs and not pics %}<div class="empty">此层级暂无内容</div>{% endif %}
   {% endif %}

@@ -128,7 +128,46 @@ function closeModal(id){ document.getElementById(id).classList.remove('open'); }
 document.querySelectorAll('.modal-mask').forEach(function(m){
   m.addEventListener('click', function(e){ if(e.target===m) m.classList.remove('open'); });
 });
+
+// 通用分页条：放 <div class="pager" data-page data-pages data-total [data-param="page"]>
+// 即自动渲染 antd 风格控件，点击保留其它 query 参数、改对应的 page 参数。
+function gotoPage(param, p){
+  var u = new URL(window.location.href);
+  u.searchParams.set(param, p);
+  window.location.href = u.toString();
+}
+document.querySelectorAll('.pager').forEach(function(el){
+  var page = parseInt(el.dataset.page)||1, pages = parseInt(el.dataset.pages)||1,
+      total = parseInt(el.dataset.total)||0, param = el.dataset.param || 'page';
+  if(pages <= 1){ el.style.display='none'; return; }  // 只有一页不显示分页条
+  var h = '<span class="pg-total">共 '+total+' 条</span>';
+  function btn(p, label, cls){
+    if(p<1||p>pages) return '';
+    return '<a class="pg-btn '+(cls||'')+(p===page?' pg-on':'')+'" onclick="gotoPage(\''+param+'\','+p+')">'+(label||p)+'</a>';
+  }
+  h += btn(page-1, '‹', 'pg-nav');
+  // 页码：首页、当前±2、末页，省略号
+  var nums=[], i;
+  for(i=1;i<=pages;i++){ if(i===1||i===pages||(i>=page-2&&i<=page+2)) nums.push(i); }
+  var prev=0;
+  nums.forEach(function(n){
+    if(n-prev>1) h += '<span class="pg-gap">…</span>';
+    h += btn(n); prev=n;
+  });
+  h += btn(page+1, '›', 'pg-nav');
+  el.innerHTML = h;
+});
 </script>
+<style>
+.pager{display:flex;align-items:center;gap:6px;justify-content:flex-end;padding:12px 14px;flex-wrap:wrap}
+.pager .pg-total{color:var(--text-secondary);font-size:13px;margin-right:auto}
+.pager .pg-btn{min-width:30px;height:30px;padding:0 8px;display:inline-flex;align-items:center;justify-content:center;
+  border:1px solid var(--split,#e8e8e8);border-radius:6px;cursor:pointer;font-size:13px;color:var(--text);background:#fff;user-select:none}
+.pager .pg-btn:hover{border-color:var(--primary,#00923f);color:var(--primary,#00923f)}
+.pager .pg-on{background:var(--primary,#00923f);border-color:var(--primary,#00923f);color:#fff}
+.pager .pg-on:hover{color:#fff}
+.pager .pg-gap{color:var(--text-secondary);padding:0 2px}
+</style>
 {% block script %}{% endblock %}
 </body>
 </html>

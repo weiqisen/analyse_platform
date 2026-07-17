@@ -106,6 +106,32 @@ def get_db():
     return g.db
 
 
+def paginate(db, base_sql, params=(), page=1, size=15):
+    """后端分页：对任意 SELECT 加 COUNT + LIMIT/OFFSET，返回 (rows, pg)。
+    pg = {page,size,total,pages}，配合前端通用分页条 .pager 使用。"""
+    try:
+        page = max(1, int(page))
+    except (TypeError, ValueError):
+        page = 1
+    total = db.execute("SELECT COUNT(*) AS c FROM (" + base_sql + ") _t", params).fetchone()["c"]
+    pages = max(1, (total + size - 1) // size)
+    page = min(page, pages)
+    rows = db.execute(base_sql + " LIMIT %d OFFSET %d" % (size, (page - 1) * size), params).fetchall()
+    return rows, {"page": page, "size": size, "total": total, "pages": pages}
+
+
+def paginate_list(items, page=1, size=15):
+    """对内存列表分页（用于聚合结果/S3 列表等非 SQL 数据）。"""
+    try:
+        page = max(1, int(page))
+    except (TypeError, ValueError):
+        page = 1
+    total = len(items)
+    pages = max(1, (total + size - 1) // size)
+    page = min(page, pages)
+    return items[(page - 1) * size: page * size], {"page": page, "size": size, "total": total, "pages": pages}
+
+
 @app.teardown_appcontext
 def close_db(exc=None):
     db = g.pop("db", None)
@@ -553,8 +579,8 @@ def index():
 @login_required
 @admin_required
 def users():
-    rows = get_db().execute("SELECT * FROM users ORDER BY id").fetchall()
-    return render_template("users.html", rows=rows, active="users")
+    rows, pg = paginate(get_db(), "SELECT * FROM users ORDER BY id", page=request.args.get("page"))
+    return render_template("users.html", rows=rows, pg=pg, active="users")
 
 
 @app.route("/users/save", methods=["POST"])
@@ -608,9 +634,10 @@ def users_delete(uid):
 
 
 # ---------------------------------------------------------------- 基础配置
-CONFIG_TABS = [("items", "检测项目"), ("lines", "机组/产线"), ("brands", "牌号/品规"),
-               ("workshops", "车间"), ("areas", "区域"), ("defects", "缺陷分类"),
-               ("faces", "图像分类"), ("schedule", "机台排程"), ("integration", "系统集成")]
+# 按业务层次排序：组织架构 → 检测配置 → 生产 → 系统
+CONFIG_TABS = [("workshops", "车间"), ("areas", "区域"), ("lines", "机组/产线"),
+               ("items", "检测项目"), ("faces", "图像分类"), ("defects", "缺陷分类"),
+               ("brands", "牌号/品规"), ("schedule", "机台排程"), ("integration", "系统集成")]
 
 
 @app.route("/config/<tab>")
@@ -631,26 +658,31 @@ def config(tab):
         det_items = [dict(r) for r in db.execute(
             "SELECT * FROM detect_items WHERE status=1 ORDER BY id").fetchall()]
         cur_det = request.args.get("det", type=int) or (det_items[0]["id"] if det_items else 0)
-        faces = [dict(r) for r in db.execute(
-            "SELECT * FROM camera_faces WHERE item_id=? ORDER BY machine_model, sort_order, id",
-            (cur_det,)).fetchall()]
-        return render_template("config_faces.html", tab=tab, tabs=CONFIG_TABS, rows=faces,
+        frows, pg = paginate(db, "SELECT * FROM camera_faces WHERE item_id=? "
+                             "ORDER BY machine_model, sort_order, id", (cur_det,),
+                             page=request.args.get("page"))
+        return render_template("config_faces.html", tab=tab, tabs=CONFIG_TABS,
+                               rows=[dict(r) for r in frows], pg=pg,
                                det_items=det_items, cur_det=cur_det, active="config")
-    data = {
-        "items": [dict(r, img_count=db.execute(
-            "SELECT COUNT(*) AS c FROM label_images WHERE item_id=?", (r["id"],)).fetchone()["c"])
-            for r in db.execute("SELECT * FROM detect_items ORDER BY id").fetchall()],
-        "lines": db.execute("SELECT * FROM prod_lines ORDER BY id").fetchall(),
-        "brands": db.execute("SELECT * FROM brands ORDER BY id").fetchall(),
-        "workshops": db.execute("SELECT * FROM workshops ORDER BY id").fetchall(),
-        "areas": db.execute("SELECT * FROM areas ORDER BY id").fetchall(),
-        "defects": db.execute("SELECT * FROM label_classes ORDER BY id").fetchall(),
-        "schedule": db.execute("SELECT * FROM machine_schedule ORDER BY sched_date DESC, machine, shift").fetchall(),
+    base_sql = {
+        "items": "SELECT * FROM detect_items ORDER BY id",
+        "lines": "SELECT * FROM prod_lines ORDER BY id",
+        "brands": "SELECT * FROM brands ORDER BY id",
+        "workshops": "SELECT * FROM workshops ORDER BY id",
+        "areas": "SELECT * FROM areas ORDER BY id",
+        "defects": "SELECT * FROM label_classes ORDER BY id",
+        "schedule": "SELECT * FROM machine_schedule ORDER BY sched_date DESC, machine, shift",
     }[tab]
+    rows, pg = paginate(db, base_sql, page=request.args.get("page"))
+    data = [dict(r) for r in rows]
+    if tab == "items":  # 补每个检测项目已采图片数
+        for r in data:
+            r["img_count"] = db.execute("SELECT COUNT(*) AS c FROM label_images WHERE item_id=?",
+                                        (r["id"],)).fetchone()["c"]
     workshops = [dict(w) for w in db.execute("SELECT * FROM workshops WHERE status=1 ORDER BY id").fetchall()]
     areas = [dict(a) for a in db.execute("SELECT * FROM areas WHERE status=1 ORDER BY id").fetchall()]
     sched_brands = [dict(b) for b in db.execute("SELECT * FROM brands WHERE status=1 ORDER BY id").fetchall()]
-    return render_template("config.html", tab=tab, tabs=CONFIG_TABS, rows=data,
+    return render_template("config.html", tab=tab, tabs=CONFIG_TABS, rows=data, pg=pg,
                            workshops=workshops, areas=areas, sched_brands=sched_brands, active="config")
 
 
@@ -1051,8 +1083,9 @@ def collect(tab):
 
         def _fmt(d):
             return d[:4] + "/" + d[4:6] + "/" + d[6:8] if len(d) == 8 and d.isdigit() else d
-        ctx["records"] = [{"line": ln, "date": _fmt(d), "shift": s, "brand": b, "img_count": c}
-                          for (ln, d, s, b), c in sorted(agg.items(), reverse=True)]
+        all_recs = [{"line": ln, "date": _fmt(d), "shift": s, "brand": b, "img_count": c}
+                    for (ln, d, s, b), c in sorted(agg.items(), reverse=True)]
+        ctx["records"], ctx["pg"] = paginate_list(all_recs, request.args.get("page"))
         ctx["show_line"] = (cur_line == "all")
     elif tab == "images" and cur_line == "all":
         ctx["all_lines"] = True
@@ -1108,6 +1141,8 @@ def collect(tab):
                         ctx["pics"].append({"name": o["Key"].split("/")[-1],
                             "url": url_for("media", src="minio", line=cur_line, key=o["Key"])})
             ctx["total"] = len(ctx["pics"])
+            # 图片可能上千张，分页显示（30/页）
+            ctx["pics"], ctx["pg"] = paginate_list(ctx["pics"], request.args.get("page"), size=30)
             ctx["online"] = True
         except Exception as e:
             ctx["err"] = str(e)[:140]
