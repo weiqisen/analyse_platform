@@ -174,6 +174,9 @@ def migrate_db(db):
         ("model_units", "rt_line_id", "INT DEFAULT 0 COMMENT '复用哪条产线的数据源凭据(prod_lines.id)'"),
         ("model_units", "rt_bucket", "VARCHAR(128) DEFAULT '' COMMENT '桶名(minio)'"),
         ("model_units", "rt_path", "VARCHAR(512) DEFAULT '' COMMENT '目录路径'"),
+        # 数据源独立化：产线引用某个数据源（多产线可共用）。storage_config/terminal_config
+        # 退化为由数据源派生的按产线缓存（rebuild_line_cfg 重建），现有读代码不用改。
+        ("prod_lines", "source_id", "INT DEFAULT 0 COMMENT '引用的数据源(data_sources.id)'"),
     ]
     added = set()
     for table, col, ddl in adds:
@@ -181,6 +184,36 @@ def migrate_db(db):
             db.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, col, ddl))
             added.add(table)
     if added:
+        db.commit()
+
+    # 数据源独立化：首次把既有 storage_config/terminal_config 回填成 data_sources，
+    # 并给产线设 source_id。按 (类型,地址,桶/目录) 去重 —— 共用一个服务端只建一个数据源。
+    if "prod_lines" in added and not db.execute("SELECT COUNT(*) AS c FROM data_sources").fetchone()["c"]:
+        seen = {}  # (type,addr,bucket_or_dir) -> data_source id
+        for l in db.execute("SELECT * FROM prod_lines").fetchall():
+            sc = db.execute("SELECT * FROM storage_config WHERE line_id=?", (l["id"],)).fetchone()
+            tc = db.execute("SELECT * FROM terminal_config WHERE line_id=?", (l["id"],)).fetchone()
+            key = sid = None
+            if sc and sc["server_addr"]:
+                key = ("minio", sc["server_addr"], sc["in_bucket"] or "")
+                if key not in seen:
+                    seen[key] = db.execute(
+                        "INSERT INTO data_sources(name,type,server_addr,username,password,in_bucket,out_bucket) "
+                        "VALUES(?,?,?,?,?,?,?)",
+                        ("MinIO %s" % sc["server_addr"], "minio", sc["server_addr"],
+                         sc["username"], sc["password"], sc["in_bucket"], sc["out_bucket"] or "")).lastrowid
+                sid = seen[key]
+            elif tc and tc["sys_addr"]:
+                key = ("ftp", tc["sys_addr"], tc["ng_dir"] or "")
+                if key not in seen:
+                    seen[key] = db.execute(
+                        "INSERT INTO data_sources(name,type,server_addr,username,password,ng_dir) "
+                        "VALUES(?,?,?,?,?,?)",
+                        ("FTP %s" % tc["sys_addr"], "ftp", tc["sys_addr"],
+                         WS_USER, WS_PASS, tc["ng_dir"])).lastrowid
+                sid = seen[key]
+            if sid:
+                db.execute("UPDATE prod_lines SET source_id=? WHERE id=?", (sid, l["id"]))
         db.commit()
 
     # inference_results 换新架构：不再挂 label_images，image_id 应可空且去掉 uq_img
@@ -304,6 +337,19 @@ def init_db():
             cam_dirs VARCHAR(64) DEFAULT '1#,2#,3#,4#' COMMENT '相机目录名',
             brand_dirs VARCHAR(255) DEFAULT '' COMMENT '牌号目录名'
         ) DEFAULT CHARSET=utf8mb4 COMMENT='终端采集配置表'""",
+        """CREATE TABLE IF NOT EXISTS data_sources(
+            id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+            name VARCHAR(64) NOT NULL COMMENT '数据源名称',
+            type VARCHAR(16) NOT NULL COMMENT '类型: minio/ftp',
+            server_addr VARCHAR(128) COMMENT '服务地址 host:port',
+            username VARCHAR(64) COMMENT '用户名/AccessKey',
+            password VARCHAR(128) COMMENT '密码/SecretKey',
+            in_bucket VARCHAR(64) DEFAULT '' COMMENT '输入桶(minio)',
+            out_bucket VARCHAR(64) DEFAULT '' COMMENT '输出桶(minio)',
+            ng_dir VARCHAR(255) DEFAULT '' COMMENT 'NG图目录(ftp)',
+            status INT DEFAULT 1 COMMENT '状态: 1启用 0停用',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间'
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='数据源(独立管理, 多产线可共用)'""",
         """CREATE TABLE IF NOT EXISTS label_classes(
             id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
             name VARCHAR(64) NOT NULL COMMENT '缺陷分类名称',
@@ -889,6 +935,35 @@ def config_toggle(tab, rid):
 # ---------------------------------------------------------------- 图像采集
 COLLECT_TABS = [("config", "采集配置"), ("monitor", "采集监控"),
                 ("history", "历史采集"), ("images", "图片查询")]
+
+
+def rebuild_line_cfg(db, line_id):
+    """按产线的 source_id 从 data_sources 重建其 storage_config/terminal_config 缓存。
+    data_sources 是主表；这两张按产线的表是派生缓存，让现有按 line_id 读的代码不用改。"""
+    db.execute("DELETE FROM storage_config WHERE line_id=?", (line_id,))
+    db.execute("DELETE FROM terminal_config WHERE line_id=?", (line_id,))
+    line = db.execute("SELECT * FROM prod_lines WHERE id=?", (line_id,)).fetchone()
+    if not line or not line["source_id"]:
+        db.commit()
+        return
+    ds = db.execute("SELECT * FROM data_sources WHERE id=? AND status=1", (line["source_id"],)).fetchone()
+    if not ds:
+        db.commit()
+        return
+    if ds["type"] == "minio":
+        db.execute("INSERT INTO storage_config(line_id,server_addr,in_bucket,username,password,out_bucket) "
+                   "VALUES(?,?,?,?,?,?)", (line_id, ds["server_addr"], ds["in_bucket"],
+                                          ds["username"], ds["password"], ds["out_bucket"]))
+    else:  # ftp
+        db.execute("INSERT INTO terminal_config(line_id,sys_addr,ng_dir) VALUES(?,?,?)",
+                   (line_id, ds["server_addr"], ds["ng_dir"]))
+    db.commit()
+
+
+def rebuild_all_line_cfg(db):
+    """某数据源改动后，重建所有引用它的产线缓存。"""
+    for l in db.execute("SELECT id FROM prod_lines WHERE source_id>0").fetchall():
+        rebuild_line_cfg(db, l["id"])
 
 
 def get_s3(cfg):
