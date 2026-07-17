@@ -55,28 +55,21 @@
 <header class="layout-header">
   <div class="logo">{{ leaf_logo() }}<span>缺陷图片分析平台</span></div>
   <nav class="header-nav">
-    <a href="{{ url_for('collect', tab='config', item=cur_item) }}" class="{{ 'active' if active=='collect' }}">① 图片采集</a>
+    <a href="{{ url_for('collect', tab='config') }}" class="{{ 'active' if active=='collect' }}">① 图片采集</a>
     <a href="{{ url_for('label') }}" class="{{ 'active' if active=='label' }}">② 缺陷标注</a>
     <a href="{{ url_for('model') }}" class="{{ 'active' if active=='model' }}">③ 模型管理</a>
     <a href="{{ url_for('analysis', tab='shift') }}" class="{{ 'active' if active=='analysis' }}">④ 分析结果</a>
+    <a href="{{ url_for('config', tab='workshops') }}" class="{{ 'active' if active=='config' }}">基础配置</a>
   </nav>
   <div class="header-right">
-    <div class="ctx-select" id="ctxSel" onclick="toggleDD(event,'ctxSel')">
-      <span class="ctx-label">检测项目</span>
-      <span class="ctx-value">{{ cur_item }}<span class="caret">▼</span></span>
-      <div class="ctx-menu">
-        {% for it in DETECT_ITEMS %}
-        <a href="?item={{ it }}" class="{{ 'on' if cur_item==it }}">{{ it }}</a>
-        {% endfor %}
-      </div>
-    </div>
+    {% if session.role == 'admin' %}
     <div class="hdr-dd" id="setDD" onclick="toggleDD(event,'setDD')">
       <button class="dd-btn">⚙ 设置<span class="caret">▼</span></button>
       <div class="dd-menu">
-        <a href="{{ url_for('config', tab='items', item=cur_item) }}">基础配置</a>
-        {% if session.role == 'admin' %}<a href="{{ url_for('users', item=cur_item) }}">用户管理</a>{% endif %}
+        <a href="{{ url_for('users') }}">用户管理</a>
       </div>
     </div>
+    {% endif %}
     <div class="header-user">
       <span class="avatar">{{ (session.realname or '用')[0] }}</span>
       <span>{{ session.realname }}{% if session.role=='admin' %}（管理员）{% endif %}</span>

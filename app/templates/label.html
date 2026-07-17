@@ -25,12 +25,11 @@
 
 <div class="card tbl-card"><div class="card-body" style="padding:0">
 <table class="table">
-  <thead><tr><th>相机面</th><th>原始目录</th><th>建模单元</th><th>标注进度</th><th>已绑定模型</th><th>操作</th></tr></thead>
+  <thead><tr><th>相机面</th><th>建模单元</th><th>标注进度</th><th>已绑定模型</th><th>操作</th></tr></thead>
   <tbody>
   {% for u in units %}
   <tr>
     <td><b>{{ u.face_name }}</b></td>
-    <td><code style="font-size:12px">{{ u.raw_name }}</code></td>
     <td>{% if u.exists %}<span class="tag">已建</span>{% else %}<span class="tag tag-gray">未建</span>{% endif %}</td>
     <td>{% if u.exists %}{{ u.annotated }} / {{ u.total }}{% else %}—{% endif %}</td>
     <td>{% if u.model_version %}<span style="color:#52c41a">{{ u.model_version }}</span>{% else %}<span style="color:var(--text-secondary)">未绑定</span>{% endif %}</td>
@@ -49,7 +48,7 @@
     </td>
   </tr>
   {% else %}
-  <tr><td colspan="6" class="empty">未配置相机面，请到「基础配置 → 相机面映射」维护</td></tr>
+  <tr><td colspan="5" class="empty">未配置相机面，请到「基础配置 → 图像分类」维护</td></tr>
   {% endfor %}
   </tbody>
 </table>

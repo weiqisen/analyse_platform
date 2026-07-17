@@ -720,49 +720,6 @@ def config_item_sources():
                              for d, ls in sorted(found.items())], "errors": errs})
 
 
-@app.route("/config/faces/discover")
-@login_required
-def config_faces_discover():
-    """扫数据源里第 7 层(相机面)的实际目录名，标出哪些已映射、哪些待映射。
-    现场路径：车间/产线/检测项目/日期/班组/班次/相机面/文件，相机面是倒数第二级。"""
-    db = get_db()
-    raw_faces, errs = {}, []
-    for l in db.execute("SELECT * FROM prod_lines WHERE status=1 ORDER BY id").fetchall():
-        scfg = db.execute("SELECT * FROM storage_config WHERE line_id=?", (l["id"],)).fetchone()
-        if not (scfg and scfg["server_addr"]):
-            continue
-        try:
-            s3, cfg = get_s3(scfg)
-            # 列一批对象，取倒数第二级作为相机面（比逐层下钻省事且够用）
-            tok = None
-            seen = 0
-            while seen < 3000:
-                kw = {"Bucket": cfg["in_bucket"], "MaxKeys": 1000}
-                if tok:
-                    kw["ContinuationToken"] = tok
-                r = s3.list_objects_v2(**kw)
-                for o in r.get("Contents", []):
-                    parts = o["Key"].split("/")
-                    if len(parts) >= 2 and "." in parts[-1]:
-                        raw_faces.setdefault(parts[-2], set()).add(l["name"])
-                    seen += 1
-                if not r.get("IsTruncated"):
-                    break
-                tok = r.get("NextContinuationToken")
-        except Exception as e:
-            errs.append("%s: %s" % (l["name"], str(e)[:60]))
-            app.logger.warning("探测相机面失败（产线 %s）：%s", l["name"], e)
-    mapped = {r["raw_name"]: (r["face_name"], r["face_code"]) for r in
-              db.execute("SELECT * FROM camera_faces").fetchall()}
-    out = []
-    for raw in sorted(raw_faces):
-        m = mapped.get(raw)
-        out.append({"raw_name": raw, "lines": sorted(raw_faces[raw]),
-                    "face_name": m[0] if m else "", "face_code": m[1] if m else "",
-                    "mapped": bool(m)})
-    return jsonify({"faces": out, "errors": errs})
-
-
 @app.route("/config/integration/save", methods=["POST"])
 @login_required
 def config_integration_save():
