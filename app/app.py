@@ -1527,6 +1527,14 @@ def label_image_url(img):
     return url_for("media", src=img["source"], line=img["line_name"], key=img["src_key"])
 
 
+def default_brand(db, brands):
+    """默认牌号：优先选已建过建模单元的，避免落在空牌号上看着像"没数据"。"""
+    r = db.execute("SELECT brand FROM model_units ORDER BY id LIMIT 1").fetchone()
+    if r and any(b["spec"] == r["brand"] for b in brands):
+        return r["brand"]
+    return brands[0]["spec"] if brands else ""
+
+
 @app.route("/label")
 @login_required
 def label():
@@ -1535,7 +1543,7 @@ def label():
     db = get_db()
     brands = [dict(b) for b in db.execute(
         "SELECT * FROM brands WHERE status=1 ORDER BY id").fetchall()]
-    cur_brand = request.args.get("brand") or (brands[0]["spec"] if brands else "")
+    cur_brand = request.args.get("brand") or default_brand(db, brands)
     faces = [dict(f) for f in db.execute(
         "SELECT * FROM camera_faces WHERE status=1 ORDER BY sort_order, id").fetchall()]
     cs_online = cs_ok()
@@ -1841,7 +1849,7 @@ def model():
     db = get_db()
     brands = [dict(b) for b in db.execute(
         "SELECT * FROM brands WHERE status=1 ORDER BY id").fetchall()]
-    cur_brand = request.args.get("brand") or (brands[0]["spec"] if brands else "")
+    cur_brand = request.args.get("brand") or default_brand(db, brands)
     cs_online = cs_ok()
     rows = []
     for u in db.execute("""SELECT mu.*, cf.face_name, cf.sort_order FROM model_units mu
