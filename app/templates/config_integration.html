@@ -1,5 +1,15 @@
 {% extends "base.html" %}
 {% block title %}系统集成 · 缺陷图片分析平台{% endblock %}
+{% block sider %}
+<aside class="layout-sider">
+  <div class="sider-title">基础数据维护</div>
+  <nav class="sider-menu">
+    {% for key, name in tabs %}
+    <a href="{{ url_for('config', tab=key) }}" class="{{ 'active' if tab==key }}">{{ name }}</a>
+    {% endfor %}
+  </nav>
+</aside>
+{% endblock %}
 {% block content %}
 <style>
   .cfg-hint { font-size: 12px; color: var(--text-secondary); margin-top: 4px; }
@@ -11,12 +21,6 @@
   .cfg-group h4 { margin: 0 0 12px; font-size: 13.5px; }
   .test-out { font-size: 12.5px; margin-left: 10px; }
 </style>
-<div class="tabs">
-  {% for key, name in tabs %}
-  <a href="{{ url_for('config', tab=key, item=cur_item) }}" class="{{ 'active' if tab==key }}">{{ name }}</a>
-  {% endfor %}
-</div>
-
 <div class="page-title">基础配置 — 系统集成</div>
 <div class="card"><div class="card-body">
 <form method="post" action="{{ url_for('config_integration_save') }}" id="cfgForm">

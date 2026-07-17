@@ -544,36 +544,8 @@ def logout():
 @app.route("/")
 @login_required
 def index():
-    db = get_db()
-    sync_label_images()
-    lines = db.execute("SELECT name FROM prod_lines WHERE status=1 ORDER BY id").fetchall()
-    line_stats = [{"name": l["name"],
-                   "count": db.execute("SELECT COUNT(*) AS c FROM label_images WHERE line_name=?",
-                                       (l["name"],)).fetchone()["c"]} for l in lines]
-    total_imgs = db.execute("SELECT COUNT(*) AS c FROM label_images").fetchone()["c"]
-    infer = db.execute("SELECT COUNT(*) AS c FROM model_versions WHERE status='推理'").fetchone()["c"]
-    classes = db.execute("SELECT COUNT(*) AS c FROM label_classes").fetchone()["c"]
-    # 标注进度按检测项目，读 label_tasks 缓存（由 LS webhook 与 /label 刷新），
-    # 首页因此不必逐个项目调 LS。label_images.annotated 是内置标注器时代的字段，
-    # 换 LS 后不再写入，读它只会恒为 0。
-    brand_prog = []
-    annotated = 0
-    for it in db.execute("SELECT * FROM detect_items WHERE status=1 ORDER BY id").fetchall():
-        n_img = db.execute("SELECT COUNT(*) AS c FROM label_images WHERE item_id=?",
-                           (it["id"],)).fetchone()["c"] or 0
-        if not n_img:
-            continue
-        c = db.execute("SELECT total,labeling FROM label_tasks WHERE item_id=?",
-                       (it["id"],)).fetchone()
-        done = c["labeling"] if c else 0
-        annotated += done
-        brand_prog.append({"brand": it["short_name"] or it["name"],
-                           "total": (c["total"] if c else 0) or n_img, "done": done})
-    max_count = max([s["count"] for s in line_stats] + [1])
-    return render_template("index.html", active="home", line_stats=line_stats,
-                           total_imgs=total_imgs, annotated=annotated, infer=infer,
-                           classes=classes, lines_n=len(lines), brand_prog=brand_prog,
-                           max_count=max_count)
+    # 首页已去掉，根路径直接进「① 图片采集」
+    return redirect(url_for("collect", tab="config"))
 
 
 # ---------------------------------------------------------------- 用户管理
