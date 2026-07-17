@@ -1533,17 +1533,38 @@ def default_brand(db, brands):
     return brands[0]["spec"] if brands else ""
 
 
+def unit_det_id(db, u):
+    """建模单元所属检测项目 id（由相机面 item_id 隐含），供操作后 redirect 保留上下文。"""
+    r = db.execute("SELECT item_id FROM camera_faces WHERE id=?", (u["face_id"],)).fetchone()
+    return r["item_id"] if r else 0
+
+
+def detect_item_ctx(db):
+    """②③④ 的检测项目上下文：返回 (det_items列表, 当前det_id)。
+    默认落在配了相机面的检测项目上。检测项目由相机面的 item_id 隐含，是工作上下文而非顶层筛选。"""
+    det_items = [dict(r) for r in db.execute(
+        "SELECT * FROM detect_items WHERE status=1 ORDER BY id").fetchall()]
+    cur = request.args.get("det", type=int)
+    if not cur:
+        r = db.execute("SELECT di.id FROM detect_items di JOIN camera_faces cf ON cf.item_id=di.id "
+                       "WHERE di.status=1 AND cf.status=1 GROUP BY di.id ORDER BY di.id LIMIT 1").fetchone()
+        cur = r["id"] if r else (det_items[0]["id"] if det_items else 0)
+    return det_items, cur
+
+
 @app.route("/label")
 @login_required
 def label():
-    """缺陷标注（新架构）：左侧牌号下拉，右侧该牌号的相机面=建模单元。
-    每个单元对接对方 CubeStudio（建项目→内嵌标注→轮询进度）。"""
+    """缺陷标注（新架构）：左侧一级=检测项目、二级=牌号，右侧该项目该牌号的相机面=建模单元。
+    检测项目由相机面隐含（camera_faces.item_id），是工作上下文。"""
     db = get_db()
+    det_items, cur_det = detect_item_ctx(db)
     brands = [dict(b) for b in db.execute(
         "SELECT * FROM brands WHERE status=1 ORDER BY id").fetchall()]
     cur_brand = request.args.get("brand") or default_brand(db, brands)
     faces = [dict(f) for f in db.execute(
-        "SELECT * FROM camera_faces WHERE status=1 ORDER BY sort_order, id").fetchall()]
+        "SELECT * FROM camera_faces WHERE status=1 AND item_id=? ORDER BY sort_order, id",
+        (cur_det,)).fetchall()]
     cs_online = cs_ok()
     units = []
     for f in faces:
@@ -1558,7 +1579,8 @@ def label():
             "model_version": u["model_version"] if u else "",
         })
     units, pg = paginate_list(units, request.args.get("page"))
-    return render_template("label.html", brands=brands, cur_brand=cur_brand,
+    return render_template("label.html", det_items=det_items, cur_det=cur_det,
+                           brands=brands, cur_brand=cur_brand,
                            units=units, pg=pg, cs_online=cs_online, active="label")
 
 
@@ -1584,7 +1606,7 @@ def label_unit_create():
         flash("已为「%s · %s」建立标注项目" % (brand, face["face_name"]), "success")
     except Exception as e:
         flash("对接 CubeStudio 失败：%s" % str(e)[:120], "error")
-    return redirect(url_for("label", brand=brand))
+    return redirect(url_for("label", det=face["item_id"], brand=brand))
 
 
 @app.route("/label/class/add", methods=["POST"])
@@ -1846,14 +1868,17 @@ def model():
     """模型管理（新架构）：按牌号列出各相机面建模单元，从对方 CubeStudio 拉训出的
     模型列表，绑定到单元供推理用。模型是为「牌号×相机面」训的。"""
     db = get_db()
+    det_items, cur_det = detect_item_ctx(db)
     brands = [dict(b) for b in db.execute(
         "SELECT * FROM brands WHERE status=1 ORDER BY id").fetchall()]
     cur_brand = request.args.get("brand") or default_brand(db, brands)
     cs_online = cs_ok()
+    # 只列当前检测项目(由相机面 item_id 隐含)下、该牌号的建模单元
     all_units = [dict(u) for u in db.execute(
         """SELECT mu.*, cf.face_name, cf.sort_order FROM model_units mu
            JOIN camera_faces cf ON cf.id=mu.face_id
-           WHERE mu.brand=? ORDER BY cf.sort_order, cf.id""", (cur_brand,)).fetchall()]
+           WHERE mu.brand=? AND cf.item_id=? ORDER BY cf.sort_order, cf.id""",
+        (cur_brand, cur_det)).fetchall()]
     # 先分页，只对当前页的单元拉对方模型列表（每行一次远程调用，不能给全部单元都调）
     page_units, pg = paginate_list(all_units, request.args.get("page"))
     rows = []
@@ -1875,7 +1900,8 @@ def model():
         elif tc and tc["sys_addr"]:
             sources.append({"line_id": l["id"], "line": l["name"], "type": "ftp",
                             "addr": tc["sys_addr"], "dir": tc["ng_dir"]})
-    return render_template("model.html", brands=brands, cur_brand=cur_brand,
+    return render_template("model.html", det_items=det_items, cur_det=cur_det,
+                           brands=brands, cur_brand=cur_brand,
                            rows=rows, pg=pg, cs_online=cs_online, sources=sources, active="model")
 
 
@@ -1897,12 +1923,12 @@ def model_bind():
         endpoint = (r or {}).get("inference_host_url", "")
     except Exception as e:
         flash("部署模型失败：%s" % str(e)[:120], "error")
-        return redirect(url_for("model", brand=u["brand"]))
+        return redirect(url_for("model", det=unit_det_id(db, u), brand=u["brand"]))
     db.execute("UPDATE model_units SET model_id=?,model_version=?,model_endpoint=? WHERE id=?",
                (model_id, version, endpoint, unit_id))
     db.commit()
     flash("已绑定模型 %s 并上线推理服务" % version, "success")
-    return redirect(url_for("model", brand=u["brand"]))
+    return redirect(url_for("model", det=unit_det_id(db, u), brand=u["brand"]))
 
 
 @app.route("/model/train", methods=["POST"])
@@ -1919,7 +1945,7 @@ def model_train():
         flash("已触发训练（run: %s）" % (r or {}).get("run_id", ""), "success")
     except Exception as e:
         flash("触发训练失败：%s" % str(e)[:120], "error")
-    return redirect(url_for("model", brand=u["brand"]))
+    return redirect(url_for("model", det=unit_det_id(db, u), brand=u["brand"]))
 
 
 def _rtdir_check(db, rt_type, line_id, bucket, path):
@@ -1983,11 +2009,22 @@ def model_rtdir_save():
                 request.form.get("rt_path", "").strip().strip("/"), unit_id))
     db.commit()
     flash("实时图像目录已保存", "success")
-    return redirect(url_for("model", brand=u["brand"]))
+    return redirect(url_for("model", det=unit_det_id(db, u), brand=u["brand"]))
 
 
 # ---------------------------------------------------------------- 分析结果
 ANALYSIS_TABS = [("shift", "当班统计"), ("history", "历史统计"), ("trend", "趋势分析")]
+
+
+def _infer_base(cur_det, cur_brand):
+    """推理结果的检测项目+牌号过滤。检测项目经 unit→face→item 关联。"""
+    base = ("FROM inference_results WHERE unit_id IN "
+            "(SELECT mu.id FROM model_units mu JOIN camera_faces cf ON cf.id=mu.face_id WHERE cf.item_id=?)")
+    params = [cur_det]
+    if cur_brand and cur_brand != "all":
+        base += " AND brand=?"
+        params.append(cur_brand)
+    return base, params
 
 
 @app.route("/analysis/<tab>")
@@ -1996,18 +2033,17 @@ def analysis(tab):
     if tab not in dict(ANALYSIS_TABS):
         abort(404)
     db = get_db()
+    det_items, cur_det = detect_item_ctx(db)
     brands = [dict(b) for b in db.execute("SELECT * FROM brands WHERE status=1 ORDER BY id").fetchall()]
     cur_brand = request.args.get("brand", "all")
-    base = "FROM inference_results WHERE 1=1"
-    params = []
-    if cur_brand != "all":
-        base += " AND brand=?"
-        params.append(cur_brand)
+    base, params = _infer_base(cur_det, cur_brand)
     infer_total = db.execute("SELECT COUNT(*) AS c " + base, params).fetchone()["c"]
     defect_total = db.execute("SELECT COUNT(*) AS c " + base + " AND is_defect=1", params).fetchone()["c"]
-    # 有多少建模单元已绑定模型（可推理）
-    ready = db.execute("SELECT COUNT(*) AS c FROM model_units WHERE model_endpoint<>''").fetchone()["c"]
+    # 该检测项目下已绑定模型的单元数（可推理）
+    ready = db.execute("SELECT COUNT(*) AS c FROM model_units mu JOIN camera_faces cf ON cf.id=mu.face_id "
+                       "WHERE mu.model_endpoint<>'' AND cf.item_id=?", (cur_det,)).fetchone()["c"]
     return render_template("analysis.html", tab=tab, tabs=ANALYSIS_TABS,
+                           det_items=det_items, cur_det=cur_det,
                            brands=brands, cur_brand=cur_brand, active="analysis",
                            infer_total=infer_total, defect_total=defect_total, ready_units=ready,
                            today=datetime.now().strftime("%Y/%m/%d"))
@@ -2117,12 +2153,10 @@ def analysis_infer():
 @login_required
 def api_analysis(tab):
     db = get_db()
+    _, cur_det = detect_item_ctx(db)
     brand = request.args.get("brand", "all")
-    base = "FROM inference_results WHERE is_defect=1"
-    params = []
-    if brand != "all":
-        base += " AND brand=?"
-        params.append(brand)
+    base, params = _infer_base(cur_det, brand)
+    base += " AND is_defect=1"
     cls_expr = "COALESCE(NULLIF(class_name,''),'未分类')"
 
     def _fmt(d):
