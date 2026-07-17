@@ -223,6 +223,16 @@ def _pid():
     return "cs-proj-%d" % _seq["p"]
 
 
+def get_or_make(pid):
+    """按需取/补建项目。mock 是内存态，重启后旧 PID 会丢；平台建模单元里存着这些
+    PID，重启后再访问就 404。补建让重启后旧 PID 照样能用（真系统项目是持久化的）。"""
+    p = PROJECTS.get(pid)
+    if not p:
+        p = PROJECTS[pid] = {"brand": "", "face_code": "", "total": 30,
+                             "annotated": 0, "created": time.time()}
+    return p
+
+
 def _mid():
     _seq["m"] += 1
     return "cs-model-%d" % _seq["m"]
@@ -274,9 +284,7 @@ class H(BaseHTTPRequestHandler):
 
         # GET /api/projects/{id}/stats
         if len(parts) == 4 and parts[0] == "api" and parts[1] == "projects" and parts[3] == "stats":
-            p = PROJECTS.get(parts[2])
-            if not p:
-                return self._err("project not found")
+            p = get_or_make(parts[2])
             # 若内嵌向导手动操作过（manual），以其为准；否则按时间自增模拟
             if not p.get("manual"):
                 elapsed = int(time.time() - p["created"])
@@ -297,9 +305,7 @@ class H(BaseHTTPRequestHandler):
 
         # POST /embed/action  内嵌向导的操作回写（标注等），让平台轮询能拿到真实进度
         if u.path == "/embed/action":
-            p = PROJECTS.get(b.get("project", ""))
-            if not p:
-                return self._err("project not found")
+            p = get_or_make(b.get("project", ""))
             if b.get("action") == "annotate":
                 p["manual"] = True
                 p["total"] = int(b.get("total", p["total"]))
@@ -316,9 +322,7 @@ class H(BaseHTTPRequestHandler):
 
         # POST /api/projects/{id}/train  触发训练
         if len(parts) == 4 and parts[1] == "projects" and parts[3] == "train":
-            p = PROJECTS.get(parts[2])
-            if not p:
-                return self._err("project not found")
+            p = get_or_make(parts[2])
             mid = _mid()  # 立刻产出"训练完成"模型（真实系统异步）
             m = {"project_id": parts[2],
                  "model_name": "%s-%s" % (p["brand"], p["face_code"]),
