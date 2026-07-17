@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}分析日志 · 缺陷图片分析平台{% endblock %}
+{% block content %}
+<div class="toolbar">
+  <div class="page-title" style="margin:0">分析审计日志 — {{ u.brand }} · {{ u.face_name }}</div>
+  <div class="form-inline">
+    <a class="btn btn-sm" href="javascript:location.reload()">刷新</a>
+    <a class="btn btn-sm" href="{{ url_for('model', brand=u.brand) }}">« 返回模型管理</a>
+  </div>
+</div>
+<div style="font-size:12.5px;color:var(--text-secondary);margin-bottom:10px">
+  记录每次从实时目录抓图送推理的调用过程与结果，按时间倒序。
+</div>
+<div class="card tbl-card"><div class="card-body" style="padding:0">
+<table class="table">
+  <thead><tr><th style="width:160px">时间</th><th style="width:70px">级别</th><th>图片</th><th>调用结果</th></tr></thead>
+  <tbody>
+  {% for lg in logs %}
+  <tr>
+    <td style="font-size:12.5px;color:var(--text-secondary)">{{ lg.ts }}</td>
+    <td>
+      {% if lg.level=='ok' %}<span class="tag">成功</span>
+      {% elif lg.level=='error' %}<span class="tag" style="background:#fff1f0;color:#cf1322">失败</span>
+      {% elif lg.level=='warn' %}<span class="tag tag-orange">警告</span>
+      {% else %}<span class="tag tag-gray">信息</span>{% endif %}
+    </td>
+    <td><code style="font-size:11.5px;color:var(--text-secondary)">{{ lg.src_key.split('/')[-1] if lg.src_key else '—' }}</code></td>
+    <td style="font-size:13px">{{ lg.detail }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="4" class="empty">暂无日志，开启工作状态后会记录调用过程</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% if pg %}<div class="pager" data-page="{{ pg.page }}" data-pages="{{ pg.pages }}" data-total="{{ pg.total }}"></div>{% endif %}
+</div></div>
+{% endblock %}

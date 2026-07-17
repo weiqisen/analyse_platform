@@ -5,6 +5,7 @@ import json
 import hashlib
 import functools
 import random
+import time
 from datetime import datetime, timedelta
 import pymysql
 from pymysql.cursors import DictCursor
@@ -177,6 +178,7 @@ def migrate_db(db):
         # 数据源独立化：产线引用某个数据源（多产线可共用）。storage_config/terminal_config
         # 退化为由数据源派生的按产线缓存（rebuild_line_cfg 重建），现有读代码不用改。
         ("prod_lines", "source_id", "INT DEFAULT 0 COMMENT '引用的数据源(data_sources.id)'"),
+        ("analysis_jobs", "enabled", "INT DEFAULT 0 COMMENT '工作状态开关: 1开启 0关闭'"),
     ]
     added = set()
     for table, col, ddl in adds:
@@ -357,7 +359,8 @@ def init_db():
         ) DEFAULT CHARSET=utf8mb4 COMMENT='缺陷标注分类表'""",
         """CREATE TABLE IF NOT EXISTS analysis_jobs(
             unit_id INT PRIMARY KEY COMMENT '建模单元(model_units.id), 一单元一当前任务',
-            status VARCHAR(16) DEFAULT 'idle' COMMENT 'idle/running/done/error',
+            status VARCHAR(16) DEFAULT 'idle' COMMENT 'idle/running/done/error/stopped',
+            enabled INT DEFAULT 0 COMMENT '工作状态开关: 1开启 0关闭',
             total INT DEFAULT 0 COMMENT '目录总张数',
             read_cnt INT DEFAULT 0 COMMENT '已读取张数',
             analyzed INT DEFAULT 0 COMMENT '已分析(新推理入库)',
@@ -365,6 +368,15 @@ def init_db():
             msg VARCHAR(255) DEFAULT '' COMMENT '最新消息',
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'
         ) DEFAULT CHARSET=utf8mb4 COMMENT='实时目录分析任务(进度)'""",
+        """CREATE TABLE IF NOT EXISTS analysis_logs(
+            id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+            unit_id INT NOT NULL COMMENT '建模单元(model_units.id)',
+            ts DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '时间',
+            level VARCHAR(8) DEFAULT 'info' COMMENT 'info/ok/warn/error',
+            src_key VARCHAR(512) DEFAULT '' COMMENT '图片key',
+            detail VARCHAR(512) DEFAULT '' COMMENT '调用过程/结果',
+            KEY idx_unit_ts (unit_id, id)
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='分析调用审计日志'""",
         """CREATE TABLE IF NOT EXISTS machine_schedule(
             id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
             machine VARCHAR(64) NOT NULL COMMENT '机台/产线(如 a01)',
@@ -2207,90 +2219,137 @@ def _analysis_worker(unit_id):
                    tuple(kw.values()) + (unit_id,))
         db.commit()
 
+    def log(level, detail, src_key=""):
+        db.execute("INSERT INTO analysis_logs(unit_id,level,src_key,detail) VALUES(?,?,?,?)",
+                   (unit_id, level, src_key, detail[:500]))
+        db.commit()
+
+    def is_on():
+        r = db.execute("SELECT enabled FROM analysis_jobs WHERE unit_id=?", (unit_id,)).fetchone()
+        return bool(r and r["enabled"])
+
     try:
         u = dict(db.execute("SELECT * FROM model_units WHERE id=?", (unit_id,)).fetchone())
         face = db.execute("SELECT face_name FROM camera_faces WHERE id=?", (u["face_id"],)).fetchone()
         face_name = face["face_name"] if face else ""
         endpoint = u["model_endpoint"]
-        keys, _, _, _ = _rtdir_list_images(db, u)
-        done = {r["src_key"] for r in db.execute(
-            "SELECT src_key FROM inference_results WHERE unit_id=? AND src_key<>''", (unit_id,)).fetchall()}
-        upd(status="running", total=len(keys), read_cnt=0, analyzed=0, skipped=0, msg="开始分析")
-        read = an = sk = 0
-        for key in keys:
-            read += 1
-            if key in done:
-                sk += 1
-            else:
-                res = infer_call(endpoint, key)
-                if res:
-                    p = key.split("/")
-                    date = p[-4] if len(p) >= 4 else ""
-                    shift = p[-3] if len(p) >= 3 else ""
-                    db.execute("INSERT INTO inference_results(src_key,unit_id,machine,line_name,brand,"
-                               "face_name,img_date,shift,is_defect,class_name,confidence,model_version) "
-                               "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                               (key, unit_id, "", "", u["brand"], face_name, date, shift,
-                                res["is_defect"], res["class_name"], res["confidence"], res["model_version"]))
-                    db.commit()
-                    an += 1
-            if read % 5 == 0 or read == len(keys):
-                upd(read_cnt=read, analyzed=an, skipped=sk,
-                    msg="分析中 %d/%d" % (read, len(keys)))
-        upd(status="done", read_cnt=read, analyzed=an, skipped=sk,
-            msg="完成：新分析 %d 张，跳过 %d 张（已分析过）" % (an, sk))
+        log("info", "工作开启，推理服务 %s" % endpoint)
+        # 开关式：开启后持续工作 —— 每轮扫目录处理新图，处理完歇 15 秒再扫；关闭则退出
+        total_an = 0
+        while is_on():
+            keys, _, _, _ = _rtdir_list_images(db, u)
+            done = {r["src_key"] for r in db.execute(
+                "SELECT src_key FROM inference_results WHERE unit_id=? AND src_key<>''", (unit_id,)).fetchall()}
+            upd(status="running", total=len(keys), read_cnt=0, analyzed=0, skipped=0, msg="扫描目录…")
+            read = an = sk = 0
+            for key in keys:
+                if not is_on():
+                    break
+                read += 1
+                if key in done:
+                    sk += 1
+                else:
+                    res = infer_call(endpoint, key)
+                    if res:
+                        p = key.split("/")
+                        date = p[-4] if len(p) >= 4 else ""
+                        shift = p[-3] if len(p) >= 3 else ""
+                        db.execute("INSERT INTO inference_results(src_key,unit_id,machine,line_name,brand,"
+                                   "face_name,img_date,shift,is_defect,class_name,confidence,model_version) "
+                                   "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                                   (key, unit_id, "", "", u["brand"], face_name, date, shift,
+                                    res["is_defect"], res["class_name"], res["confidence"], res["model_version"]))
+                        db.commit()
+                        an += 1
+                        total_an += 1
+                        log("ok", "%s → %s (置信 %.2f)" % (
+                            "正常" if res["is_defect"] == 0 else res["class_name"], res["class_name"],
+                            res["confidence"]), key)
+                    else:
+                        log("error", "推理调用失败，跳过", key)
+                if read % 5 == 0 or read == len(keys):
+                    upd(read_cnt=read, analyzed=an, skipped=sk, msg="分析中 %d/%d" % (read, len(keys)))
+            if not is_on():
+                break
+            upd(status="running", read_cnt=read, analyzed=an, skipped=sk,
+                msg="本轮完成(新%d/跳%d)，累计%d，等待新图…" % (an, sk, total_an))
+            # 歇一会再扫新图；期间每秒检查开关，关了立刻退
+            for _ in range(15):
+                if not is_on():
+                    break
+                time.sleep(1)
+        upd(status="stopped", msg="已关闭，累计新分析 %d 张" % total_an)
+        log("info", "工作关闭，累计新分析 %d 张" % total_an)
     except Exception as e:
         app.logger.exception("实时目录分析失败 unit=%s", unit_id)
-        upd(status="error", msg="失败：%s" % str(e)[:180])
+        upd(status="error", enabled=0, msg="失败：%s" % str(e)[:180])
+        try:
+            log("error", "任务异常：%s" % str(e)[:400])
+        except Exception:
+            pass
     finally:
         db.close()
 
 
-@app.route("/model/analyze/start", methods=["POST"])
+@app.route("/model/analyze/toggle", methods=["POST"])
 @login_required
-def model_analyze_start():
-    """启动某单元的实时目录分析（后台线程 + 轮询进度）。"""
+def model_analyze_toggle():
+    """工作状态开关：开=启动后台分析线程持续工作；关=置 enabled=0，worker 自行退出。"""
     db = get_db()
     unit_id = request.form.get("unit_id", type=int)
+    on = request.form.get("on") == "1"
     u = db.execute("SELECT * FROM model_units WHERE id=?", (unit_id,)).fetchone()
     if not u:
         abort(404)
-    if not u["model_endpoint"]:
-        flash("该单元未绑定推理模型，无法分析", "error")
-        return redirect(url_for("model", det=unit_det_id(db, u), brand=u["brand"]))
-    if not (u["rt_type"] and (u["rt_bucket"] or u["rt_path"] or u["rt_type"] == "ftp")):
-        flash("该单元未配置实时图像目录", "error")
-        return redirect(url_for("model", det=unit_det_id(db, u), brand=u["brand"]))
-    # 已在运行且近 30 秒有更新则不重复启动
-    job = db.execute("SELECT status, updated_at FROM analysis_jobs WHERE unit_id=?", (unit_id,)).fetchone()
-    if job and job["status"] == "running" and job["updated_at"] and \
-       (datetime.now() - job["updated_at"]).total_seconds() < 30:
-        flash("分析正在进行中", "info")
-        return redirect(url_for("model", det=unit_det_id(db, u), brand=u["brand"]))
-    db.execute("INSERT INTO analysis_jobs(unit_id,status,total,read_cnt,analyzed,skipped,msg) "
-               "VALUES(?,?,0,0,0,0,?) ON DUPLICATE KEY UPDATE status=VALUES(status),"
-               "total=0,read_cnt=0,analyzed=0,skipped=0,msg=VALUES(msg)",
-               (unit_id, "running", "启动中…"))
-    db.commit()
-    import threading
-    threading.Thread(target=_analysis_worker, args=(unit_id,), daemon=True).start()
-    flash("已启动分析", "success")
+    if on:
+        if not u["model_endpoint"]:
+            flash("该单元未绑定推理模型，无法开启", "error")
+            return redirect(url_for("model", det=unit_det_id(db, u), brand=u["brand"]))
+        if not (u["rt_type"] and (u["rt_bucket"] or u["rt_path"] or u["rt_type"] == "ftp")):
+            flash("该单元未配置实时图像目录", "error")
+            return redirect(url_for("model", det=unit_det_id(db, u), brand=u["brand"]))
+        db.execute("INSERT INTO analysis_jobs(unit_id,status,enabled,msg) VALUES(?,?,1,?) "
+                   "ON DUPLICATE KEY UPDATE enabled=1,status='running',msg=VALUES(msg)",
+                   (unit_id, "running", "启动中…"))
+        db.commit()
+        import threading
+        threading.Thread(target=_analysis_worker, args=(unit_id,), daemon=True).start()
+        flash("已开启工作", "success")
+    else:
+        db.execute("UPDATE analysis_jobs SET enabled=0 WHERE unit_id=?", (unit_id,))
+        db.commit()
+        flash("已关闭工作（正在停止当前轮次）", "success")
     return redirect(url_for("model", det=unit_det_id(db, u), brand=u["brand"]))
 
 
 @app.route("/api/model/analyze/status")
 @login_required
 def api_model_analyze_status():
-    """轮询：返回各单元的分析进度（前端展示 总张数/已读/已分析）。"""
+    """轮询：返回各单元的工作状态与分析进度。"""
     ids = request.args.get("units", "")
     unit_ids = [int(x) for x in ids.split(",") if x.strip().isdigit()]
     if not unit_ids:
         return jsonify({})
     ph = ",".join(["?"] * len(unit_ids))
     rows = get_db().execute("SELECT * FROM analysis_jobs WHERE unit_id IN (%s)" % ph, unit_ids).fetchall()
-    return jsonify({str(r["unit_id"]): {"status": r["status"], "total": r["total"],
-                    "read": r["read_cnt"], "analyzed": r["analyzed"], "skipped": r["skipped"],
-                    "msg": r["msg"]} for r in rows})
+    return jsonify({str(r["unit_id"]): {"status": r["status"], "enabled": r["enabled"],
+                    "total": r["total"], "read": r["read_cnt"], "analyzed": r["analyzed"],
+                    "skipped": r["skipped"], "msg": r["msg"]} for r in rows})
+
+
+@app.route("/model/analyze/logs/<int:unit_id>")
+@login_required
+def model_analyze_logs(unit_id):
+    """审计日志：某单元的分析调用过程/结果。"""
+    db = get_db()
+    u = db.execute("SELECT mu.*, cf.face_name FROM model_units mu JOIN camera_faces cf ON cf.id=mu.face_id "
+                   "WHERE mu.id=?", (unit_id,)).fetchone()
+    if not u:
+        abort(404)
+    logs, pg = paginate(db, "SELECT * FROM analysis_logs WHERE unit_id=%d ORDER BY id DESC" % unit_id,
+                        page=request.args.get("page"), size=30)
+    return render_template("analyze_logs.html", u=dict(u), logs=[dict(r) for r in logs], pg=pg,
+                           active="model")
 
 
 # ---------------------------------------------------------------- 分析结果

@@ -20,12 +20,21 @@
   </div>
 </div>
 <div style="font-size:12.5px;color:var(--text-secondary);margin-bottom:12px">
-  每个「牌号 × 相机面」单元的模型由对方 CubeStudio 训练产出。在这里选一个训好的版本绑定，绑定即上线推理服务，供推理统计调用。
+  每个「牌号 × 相机面」单元的模型由对方 CubeStudio 训练产出。绑定训好的版本即上线推理服务。
+  开启「工作状态」后，后台持续从实时图像目录抓新图送推理并入库；点「日志」看调用审计。
 </div>
+<style>
+  .switch{position:relative;width:38px;height:20px;border:0;border-radius:11px;background:#ccc;cursor:pointer;padding:0;vertical-align:middle}
+  .switch.on{background:var(--primary,#00923f)}
+  .switch:disabled{opacity:.4;cursor:not-allowed}
+  .switch .switch-dot{position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:left .18s}
+  .switch.on .switch-dot{left:20px}
+  .switch-label{margin:0 6px 0 4px}
+</style>
 
 <div class="card tbl-card"><div class="card-body" style="padding:0">
 <table class="table">
-  <thead><tr><th>相机面</th><th>已绑定模型</th><th>CubeStudio 可用模型</th><th>实时图像目录</th><th>操作</th></tr></thead>
+  <thead><tr><th>相机面</th><th>已绑定模型</th><th>CubeStudio 可用模型</th><th>实时图像目录</th><th>工作状态</th></tr></thead>
   <tbody>
   {% for r in rows %}
   <tr>
@@ -70,13 +79,18 @@
       </div>
     </td>
     <td style="white-space:nowrap">
-      <a class="btn-link" href="javascript:;" onclick='openRt({{ r|tojson }})'>配置实时目录</a>
-      <form method="post" action="{{ url_for('model_analyze_start') }}" style="display:inline">
+      {% set on = r.job and r.job.enabled %}
+      {% set ready = r.bound_endpoint and (r.rt_path or r.rt_bucket or r.rt_type) %}
+      <form method="post" action="{{ url_for('model_analyze_toggle') }}" style="display:inline">
         <input type="hidden" name="unit_id" value="{{ r.unit_id }}">
-        <button class="btn-link" type="submit"
-          {{ 'disabled' if not (r.bound_endpoint and (r.rt_path or r.rt_bucket or r.rt_type)) }}
-          title="{{ '需先绑定模型并配置实时目录' if not (r.bound_endpoint and (r.rt_path or r.rt_bucket or r.rt_type)) else '' }}">启动分析</button>
+        <input type="hidden" name="on" value="{{ '0' if on else '1' }}">
+        <button class="switch {{ 'on' if on else '' }}" type="submit" data-unit="{{ r.unit_id }}"
+          {{ 'disabled' if not ready }} title="{{ '需先绑定模型并配置实时目录' if not ready else ('点击关闭' if on else '点击开启') }}">
+          <span class="switch-dot"></span></button>
       </form>
+      <span class="switch-label" data-unit="{{ r.unit_id }}" style="font-size:12px;color:{{ '#52c41a' if on else 'var(--text-secondary)' }}">{{ '工作中' if on else '已关闭' }}</span>
+      <a class="btn-link" href="javascript:;" onclick='openRt({{ r|tojson }})'>配置目录</a>
+      <a class="btn-link" href="{{ url_for('model_analyze_logs', unit_id=r.unit_id) }}">日志</a>
     </td>
   </tr>
   {% else %}
@@ -184,14 +198,16 @@ function rtTest(){
           var j = d[b.dataset.unit];
           if(!j) return;
           b.style.display = '';
-          var pct = j.total ? Math.round(j.read / j.total * 100) : (j.status==='done'?100:0);
+          var pct = j.total ? Math.round(j.read / j.total * 100) : 0;
           b.querySelector('.job-fill').style.width = pct + '%';
-          var txt = j.status==='running'
-            ? ('分析中 ' + j.read + '/' + j.total + ' · 新分析 ' + j.analyzed + ' · 跳过 ' + j.skipped)
-            : j.msg;
-          b.querySelector('.job-txt').textContent = txt;
+          b.querySelector('.job-txt').textContent = j.msg || '';
           b.querySelector('.job-fill').style.background = j.status==='error' ? '#ff4d4f' : 'var(--primary)';
-          if(j.status==='running') anyRunning = true;
+          // 同步开关外观与标签
+          var sw = document.querySelector('.switch[data-unit="'+b.dataset.unit+'"]');
+          var lb = document.querySelector('.switch-label[data-unit="'+b.dataset.unit+'"]');
+          if(sw){ sw.classList.toggle('on', !!j.enabled); }
+          if(lb){ lb.textContent = j.enabled ? '工作中' : '已关闭'; lb.style.color = j.enabled ? '#52c41a' : 'var(--text-secondary)'; }
+          if(j.enabled) anyRunning = true;
         });
         if(anyRunning) setTimeout(tick, 3000);
       })
