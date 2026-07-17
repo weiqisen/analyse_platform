@@ -1055,33 +1055,47 @@ def collect(tab):
     if tab == "config":
         if request.method == "POST":
             f = request.form
-            lid = f.get("line_id")
-            if lid:
-                db.execute("DELETE FROM storage_config WHERE line_id=?", (lid,))
-                db.execute("DELETE FROM terminal_config WHERE line_id=?", (lid,))
-                if f.get("mode") == "terminal":
-                    db.execute("INSERT INTO terminal_config(line_id,sys_addr,ng_dir,date_dir,str_pos,shift_dir,cam_count,cam_dirs,brand_dirs) "
-                               "VALUES(?,?,?,?,?,?,?,?,?)",
-                               (lid, f.get("sys_addr", ""), f.get("ng_dir", ""), f.get("date_dir", "YYYYMMDD"),
-                                f.get("str_pos", "1,8"), f.get("shift_dir", "早、中、晚"),
-                                f.get("cam_count", 4) or 4, f.get("cam_dirs", ""), f.get("brand_dirs", "")))
+            act = f.get("action", "")
+            if act == "save_source":
+                sid = f.get("source_id", type=int)
+                vals = (f.get("name", "").strip(), f.get("type", "minio"),
+                        f.get("server_addr", "").strip(), f.get("username", "").strip(),
+                        f.get("password", "").strip(), f.get("in_bucket", "").strip(),
+                        f.get("out_bucket", "").strip(), f.get("ng_dir", "").strip())
+                if sid:
+                    db.execute("UPDATE data_sources SET name=?,type=?,server_addr=?,username=?,"
+                               "password=?,in_bucket=?,out_bucket=?,ng_dir=? WHERE id=?", vals + (sid,))
                 else:
-                    db.execute("INSERT INTO storage_config(line_id,server_addr,in_bucket,username,password,out_bucket) "
-                               "VALUES(?,?,?,?,?,?)",
-                               (lid, f.get("server_addr", ""), f.get("in_bucket", ""), f.get("username", ""),
-                                f.get("password", ""), f.get("out_bucket", "")))
+                    db.execute("INSERT INTO data_sources(name,type,server_addr,username,password,"
+                               "in_bucket,out_bucket,ng_dir) VALUES(?,?,?,?,?,?,?,?)", vals)
                 db.commit()
-                flash("产线采集来源已保存", "success")
+                rebuild_all_line_cfg(db)   # 数据源变了，重建引用它的产线缓存
+                flash("数据源已保存", "success")
+            elif act == "del_source":
+                sid = f.get("source_id", type=int)
+                db.execute("UPDATE prod_lines SET source_id=0 WHERE source_id=?", (sid,))
+                db.execute("DELETE FROM data_sources WHERE id=?", (sid,))
+                db.commit()
+                rebuild_all_line_cfg(db)
+                flash("数据源已删除", "success")
+            elif act == "bind_line":
+                lid = f.get("line_id", type=int)
+                db.execute("UPDATE prod_lines SET source_id=? WHERE id=?",
+                           (f.get("source_id", type=int) or 0, lid))
+                db.commit()
+                rebuild_line_cfg(db, lid)
+                flash("产线数据源已绑定", "success")
             return redirect(url_for("collect", tab="config"))
-        line_cfgs = []
+        ctx["sources"] = [dict(r) for r in db.execute(
+            "SELECT * FROM data_sources ORDER BY id").fetchall()]
+        # 每个数据源被哪些产线引用
+        ref = {}
         for l in lines:
-            scfg = db.execute("SELECT * FROM storage_config WHERE line_id=?", (l["id"],)).fetchone()
-            tcfg = db.execute("SELECT * FROM terminal_config WHERE line_id=?", (l["id"],)).fetchone()
-            host = ((scfg["server_addr"] or "").split(":")[0]) if scfg else ""
-            line_cfgs.append({"line": l, "mode": "terminal" if tcfg else "minio",
-                              "scfg": scfg, "tcfg": tcfg,
-                              "console_url": ("http://%s:9001" % host) if host else "#"})
-        ctx["line_cfgs"] = line_cfgs
+            if l["source_id"]:
+                ref.setdefault(l["source_id"], []).append(l["name"])
+        for s in ctx["sources"]:
+            s["used_by"] = ref.get(s["id"], [])
+        ctx["line_binds"] = [{"line": dict(l), "source_id": l["source_id"]} for l in lines]
     elif tab == "monitor":
         sync_label_images()
         ctx["cams"] = []; ctx["err"] = None
@@ -1279,6 +1293,36 @@ def collect_test_storage():
         return jsonify({"ok": True, "msg": "连接成功，桶「%s」可访问" % cfg["in_bucket"]})
     except Exception as e:
         return jsonify({"ok": False, "msg": str(e)[:160]})
+
+
+@app.route("/collect/test/source", methods=["POST"])
+@login_required
+def collect_test_source():
+    """按数据源类型测试连接（用表单当前值，不依赖已保存）。"""
+    f = request.form
+    if f.get("type") == "ftp":
+        tcfg = {"sys_addr": f.get("server_addr", ""), "ng_dir": f.get("ng_dir", "")}
+        if not tcfg["sys_addr"]:
+            return jsonify({"ok": False, "msg": "请先填写服务地址"})
+        try:
+            t, sftp = _ws_sftp(tcfg)
+            try:
+                n = len(sftp.listdir(tcfg["ng_dir"] or "/"))
+            finally:
+                t.close()
+            return jsonify({"ok": True, "msg": "SFTP 连接成功，%s 下 %d 个条目" % (tcfg["ng_dir"] or "/", n)})
+        except Exception as e:
+            return jsonify({"ok": False, "msg": "连接失败：%s" % str(e)[:150]})
+    cfg = {"server_addr": f.get("server_addr", ""), "in_bucket": f.get("in_bucket", ""),
+           "username": f.get("username", ""), "password": f.get("password", "")}
+    if not cfg["server_addr"]:
+        return jsonify({"ok": False, "msg": "请先填写服务地址"})
+    try:
+        s3, _ = get_s3(cfg)
+        s3.head_bucket(Bucket=cfg["in_bucket"])
+        return jsonify({"ok": True, "msg": "连接成功，桶「%s」可访问" % cfg["in_bucket"]})
+    except Exception as e:
+        return jsonify({"ok": False, "msg": "连接失败：%s" % str(e)[:150]})
 
 
 @app.route("/collect/test/terminal", methods=["POST"])

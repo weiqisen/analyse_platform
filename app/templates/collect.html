@@ -21,127 +21,171 @@
 {% endblock %}
 
 {% block content %}
-{# ---------------- 采集配置（按产线） ---------------- #}
+{# ---------------- 采集配置：数据源 + 产线绑定 ---------------- #}
 {% if tab == 'config' %}
-<div class="page-title">采集配置</div>
 <style>
-  .lc-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
-  .lc-card { background: #fff; border: 1px solid var(--split); border-radius: 10px; padding: 18px 16px 14px; box-shadow: var(--shadow); }
-  .lc-card .lc-name { font-size: 15px; font-weight: 680; display: flex; align-items: center; gap: 8px; }
-  .lc-card .lc-ws { font-size: 12px; color: var(--text-secondary); font-weight: 400; }
-  .lc-card .lc-src { margin-top: 12px; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-secondary); }
-  .lc-card .lc-addr { margin-top: 6px; font-family: var(--font-mono, monospace); font-size: 12.5px; color: var(--text-secondary); word-break: break-all; }
-  .lc-card .lc-foot { margin-top: 14px; display: flex; align-items: center; gap: 10px; }
-  .lc-badge { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 10px; font-size: 12px; font-weight: 500; }
-  .lc-badge.s3 { background: #e6f7ee; color: #006b2e; } .lc-badge.ws { background: #f8efdd; color: #a86e14; }
-  @media (max-width: 860px) { .lc-grid { grid-template-columns: 1fr; } }
   .mode-radio { position: relative; padding-left: 22px; cursor: pointer; user-select: none; }
   .mode-radio > input { position: absolute; opacity: 0; width: 0; height: 0; }
   .mode-radio .rdot { position: absolute; left: 0; top: 50%; margin-top: -7px; width: 14px; height: 14px;
     border-radius: 50%; border: 1.5px solid var(--border); background: #fff; transition: all .15s; }
   .mode-radio > input:checked + .rdot { border-color: var(--primary); background: var(--primary); box-shadow: inset 0 0 0 2.5px #fff; }
   .mode-radio > input:checked ~ * { color: var(--primary); font-weight: 600; }
+  .ds-badge { display:inline-flex; align-items:center; padding:1px 9px; border-radius:10px; font-size:12px; }
+  .ds-badge.s3 { background:#e6f7ee; color:#006b2e; } .ds-badge.ftp { background:#f8efdd; color:#a86e14; }
 </style>
 
-<div class="lc-grid">
-{% for lc in line_cfgs %}
-<div class="lc-card">
-  <div class="lc-name">{{ lc.line.name }}<span class="lc-ws">· {{ lc.line.workshop }}</span></div>
-  <div class="lc-src">
-    <span class="dot-status on"></span>
-    <span class="lc-badge {{ 's3' if lc.mode=='minio' else 'ws' }}">
-      {% if lc.mode=='minio' %}对象存储{% else %}工控机 SFTP{% endif %}</span>
-  </div>
-  <div class="lc-addr">
-    {% if lc.mode == 'minio' %}
-      {{ lc.scfg.server_addr }} / {{ lc.scfg.in_bucket }}
-    {% else %}
-      {{ lc.tcfg.sys_addr }}{{ lc.tcfg.ng_dir if lc.tcfg else '' }}
-    {% endif %}
-  </div>
-  <div class="lc-foot">
-    <button class="btn btn-sm" onclick="openCfgModal({{ loop.index0 }})">配置</button>
-    {% if lc.mode == 'minio' and lc.scfg %}
-      <a class="btn btn-sm" href="http://{{ lc.scfg.server_addr.split(':')[0] }}:9001" target="_blank" rel="noopener">控制台</a>
-    {% endif %}
-  </div>
+<div class="toolbar">
+  <div class="page-title" style="margin:0">数据源</div>
+  <button class="btn btn-primary" onclick="openDs()">+ 新增数据源</button>
 </div>
-{% endfor %}
+<div style="font-size:12.5px;color:var(--text-secondary);margin-bottom:10px">
+  数据源独立管理，多条产线可共用一个。通常一个区域的机型统一写到一个 MinIO；个别机型单独走 FTP。
 </div>
+<div class="card tbl-card"><div class="card-body" style="padding:0">
+<table class="table">
+  <thead><tr><th>名称</th><th>类型</th><th>地址</th><th>桶 / 目录</th><th>被引用产线</th><th>状态</th><th>操作</th></tr></thead>
+  <tbody>
+  {% for s in sources %}
+  <tr>
+    <td><b>{{ s.name }}</b></td>
+    <td><span class="ds-badge {{ 's3' if s.type=='minio' else 'ftp' }}">{{ '对象存储' if s.type=='minio' else '工控机FTP' }}</span></td>
+    <td><code style="font-size:12px">{{ s.server_addr }}</code></td>
+    <td><code style="font-size:12px">{{ s.in_bucket if s.type=='minio' else s.ng_dir }}</code></td>
+    <td>{{ s.used_by|join(' / ') if s.used_by else '—' }}</td>
+    <td>{% if s.status %}<span class="tag">启用</span>{% else %}<span class="tag tag-gray">停用</span>{% endif %}</td>
+    <td style="white-space:nowrap">
+      <button class="btn-link" onclick='openDs({{ s|tojson }})'>编辑</button>
+      {% if s.type=='minio' %}<a class="btn-link" href="http://{{ s.server_addr.split(':')[0] }}:9001" target="_blank" rel="noopener">控制台</a>{% endif %}
+      <form method="post" style="display:inline" onsubmit="return confirm('删除后引用它的产线将解绑，确认？')">
+        <input type="hidden" name="action" value="del_source"><input type="hidden" name="source_id" value="{{ s.id }}">
+        <button class="btn-link danger" type="submit">删除</button>
+      </form>
+    </td>
+  </tr>
+  {% else %}
+  <tr><td colspan="7" class="empty">暂无数据源，点右上角「新增数据源」</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div></div>
 
-{# 配置弹窗（三条产线共用，JS 切换） #}
-<div class="modal-mask" id="cfgModal">
-  <div class="modal" style="width:620px;max-width:94vw">
-    <div class="modal-head"><span id="cfgTitle">产线采集配置</span><span class="close" onclick="closeModal('cfgModal')">×</span></div>
-    <form method="post" id="cfgForm" action="{{ url_for('collect', tab='config') }}">
-      <input type="hidden" name="line_id" id="cfgLineId">
+<div class="page-title" style="margin-top:22px">产线 → 数据源</div>
+<div style="font-size:12.5px;color:var(--text-secondary);margin-bottom:10px">每条产线引用一个数据源。多条产线可选同一个。</div>
+<div class="card"><div class="card-body" style="padding:0">
+<table class="table">
+  <thead><tr><th>产线</th><th>车间</th><th>引用的数据源</th></tr></thead>
+  <tbody>
+  {% for lb in line_binds %}
+  <tr>
+    <td><b>{{ lb.line.name }}</b></td><td>{{ lb.line.workshop }}</td>
+    <td>
+      <form method="post" style="display:inline">
+        <input type="hidden" name="action" value="bind_line"><input type="hidden" name="line_id" value="{{ lb.line.id }}">
+        <select class="select input btn-sm" name="source_id" style="width:auto;min-width:220px" onchange="this.form.submit()">
+          <option value="0">（未绑定）</option>
+          {% for s in sources %}
+          <option value="{{ s.id }}" {{ 'selected' if s.id==lb.source_id }}>{{ s.name }} · {{ s.server_addr }}</option>
+          {% endfor %}
+        </select>
+      </form>
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div></div>
+
+{# 数据源编辑弹窗 #}
+<div class="modal-mask" id="dsModal">
+  <div class="modal" style="width:600px;max-width:94vw">
+    <div class="modal-head"><span id="dsTitle">新增数据源</span><span class="close" onclick="closeModal('dsModal')">×</span></div>
+    <form method="post" id="dsForm">
+      <input type="hidden" name="action" value="save_source"><input type="hidden" name="source_id" id="ds_id">
       <div class="modal-body">
-        <div style="margin-bottom:14px">
-          <label class="mode-radio"><input type="radio" name="mode" value="minio" id="cfgModeS3" onchange="cfgToggle()"><span class="rdot"></span><span>对象存储</span></label>
-          <label class="mode-radio" style="margin-left:18px"><input type="radio" name="mode" value="terminal" id="cfgModeWs" onchange="cfgToggle()"><span class="rdot"></span><span>工控机 SFTP</span></label>
+        <div class="form-item"><label><span class="req">*</span>名称</label>
+          <input class="input" name="name" id="ds_name" placeholder="如 区域一MinIO" required></div>
+        <div class="form-item"><label>类型</label>
+          <label class="mode-radio"><input type="radio" name="type" value="minio" id="ds_t_minio" onchange="dsToggle()"><span class="rdot"></span><span>对象存储 MinIO</span></label>
+          <label class="mode-radio" style="margin-left:18px"><input type="radio" name="type" value="ftp" id="ds_t_ftp" onchange="dsToggle()"><span class="rdot"></span><span>工控机 FTP</span></label>
         </div>
-        <div id="cfgFieldsS3">
+        <div id="ds_minio">
           <div class="form-grid">
-            <div class="form-item"><label>服务器地址</label><input class="input" name="server_addr" id="cfSrv" placeholder="10.10.96.65:9000"></div>
-            <div class="form-item"><label>输入桶</label><input class="input" name="in_bucket" id="cfIn" placeholder="defect-raw"></div>
-            <div class="form-item"><label>Access Key</label><input class="input" name="username" id="cfAk"></div>
-            <div class="form-item"><label>Secret Key</label><input class="input" type="password" name="password" id="cfSk"></div>
-            <div class="form-item"><label>输出桶</label><input class="input" name="out_bucket" id="cfOut" placeholder="defect-outputs"></div>
+            <div class="form-item"><label>服务地址</label><input class="input" name="server_addr" id="ds_addr_m" placeholder="10.10.96.65:9000"></div>
+            <div class="form-item"><label>输入桶</label><input class="input" name="in_bucket" id="ds_in" placeholder="defect-images"></div>
+            <div class="form-item"><label>Access Key</label><input class="input" name="username" id="ds_ak"></div>
+            <div class="form-item"><label>Secret Key</label><input class="input" type="password" name="password" id="ds_sk"></div>
+            <div class="form-item"><label>输出桶</label><input class="input" name="out_bucket" id="ds_out" placeholder="defect-outputs"></div>
           </div>
-          <div style="margin-top:8px"><button class="btn btn-sm" type="button" onclick="cfgTestS3()">测试连接</button><span class="test-msg" style="font-size:12px;margin-left:8px"></span></div>
         </div>
-        <div id="cfgFieldsWs" style="display:none">
+        <div id="ds_ftp" style="display:none">
           <div class="form-grid">
-            <div class="form-item"><label>系统地址 (host:port)</label><input class="input" name="sys_addr" id="cfAddr" placeholder="10.10.96.66:29"></div>
-            <div class="form-item"><label>NG 图目录</label><input class="input" name="ng_dir" id="cfNgd" placeholder="/data/ng/NG_IMG"></div>
-            <div class="form-item"><label>相机数</label><input class="input" type="number" name="cam_count" id="cfCam"></div>
-            <div class="form-item"><label>相机目录</label><input class="input" name="cam_dirs" id="cfCds"></div>
-            <div class="form-item"><label>牌号目录</label><input class="input" name="brand_dirs" id="cfBds"></div>
+            <div class="form-item"><label>服务地址 (host:port)</label><input class="input" name="server_addr_f" id="ds_addr_f" placeholder="10.10.96.66:29"></div>
+            <div class="form-item"><label>NG 图目录</label><input class="input" name="ng_dir" id="ds_ngd" placeholder="/data/ng/NG_IMG"></div>
+            <div class="form-item"><label>用户名</label><input class="input" name="username_f" id="ds_ak_f"></div>
+            <div class="form-item"><label>密码</label><input class="input" type="password" name="password_f" id="ds_sk_f"></div>
           </div>
-          <input type="hidden" name="date_dir" value="YYYYMMDD"><input type="hidden" name="str_pos" value="1,8"><input type="hidden" name="shift_dir" value="早、中、晚">
-          <div style="margin-top:8px"><button class="btn btn-sm" type="button" onclick="cfgTestWs()">测试连接</button><span class="test-msg" style="font-size:12px;margin-left:8px"></span></div>
         </div>
+        <div style="margin-top:8px"><button class="btn btn-sm" type="button" onclick="dsTest()">测试连接</button>
+          <span class="test-msg" id="ds_msg" style="font-size:12.5px;margin-left:10px"></span></div>
       </div>
       <div class="modal-foot">
-        <button type="button" class="btn" onclick="closeModal('cfgModal')">取消</button>
-        <button type="submit" class="btn btn-primary">保存配置</button>
+        <button type="button" class="btn" onclick="closeModal('dsModal')">取消</button>
+        <button type="submit" class="btn btn-primary">保存</button>
       </div>
     </form>
   </div>
 </div>
 
 <script>
-var LINES = {{ line_cfgs|tojson }};
-function openCfgModal(idx){
-  var lc = LINES[idx], isTerm = lc.mode === 'terminal';
-  document.getElementById('cfgTitle').textContent = lc.line.name + ' · ' + lc.line.workshop + ' — 采集配置';
-  document.getElementById('cfgLineId').value = lc.line.id;
-  document.getElementById('cfgModeS3').checked = !isTerm;
-  document.getElementById('cfgModeWs').checked = isTerm;
-  if(lc.scfg){ document.getElementById('cfSrv').value = lc.scfg.server_addr||''; document.getElementById('cfIn').value = lc.scfg.in_bucket||''; document.getElementById('cfAk').value = lc.scfg.username||''; document.getElementById('cfSk').value = lc.scfg.password||''; document.getElementById('cfOut').value = lc.scfg.out_bucket||''; }
-  if(lc.tcfg){ document.getElementById('cfAddr').value = lc.tcfg.sys_addr||''; document.getElementById('cfNgd').value = lc.tcfg.ng_dir||''; document.getElementById('cfCam').value = lc.tcfg.cam_count||4; document.getElementById('cfCds').value = lc.tcfg.cam_dirs||''; document.getElementById('cfBds').value = lc.tcfg.brand_dirs||''; }
-  cfgToggle(); openModal('cfgModal');
+function dsToggle(){
+  var isFtp = document.getElementById('ds_t_ftp').checked;
+  document.getElementById('ds_minio').style.display = isFtp ? 'none' : '';
+  document.getElementById('ds_ftp').style.display = isFtp ? '' : 'none';
 }
-function cfgToggle(){
-  var isTerm = document.getElementById('cfgModeWs').checked;
-  document.getElementById('cfgFieldsS3').style.display = isTerm ? 'none' : '';
-  document.getElementById('cfgFieldsWs').style.display = isTerm ? '' : 'none';
+function openDs(s){
+  s = s || {};
+  document.getElementById('dsTitle').textContent = (s.id ? '编辑' : '新增') + '数据源';
+  document.getElementById('ds_id').value = s.id || '';
+  document.getElementById('ds_name').value = s.name || '';
+  var ftp = (s.type === 'ftp');
+  document.getElementById('ds_t_minio').checked = !ftp;
+  document.getElementById('ds_t_ftp').checked = ftp;
+  // minio 字段
+  document.getElementById('ds_addr_m').value = ftp ? '' : (s.server_addr||'');
+  document.getElementById('ds_in').value = s.in_bucket||'';
+  document.getElementById('ds_ak').value = ftp ? '' : (s.username||'');
+  document.getElementById('ds_sk').value = ftp ? '' : (s.password||'');
+  document.getElementById('ds_out').value = s.out_bucket||'';
+  // ftp 字段
+  document.getElementById('ds_addr_f').value = ftp ? (s.server_addr||'') : '';
+  document.getElementById('ds_ngd').value = s.ng_dir||'';
+  document.getElementById('ds_ak_f').value = ftp ? (s.username||'') : '';
+  document.getElementById('ds_sk_f').value = ftp ? (s.password||'') : '';
+  document.getElementById('ds_msg').textContent = '';
+  dsToggle(); openModal('dsModal');
 }
-function _fd2(ids){
-  var o = {}; Object.keys(ids).forEach(function(k){ o[k] = document.getElementById(ids[k]).value; }); return o;
-}
-function _post2(url, data, msg){
+// 提交前把 ftp 分组的字段名归一到 server_addr/username/password
+document.getElementById('dsForm').addEventListener('submit', function(){
+  if(document.getElementById('ds_t_ftp').checked){
+    document.getElementById('ds_addr_m').value = document.getElementById('ds_addr_f').value;
+    document.getElementById('ds_ak').value = document.getElementById('ds_ak_f').value;
+    document.getElementById('ds_sk').value = document.getElementById('ds_sk_f').value;
+  }
+});
+function dsTest(){
+  var msg = document.getElementById('ds_msg');
   msg.textContent = '测试中…'; msg.style.color = 'var(--text-secondary)';
-  fetch(url, {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:new URLSearchParams(data)})
+  var ftp = document.getElementById('ds_t_ftp').checked;
+  var data = {type: ftp ? 'ftp':'minio',
+    server_addr: (ftp?document.getElementById('ds_addr_f'):document.getElementById('ds_addr_m')).value,
+    in_bucket: document.getElementById('ds_in').value,
+    username: (ftp?document.getElementById('ds_ak_f'):document.getElementById('ds_ak')).value,
+    password: (ftp?document.getElementById('ds_sk_f'):document.getElementById('ds_sk')).value,
+    ng_dir: document.getElementById('ds_ngd').value};
+  fetch('{{ url_for("collect_test_source") }}', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:new URLSearchParams(data)})
     .then(function(r){ return r.json(); })
-    .then(function(d){ msg.textContent = '● ' + d.msg; msg.style.color = d.ok ? '#00923f' : '#ff4d4f'; })
-    .catch(function(){ msg.textContent = '● 请求失败'; msg.style.color = '#ff4d4f'; });
-}
-function cfgTestS3(){
-  _post2('{{ url_for("collect_test_storage") }}', _fd2({server_addr:'cfSrv',in_bucket:'cfIn',username:'cfAk',password:'cfSk'}), document.querySelector('#cfgFieldsS3 .test-msg'));
-}
-function cfgTestWs(){
-  _post2('{{ url_for("collect_test_terminal") }}', _fd2({sys_addr:'cfAddr',ng_dir:'cfNgd'}), document.querySelector('#cfgFieldsWs .test-msg'));
+    .then(function(d){ msg.textContent = d.msg; msg.style.color = d.ok ? '#00923f' : '#ff4d4f'; })
+    .catch(function(){ msg.textContent = '请求失败'; msg.style.color = '#ff4d4f'; });
 }
 </script>
 
