@@ -17,15 +17,21 @@
   .fb-new { background:#fff7e6; color:#faad14; }
 </style>
 <div class="toolbar">
-  <div class="page-title" style="margin:0">相机面映射</div>
+  <div class="page-title" style="margin:0">图像分类</div>
   <div class="form-inline">
+    <span style="font-size:13px;color:var(--text-secondary)">检测项目</span>
+    <select class="select input" style="width:auto" onchange="location.href='?det='+this.value">
+      {% for it in det_items %}
+      <option value="{{ it.id }}" {{ 'selected' if it.id==cur_det }}>{{ it.short_name or it.name }}</option>
+      {% endfor %}
+    </select>
     <button class="btn" onclick="discover()">🔍 从数据源自动发现</button>
     <button class="btn btn-primary" onclick="editRow()">+ 新增</button>
   </div>
 </div>
 <div style="font-size:12.5px;color:var(--text-secondary);margin-bottom:10px">
-  MinIO 里相机面目录是机型专属技术码（如 <code>is7600C_D</code>），换机型整套变、且命名无规律，只能查表。
-  这里把原始目录名映射到统一的「标准面名」。<b>面编码</b>是传给对方模型接口的稳定英文码，不随中文名变。
+  每个检测项目单独配置有哪些相机面（图像分类）。MinIO 里相机面目录是机型专属技术码（如 <code>is7600C_D</code>），
+  换机型整套变、命名无规律，只能查表。<b>面编码</b>是传给对方模型接口的稳定英文码，不随中文名变。
 </div>
 
 <div id="discoverBox" class="card" style="display:none;margin-bottom:12px"><div class="card-body">
@@ -50,10 +56,10 @@
     <td>{% if r.status %}<span class="tag">启用</span>{% else %}<span class="tag tag-gray">停用</span>{% endif %}</td>
     <td>
       <button class="btn-link" onclick='editRow({{ r|tojson }})'>修改</button>
-      <form method="post" action="{{ url_for('config_toggle', tab=tab, rid=r.id) }}" style="display:inline">
+      <form method="post" action="{{ url_for('config_toggle', tab=tab, rid=r.id) }}?det={{ cur_det }}" style="display:inline">
         <button class="btn-link" type="submit">{{ '停用' if r.status else '启用' }}</button>
       </form>
-      <form method="post" action="{{ url_for('config_delete', tab=tab, rid=r.id) }}" style="display:inline"
+      <form method="post" action="{{ url_for('config_delete', tab=tab, rid=r.id) }}?det={{ cur_det }}" style="display:inline"
             onsubmit="return confirm('确认删除？')">
         <button class="btn-link danger" type="submit">删除</button>
       </form>
@@ -73,6 +79,7 @@
     <form method="post" action="{{ url_for('config_save', tab=tab) }}">
       <div class="modal-body">
         <input type="hidden" name="id" id="c_id">
+        <input type="hidden" name="item_id" value="{{ cur_det }}">
         <div class="form-item"><label><span class="req">*</span>原始目录名</label>
           <input class="input" name="raw_name" id="c_raw_name" placeholder="如 is7600C_D" required></div>
         <div class="form-item"><label><span class="req">*</span>标准面名</label>

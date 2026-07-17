@@ -166,7 +166,26 @@ def migrate_db(db):
             db.execute("ALTER TABLE inference_results MODIFY image_id INT NULL COMMENT '旧字段, 新架构不用'")
             db.commit()
 
-    # 相机面映射种子：现场用 is7600C_x 技术码，首次预置这 6 面（is7600C 机型）
+    # 图像分类(相机面)归属检测项目：加 item_id，唯一键从 raw_name 改为 (item_id,raw_name)，
+    # 现有数据迁到「小包CCD」。不同检测项目可各自配置相机面。
+    xb = db.execute("SELECT id FROM detect_items WHERE short_name=? OR name=?",
+                    ("小包CCD", "小包CCD检测")).fetchone()
+    xb_id = xb["id"] if xb else 0
+    if not _has_column(db, "camera_faces", "item_id"):
+        db.execute("ALTER TABLE camera_faces ADD COLUMN item_id INT DEFAULT 0 COMMENT '所属检测项目(detect_items.id)'")
+        if xb_id:
+            db.execute("UPDATE camera_faces SET item_id=? WHERE item_id=0", (xb_id,))
+        try:
+            db.execute("ALTER TABLE camera_faces DROP INDEX uq_raw")
+        except Exception:
+            pass
+        try:
+            db.execute("ALTER TABLE camera_faces ADD UNIQUE KEY uq_item_raw (item_id, raw_name)")
+        except Exception:
+            pass
+        db.commit()
+
+    # 相机面映射种子：现场用 is7600C_x 技术码，首次预置这 6 面（is7600C 机型），归到小包CCD
     if not db.execute("SELECT COUNT(*) AS c FROM camera_faces").fetchone()["c"]:
         seed_faces = [
             ("is7600C_D", "正面", "front", 1), ("is7600C_U", "反面", "back", 2),
@@ -175,8 +194,8 @@ def migrate_db(db):
             ("is7600C_you", "六面相机右", "six_right", 6),
         ]
         for raw, name, code, order in seed_faces:
-            db.execute("INSERT INTO camera_faces(raw_name,face_name,face_code,machine_model,sort_order) "
-                       "VALUES(?,?,?,?,?)", (raw, name, code, "is7600C", order))
+            db.execute("INSERT INTO camera_faces(item_id,raw_name,face_name,face_code,machine_model,sort_order) "
+                       "VALUES(?,?,?,?,?,?)", (xb_id, raw, name, code, "is7600C", order))
         db.commit()
 
     # 老数据按牌号存（牌号是 BRAND_MAP 编出来的），归到第一个配了数据源目录的检测
@@ -619,7 +638,7 @@ def users_delete(uid):
 # ---------------------------------------------------------------- 基础配置
 CONFIG_TABS = [("items", "检测项目"), ("lines", "机组/产线"), ("brands", "牌号/品规"),
                ("workshops", "车间"), ("areas", "区域"), ("defects", "缺陷分类"),
-               ("faces", "相机面映射"), ("schedule", "机台排程"), ("integration", "系统集成")]
+               ("faces", "图像分类"), ("schedule", "机台排程"), ("integration", "系统集成")]
 
 
 @app.route("/config/<tab>")
@@ -635,6 +654,16 @@ def config(tab):
         return render_template("config_integration.html", tab=tab, tabs=CONFIG_TABS,
                                rows=rows, active="config",
                                default_webhook=url_for("label_webhook", _external=True))
+    if tab == "faces":
+        # 图像分类(相机面)按检测项目配置：下拉选检测项目，只显示该项目的相机面
+        det_items = [dict(r) for r in db.execute(
+            "SELECT * FROM detect_items WHERE status=1 ORDER BY id").fetchall()]
+        cur_det = request.args.get("det", type=int) or (det_items[0]["id"] if det_items else 0)
+        faces = [dict(r) for r in db.execute(
+            "SELECT * FROM camera_faces WHERE item_id=? ORDER BY machine_model, sort_order, id",
+            (cur_det,)).fetchall()]
+        return render_template("config_faces.html", tab=tab, tabs=CONFIG_TABS, rows=faces,
+                               det_items=det_items, cur_det=cur_det, active="config")
     data = {
         "items": [dict(r, img_count=db.execute(
             "SELECT COUNT(*) AS c FROM label_images WHERE item_id=?", (r["id"],)).fetchone()["c"])
@@ -644,12 +673,8 @@ def config(tab):
         "workshops": db.execute("SELECT * FROM workshops ORDER BY id").fetchall(),
         "areas": db.execute("SELECT * FROM areas ORDER BY id").fetchall(),
         "defects": db.execute("SELECT * FROM label_classes ORDER BY id").fetchall(),
-        "faces": db.execute("SELECT * FROM camera_faces ORDER BY machine_model, sort_order, id").fetchall(),
         "schedule": db.execute("SELECT * FROM machine_schedule ORDER BY sched_date DESC, machine, shift").fetchall(),
     }[tab]
-    if tab == "faces":
-        return render_template("config_faces.html", tab=tab, tabs=CONFIG_TABS,
-                               rows=[dict(r) for r in data], active="config")
     workshops = [dict(w) for w in db.execute("SELECT * FROM workshops WHERE status=1 ORDER BY id").fetchall()]
     areas = [dict(a) for a in db.execute("SELECT * FROM areas WHERE status=1 ORDER BY id").fetchall()]
     sched_brands = [dict(b) for b in db.execute("SELECT * FROM brands WHERE status=1 ORDER BY id").fetchall()]
@@ -844,17 +869,21 @@ def config_save(tab):
             db.execute("INSERT INTO machine_schedule(machine,sched_date,shift,brand) VALUES(?,?,?,?) "
                        "ON DUPLICATE KEY UPDATE brand=VALUES(brand)", vals)
     elif tab == "faces":
-        vals = (f["raw_name"].strip(), f["face_name"].strip(), f.get("face_code", "").strip(),
+        det = f.get("item_id", type=int) or 0
+        vals = (det, f["raw_name"].strip(), f["face_name"].strip(), f.get("face_code", "").strip(),
                 f.get("machine_model", "").strip(), f.get("sort_order", 0) or 0)
         if rid:
-            db.execute("UPDATE camera_faces SET raw_name=?,face_name=?,face_code=?,"
+            db.execute("UPDATE camera_faces SET item_id=?,raw_name=?,face_name=?,face_code=?,"
                        "machine_model=?,sort_order=? WHERE id=?", vals + (rid,))
         else:
-            # 自动发现里「一键映射」也走这里，同名目录已存在则更新，避免唯一键冲突
-            db.execute("INSERT INTO camera_faces(raw_name,face_name,face_code,machine_model,sort_order) "
-                       "VALUES(?,?,?,?,?) ON DUPLICATE KEY UPDATE "
+            # 自动发现里「一键映射」也走这里，同项目同名目录已存在则更新，避免唯一键冲突
+            db.execute("INSERT INTO camera_faces(item_id,raw_name,face_name,face_code,machine_model,sort_order) "
+                       "VALUES(?,?,?,?,?,?) ON DUPLICATE KEY UPDATE "
                        "face_name=VALUES(face_name),face_code=VALUES(face_code),"
                        "machine_model=VALUES(machine_model),sort_order=VALUES(sort_order)", vals)
+        db.commit()
+        flash("保存成功", "success")
+        return redirect(url_for("config", tab="faces", det=det))
     db.commit()
     flash("保存成功", "success")
     return redirect(url_for("config", tab=tab))
@@ -872,7 +901,7 @@ def config_delete(tab, rid):
     db.execute("DELETE FROM %s WHERE id=?" % table, (rid,))
     db.commit()
     flash("已删除", "success")
-    return redirect(url_for("config", tab=tab))
+    return redirect(url_for("config", tab=tab, det=request.args.get("det", type=int)))
 
 
 @app.route("/config/<tab>/toggle/<int:rid>", methods=["POST"])
@@ -886,7 +915,7 @@ def config_toggle(tab, rid):
     db = get_db()
     db.execute("UPDATE %s SET status=1-status WHERE id=?" % table, (rid,))
     db.commit()
-    return redirect(url_for("config", tab=tab))
+    return redirect(url_for("config", tab=tab, det=request.args.get("det", type=int)))
 
 
 # ---------------------------------------------------------------- 图像采集
