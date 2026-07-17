@@ -1090,10 +1090,15 @@ def collect(tab):
                     db.execute("UPDATE data_sources SET name=?,type=?,server_addr=?,username=?,"
                                "password=?,in_bucket=?,out_bucket=?,ng_dir=? WHERE id=?", vals + (sid,))
                 else:
-                    db.execute("INSERT INTO data_sources(name,type,server_addr,username,password,"
-                               "in_bucket,out_bucket,ng_dir) VALUES(?,?,?,?,?,?,?,?)", vals)
+                    sid = db.execute("INSERT INTO data_sources(name,type,server_addr,username,password,"
+                                     "in_bucket,out_bucket,ng_dir) VALUES(?,?,?,?,?,?,?,?)", vals).lastrowid
+                # 弹窗里勾选的产线绑到本数据源；原绑它但这次没勾的解绑
+                picked = set(request.form.getlist("lines", type=int))
+                db.execute("UPDATE prod_lines SET source_id=0 WHERE source_id=?", (sid,))
+                for lid in picked:
+                    db.execute("UPDATE prod_lines SET source_id=? WHERE id=?", (sid, lid))
                 db.commit()
-                rebuild_all_line_cfg(db)   # 数据源变了，重建引用它的产线缓存
+                rebuild_all_line_cfg(db)   # 绑定/数据源变了，重建产线缓存
                 flash("数据源已保存", "success")
             elif act == "del_source":
                 sid = f.get("source_id", type=int)
@@ -1102,24 +1107,19 @@ def collect(tab):
                 db.commit()
                 rebuild_all_line_cfg(db)
                 flash("数据源已删除", "success")
-            elif act == "bind_line":
-                lid = f.get("line_id", type=int)
-                db.execute("UPDATE prod_lines SET source_id=? WHERE id=?",
-                           (f.get("source_id", type=int) or 0, lid))
-                db.commit()
-                rebuild_line_cfg(db, lid)
-                flash("产线数据源已绑定", "success")
             return redirect(url_for("collect", tab="config"))
         ctx["sources"] = [dict(r) for r in db.execute(
             "SELECT * FROM data_sources ORDER BY id").fetchall()]
-        # 每个数据源被哪些产线引用
-        ref = {}
+        # 每个数据源绑定了哪些产线（名字列表 + id列表供弹窗回显勾选）
+        ref, ref_ids = {}, {}
         for l in lines:
             if l["source_id"]:
                 ref.setdefault(l["source_id"], []).append(l["name"])
+                ref_ids.setdefault(l["source_id"], []).append(l["id"])
         for s in ctx["sources"]:
             s["used_by"] = ref.get(s["id"], [])
-        ctx["line_binds"] = [{"line": dict(l), "source_id": l["source_id"]} for l in lines]
+            s["line_ids"] = ref_ids.get(s["id"], [])
+        ctx["bind_lines"] = [dict(l) for l in lines]   # 供数据源弹窗勾选产线
     elif tab == "monitor":
         sync_label_images()
         ctx["cams"] = []; ctx["err"] = None
