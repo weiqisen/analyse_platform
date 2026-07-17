@@ -196,13 +196,27 @@ function cfgTestWs(){
   <div class="hint">读取失败：{{ err }}</div>
   {% else %}
   {% if not all_lines %}
-  <div class="form-inline" style="margin-bottom:14px;gap:6px;flex-wrap:wrap;align-items:center">
-    <a href="{{ url_for('collect', tab='images', line=cur_line, item=cur_item) }}">{{ root_label }}</a>
+  <div class="form-inline" style="margin-bottom:6px;gap:8px;flex-wrap:wrap;align-items:center;font-size:13px">
+    {% if src == 'minio' %}
+      <span class="tag" style="background:#e6f7ee;color:#006b2e">桶</span>
+      <a href="{{ url_for('collect', tab='images', line=cur_line, item=cur_item) }}"><b>{{ root_label }}</b></a>
+      <span style="color:var(--split)">|</span>
+      <span style="color:var(--text-secondary)">路径</span>
+    {% else %}
+      <span class="tag">目录</span>
+      <a href="{{ url_for('collect', tab='images', line=cur_line, item=cur_item) }}"><b>{{ root_label }}</b></a>
+      <span style="color:var(--split)">|</span>
+    {% endif %}
+    {% if not crumbs %}<span style="color:var(--text-secondary)">/ (根)</span>{% endif %}
     {% for c in crumbs %}
     <span style="color:var(--text-secondary)">/</span>
     <a href="{{ url_for('collect', tab='images', line=cur_line, item=cur_item, path=c.path) }}">{{ c.name }}</a>
     {% endfor %}
     <span style="margin-left:auto;color:var(--text-secondary)">{{ dirs|length }} 个目录 · {{ total }} 张图片</span>
+  </div>
+  <div style="font-size:12px;color:var(--text-secondary);margin-bottom:12px">
+    {% if src == 'minio' %}对象存储 {{ server_addr }}，桶 <code>{{ root_label }}</code>{% if cur_path %}，当前路径 <code>{{ cur_path }}</code>{% endif %}
+    {% else %}工控机 {{ server_addr }}，目录 <code>{{ root_label }}{% if cur_path %}/{{ cur_path }}{% endif %}</code>{% endif %}
   </div>
   {% endif %}
   {% if dirs %}
