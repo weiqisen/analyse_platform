@@ -70,17 +70,28 @@
 </div></div>
 
 {# 数据源编辑弹窗 #}
+<style>
+  #dsModal .modal-body{padding:18px 22px}
+  #dsModal .form-item{margin-bottom:12px}
+  #dsModal .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px 16px}
+  #dsModal label{margin-bottom:3px}
+  #dsModal .lines-pick{display:flex;flex-wrap:wrap;gap:8px 14px;margin-top:4px}
+</style>
 <div class="modal-mask" id="dsModal">
-  <div class="modal" style="width:600px;max-width:94vw">
+  <div class="modal" style="width:620px;max-width:94vw">
     <div class="modal-head"><span id="dsTitle">新增数据源</span><span class="close" onclick="closeModal('dsModal')">×</span></div>
     <form method="post" id="dsForm">
       <input type="hidden" name="action" value="save_source"><input type="hidden" name="source_id" id="ds_id">
       <div class="modal-body">
-        <div class="form-item"><label><span class="req">*</span>名称</label>
-          <input class="input" name="name" id="ds_name" placeholder="如 区域一MinIO" required></div>
-        <div class="form-item"><label>类型</label>
-          <label class="mode-radio"><input type="radio" name="type" value="minio" id="ds_t_minio" onchange="dsToggle()"><span class="rdot"></span><span>对象存储 MinIO</span></label>
-          <label class="mode-radio" style="margin-left:18px"><input type="radio" name="type" value="ftp" id="ds_t_ftp" onchange="dsToggle()"><span class="rdot"></span><span>工控机 FTP</span></label>
+        <div class="form-grid">
+          <div class="form-item"><label><span class="req">*</span>名称</label>
+            <input class="input" name="name" id="ds_name" placeholder="如 区域一MinIO" required></div>
+          <div class="form-item"><label>类型</label>
+            <div style="display:flex;align-items:center;height:34px">
+              <label class="mode-radio"><input type="radio" name="type" value="minio" id="ds_t_minio" onchange="dsToggle()"><span class="rdot"></span><span>MinIO</span></label>
+              <label class="mode-radio" style="margin-left:16px"><input type="radio" name="type" value="ftp" id="ds_t_ftp" onchange="dsToggle()"><span class="rdot"></span><span>工控机 FTP</span></label>
+            </div>
+          </div>
         </div>
         <div id="ds_minio">
           <div class="form-grid">
@@ -101,9 +112,9 @@
         </div>
         <div style="margin-top:8px"><button class="btn btn-sm" type="button" onclick="dsTest()">测试连接</button>
           <span class="test-msg" id="ds_msg" style="font-size:12.5px;margin-left:10px"></span></div>
-        <div class="form-item" style="margin-top:16px;border-top:1px solid var(--split);padding-top:14px">
+        <div class="form-item" style="margin:10px 0 0;border-top:1px solid var(--split);padding-top:12px">
           <label>绑定产线（可多选，多条产线可共用本数据源）</label>
-          <div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:4px">
+          <div class="lines-pick">
             {% for l in bind_lines %}
             <label style="display:inline-flex;align-items:center;gap:5px;font-size:13px;cursor:pointer">
               <input type="checkbox" name="lines" value="{{ l.id }}" class="ds-line-cb"> {{ l.name }}
