@@ -23,7 +23,7 @@
   以「牌号 × 相机面」为单位建立模型，一个牌号 6 个面。点「开始标注」进入 CubeStudio 完成上传/标注/训练/部署，标注进度自动回显。
 </div>
 
-<div class="card"><div class="card-body" style="padding:0">
+<div class="card tbl-card"><div class="card-body" style="padding:0">
 <table class="table">
   <thead><tr><th>相机面</th><th>原始目录</th><th>建模单元</th><th>标注进度</th><th>已绑定模型</th><th>操作</th></tr></thead>
   <tbody>
@@ -53,5 +53,6 @@
   {% endfor %}
   </tbody>
 </table>
+{% if pg %}<div class="pager" data-page="{{ pg.page }}" data-pages="{{ pg.pages }}" data-total="{{ pg.total }}"></div>{% endif %}
 </div></div>
 {% endblock %}

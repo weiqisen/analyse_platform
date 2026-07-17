@@ -23,7 +23,7 @@
   每个「牌号 × 相机面」单元的模型由对方 CubeStudio 训练产出。在这里选一个训好的版本绑定，绑定即上线推理服务，供④推理统计调用。
 </div>
 
-<div class="card"><div class="card-body" style="padding:0">
+<div class="card tbl-card"><div class="card-body" style="padding:0">
 <table class="table">
   <thead><tr><th>相机面</th><th>已绑定模型</th><th>CubeStudio 可用模型</th><th>操作</th></tr></thead>
   <tbody>
@@ -68,5 +68,6 @@
   {% endfor %}
   </tbody>
 </table>
+{% if pg %}<div class="pager" data-page="{{ pg.page }}" data-pages="{{ pg.pages }}" data-total="{{ pg.total }}"></div>{% endif %}
 </div></div>
 {% endblock %}

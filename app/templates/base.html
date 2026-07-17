@@ -159,6 +159,10 @@ document.querySelectorAll('.pager').forEach(function(el){
 });
 </script>
 <style>
+/* 分页表格固定高度：始终占约 10 行高，翻到不足一页时留白不跳动，分页条钉底 */
+.tbl-card .card-body{min-height:508px;display:flex;flex-direction:column}
+.tbl-card .card-body>table{flex:0 0 auto}
+.tbl-card .pager{margin-top:auto}
 .pager{display:flex;align-items:center;gap:6px;justify-content:flex-end;padding:12px 14px;flex-wrap:wrap}
 .pager .pg-total{color:var(--text-secondary);font-size:13px;margin-right:auto}
 .pager .pg-btn{min-width:30px;height:30px;padding:0 8px;display:inline-flex;align-items:center;justify-content:center;

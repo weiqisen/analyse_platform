@@ -106,7 +106,7 @@ def get_db():
     return g.db
 
 
-def paginate(db, base_sql, params=(), page=1, size=15):
+def paginate(db, base_sql, params=(), page=1, size=10):
     """后端分页：对任意 SELECT 加 COUNT + LIMIT/OFFSET，返回 (rows, pg)。
     pg = {page,size,total,pages}，配合前端通用分页条 .pager 使用。"""
     try:
@@ -120,7 +120,7 @@ def paginate(db, base_sql, params=(), page=1, size=15):
     return rows, {"page": page, "size": size, "total": total, "pages": pages}
 
 
-def paginate_list(items, page=1, size=15):
+def paginate_list(items, page=1, size=10):
     """对内存列表分页（用于聚合结果/S3 列表等非 SQL 数据）。"""
     try:
         page = max(1, int(page))
@@ -1595,8 +1595,9 @@ def label():
             "annotated": u["annotated"] if u else 0, "total": u["total"] if u else 0,
             "model_version": u["model_version"] if u else "",
         })
+    units, pg = paginate_list(units, request.args.get("page"))
     return render_template("label.html", brands=brands, cur_brand=cur_brand,
-                           units=units, cs_online=cs_online, active="label")
+                           units=units, pg=pg, cs_online=cs_online, active="label")
 
 
 @app.route("/label/unit/create", methods=["POST"])
@@ -1887,17 +1888,20 @@ def model():
         "SELECT * FROM brands WHERE status=1 ORDER BY id").fetchall()]
     cur_brand = request.args.get("brand") or default_brand(db, brands)
     cs_online = cs_ok()
+    all_units = [dict(u) for u in db.execute(
+        """SELECT mu.*, cf.face_name, cf.sort_order FROM model_units mu
+           JOIN camera_faces cf ON cf.id=mu.face_id
+           WHERE mu.brand=? ORDER BY cf.sort_order, cf.id""", (cur_brand,)).fetchall()]
+    # 先分页，只对当前页的单元拉对方模型列表（每行一次远程调用，不能给全部单元都调）
+    page_units, pg = paginate_list(all_units, request.args.get("page"))
     rows = []
-    for u in db.execute("""SELECT mu.*, cf.face_name, cf.sort_order FROM model_units mu
-                           JOIN camera_faces cf ON cf.id=mu.face_id
-                           WHERE mu.brand=? ORDER BY cf.sort_order, cf.id""", (cur_brand,)).fetchall():
-        u = dict(u)
+    for u in page_units:
         models = cs_project_models(u["cs_project_id"]) if (cs_online and u["cs_project_id"]) else []
         rows.append({"unit_id": u["id"], "face_name": u["face_name"],
                      "bound_model": u["model_id"], "bound_version": u["model_version"],
                      "bound_endpoint": u["model_endpoint"], "models": models})
     return render_template("model.html", brands=brands, cur_brand=cur_brand,
-                           rows=rows, cs_online=cs_online, active="model")
+                           rows=rows, pg=pg, cs_online=cs_online, active="model")
 
 
 @app.route("/model/bind", methods=["POST"])
