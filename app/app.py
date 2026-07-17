@@ -355,6 +355,16 @@ def init_db():
             name VARCHAR(64) NOT NULL COMMENT '缺陷分类名称',
             status INT DEFAULT 1 COMMENT '状态: 1启用 0停用'
         ) DEFAULT CHARSET=utf8mb4 COMMENT='缺陷标注分类表'""",
+        """CREATE TABLE IF NOT EXISTS analysis_jobs(
+            unit_id INT PRIMARY KEY COMMENT '建模单元(model_units.id), 一单元一当前任务',
+            status VARCHAR(16) DEFAULT 'idle' COMMENT 'idle/running/done/error',
+            total INT DEFAULT 0 COMMENT '目录总张数',
+            read_cnt INT DEFAULT 0 COMMENT '已读取张数',
+            analyzed INT DEFAULT 0 COMMENT '已分析(新推理入库)',
+            skipped INT DEFAULT 0 COMMENT '已跳过(之前分析过)',
+            msg VARCHAR(255) DEFAULT '' COMMENT '最新消息',
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='实时目录分析任务(进度)'""",
         """CREATE TABLE IF NOT EXISTS machine_schedule(
             id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
             machine VARCHAR(64) NOT NULL COMMENT '机台/产线(如 a01)',
@@ -2012,11 +2022,13 @@ def model():
     rows = []
     for u in page_units:
         models = cs_project_models(u["cs_project_id"]) if (cs_online and u["cs_project_id"]) else []
+        job = db.execute("SELECT * FROM analysis_jobs WHERE unit_id=?", (u["id"],)).fetchone()
         rows.append({"unit_id": u["id"], "face_name": u["face_name"],
                      "bound_model": u["model_id"], "bound_version": u["model_version"],
                      "bound_endpoint": u["model_endpoint"], "models": models,
                      "rt_type": u.get("rt_type", ""), "rt_line_id": u.get("rt_line_id", 0),
-                     "rt_bucket": u.get("rt_bucket", ""), "rt_path": u.get("rt_path", "")})
+                     "rt_bucket": u.get("rt_bucket", ""), "rt_path": u.get("rt_path", ""),
+                     "job": dict(job) if job else None})
     # 已配置的数据源（供实时目录选择复用凭据）：minio 用 storage_config，ftp 用 terminal_config
     sources = []
     for l in db.execute("SELECT * FROM prod_lines WHERE status=1 ORDER BY id").fetchall():
@@ -2138,6 +2150,147 @@ def model_rtdir_save():
     db.commit()
     flash("实时图像目录已保存", "success")
     return redirect(url_for("model", det=unit_det_id(db, u), brand=u["brand"]))
+
+
+def _rtdir_list_images(db, u):
+    """列出单元实时目录下的全部图片 key。返回 (keys列表, s3客户端或None, bucket, ftp信息)。
+    minio 返回 (keys, s3, bucket, None)；ftp 返回 (keys, None, None, tcfg)。"""
+    line_id, path = u["rt_line_id"], (u["rt_path"] or "").strip("/")
+    if u["rt_type"] == "minio":
+        scfg = db.execute("SELECT * FROM storage_config WHERE line_id=?", (line_id,)).fetchone()
+        if not scfg:
+            raise Exception("数据源未配置对象存储")
+        bucket = u["rt_bucket"] or scfg["in_bucket"]
+        s3, _ = get_s3(scfg)
+        keys, tok = [], None
+        while True:
+            kw = {"Bucket": bucket, "Prefix": (path + "/") if path else "", "MaxKeys": 1000}
+            if tok:
+                kw["ContinuationToken"] = tok
+            r = s3.list_objects_v2(**kw)
+            keys += [o["Key"] for o in r.get("Contents", [])
+                     if o["Key"].lower().endswith((".jpg", ".jpeg", ".png", ".bmp"))]
+            if not r.get("IsTruncated"):
+                break
+            tok = r.get("NextContinuationToken")
+        return keys, s3, bucket, None
+    else:  # ftp
+        tcfg = db.execute("SELECT * FROM terminal_config WHERE line_id=?", (line_id,)).fetchone()
+        if not tcfg:
+            raise Exception("数据源未配置工控机")
+        import stat as _st
+        root = (tcfg["ng_dir"] or "").rstrip("/") + ("/" + path if path else "")
+        keys = []
+        t, sftp = _ws_sftp(tcfg)
+        try:
+            def walk(p):
+                for e in sftp.listdir_attr(p):
+                    fp = p + "/" + e.filename
+                    if _st.S_ISDIR(e.st_mode):
+                        walk(fp)
+                    elif e.filename.lower().endswith((".jpg", ".jpeg", ".png", ".bmp")):
+                        keys.append(fp)
+            walk(root)
+        finally:
+            t.close()
+        return keys, None, None, tcfg
+
+
+def _analysis_worker(unit_id):
+    """后台线程：从单元实时目录抓图，逐张送绑定模型推理入库，更新进度。
+    增量：已在 inference_results 的 src_key 跳过。用独立 DB 连接（不能用 g.db）。"""
+    db = _DB(_connect())
+
+    def upd(**kw):
+        cols = ",".join("%s=%%s" % k for k in kw)
+        db.execute("UPDATE analysis_jobs SET " + cols.replace("%%s", "?") + " WHERE unit_id=?",
+                   tuple(kw.values()) + (unit_id,))
+        db.commit()
+
+    try:
+        u = dict(db.execute("SELECT * FROM model_units WHERE id=?", (unit_id,)).fetchone())
+        face = db.execute("SELECT face_name FROM camera_faces WHERE id=?", (u["face_id"],)).fetchone()
+        face_name = face["face_name"] if face else ""
+        endpoint = u["model_endpoint"]
+        keys, _, _, _ = _rtdir_list_images(db, u)
+        done = {r["src_key"] for r in db.execute(
+            "SELECT src_key FROM inference_results WHERE unit_id=? AND src_key<>''", (unit_id,)).fetchall()}
+        upd(status="running", total=len(keys), read_cnt=0, analyzed=0, skipped=0, msg="开始分析")
+        read = an = sk = 0
+        for key in keys:
+            read += 1
+            if key in done:
+                sk += 1
+            else:
+                res = infer_call(endpoint, key)
+                if res:
+                    p = key.split("/")
+                    date = p[-4] if len(p) >= 4 else ""
+                    shift = p[-3] if len(p) >= 3 else ""
+                    db.execute("INSERT INTO inference_results(src_key,unit_id,machine,line_name,brand,"
+                               "face_name,img_date,shift,is_defect,class_name,confidence,model_version) "
+                               "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                               (key, unit_id, "", "", u["brand"], face_name, date, shift,
+                                res["is_defect"], res["class_name"], res["confidence"], res["model_version"]))
+                    db.commit()
+                    an += 1
+            if read % 5 == 0 or read == len(keys):
+                upd(read_cnt=read, analyzed=an, skipped=sk,
+                    msg="分析中 %d/%d" % (read, len(keys)))
+        upd(status="done", read_cnt=read, analyzed=an, skipped=sk,
+            msg="完成：新分析 %d 张，跳过 %d 张（已分析过）" % (an, sk))
+    except Exception as e:
+        app.logger.exception("实时目录分析失败 unit=%s", unit_id)
+        upd(status="error", msg="失败：%s" % str(e)[:180])
+    finally:
+        db.close()
+
+
+@app.route("/model/analyze/start", methods=["POST"])
+@login_required
+def model_analyze_start():
+    """启动某单元的实时目录分析（后台线程 + 轮询进度）。"""
+    db = get_db()
+    unit_id = request.form.get("unit_id", type=int)
+    u = db.execute("SELECT * FROM model_units WHERE id=?", (unit_id,)).fetchone()
+    if not u:
+        abort(404)
+    if not u["model_endpoint"]:
+        flash("该单元未绑定推理模型，无法分析", "error")
+        return redirect(url_for("model", det=unit_det_id(db, u), brand=u["brand"]))
+    if not (u["rt_type"] and (u["rt_bucket"] or u["rt_path"] or u["rt_type"] == "ftp")):
+        flash("该单元未配置实时图像目录", "error")
+        return redirect(url_for("model", det=unit_det_id(db, u), brand=u["brand"]))
+    # 已在运行且近 30 秒有更新则不重复启动
+    job = db.execute("SELECT status, updated_at FROM analysis_jobs WHERE unit_id=?", (unit_id,)).fetchone()
+    if job and job["status"] == "running" and job["updated_at"] and \
+       (datetime.now() - job["updated_at"]).total_seconds() < 30:
+        flash("分析正在进行中", "info")
+        return redirect(url_for("model", det=unit_det_id(db, u), brand=u["brand"]))
+    db.execute("INSERT INTO analysis_jobs(unit_id,status,total,read_cnt,analyzed,skipped,msg) "
+               "VALUES(?,?,0,0,0,0,?) ON DUPLICATE KEY UPDATE status=VALUES(status),"
+               "total=0,read_cnt=0,analyzed=0,skipped=0,msg=VALUES(msg)",
+               (unit_id, "running", "启动中…"))
+    db.commit()
+    import threading
+    threading.Thread(target=_analysis_worker, args=(unit_id,), daemon=True).start()
+    flash("已启动分析", "success")
+    return redirect(url_for("model", det=unit_det_id(db, u), brand=u["brand"]))
+
+
+@app.route("/api/model/analyze/status")
+@login_required
+def api_model_analyze_status():
+    """轮询：返回各单元的分析进度（前端展示 总张数/已读/已分析）。"""
+    ids = request.args.get("units", "")
+    unit_ids = [int(x) for x in ids.split(",") if x.strip().isdigit()]
+    if not unit_ids:
+        return jsonify({})
+    ph = ",".join(["?"] * len(unit_ids))
+    rows = get_db().execute("SELECT * FROM analysis_jobs WHERE unit_id IN (%s)" % ph, unit_ids).fetchall()
+    return jsonify({str(r["unit_id"]): {"status": r["status"], "total": r["total"],
+                    "read": r["read_cnt"], "analyzed": r["analyzed"], "skipped": r["skipped"],
+                    "msg": r["msg"]} for r in rows})
 
 
 # ---------------------------------------------------------------- 分析结果
