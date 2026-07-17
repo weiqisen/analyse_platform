@@ -18,9 +18,10 @@
     {% if cs_online %}<span style="font-size:12px;font-weight:400;color:#52c41a;margin-left:10px">● CubeStudio 已连接</span>
     {% else %}<span style="font-size:12px;font-weight:400;color:#ff4d4f;margin-left:10px">● CubeStudio 离线</span>{% endif %}
   </div>
+  <a class="btn btn-primary" href="{{ url_for('label_workflow') }}">进入工作流 →</a>
 </div>
 <div style="font-size:12.5px;color:var(--text-secondary);margin-bottom:12px">
-  以「牌号 × 相机面」为单位建立模型，一个牌号 6 个面。点「开始标注」进入 CubeStudio 完成上传/标注/训练/部署，标注进度自动回显。
+  以「牌号 × 相机面」为单位建立模型。「开始标注」进入 CubeStudio（mock 演示）；「进入工作流」进入真实视觉标注工作流界面。
 </div>
 
 <div class="card tbl-card"><div class="card-body" style="padding:0">

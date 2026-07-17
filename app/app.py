@@ -36,6 +36,7 @@ CFG_DEFAULTS = {
     "ls_webhook_url": os.environ.get("LS_WEBHOOK_URL", ""),  # 本平台回调地址，注册进 LS
     "cs_url": os.environ.get("CS_URL", ""),                 # CubeStudio（预留）
     "cs_token": os.environ.get("CS_TOKEN", ""),
+    "workflow_url": os.environ.get("WORKFLOW_URL", "http://10.10.52.127/frontend/visionWorkflow"),
 }
 CFG_LABELS = [
     ("ls_url", "Label Studio 地址", "浏览器与平台都要能访问，故必须用 IP 不能用 127.0.0.1"),
@@ -45,6 +46,7 @@ CFG_LABELS = [
     ("infer_url", "推理服务地址", "留空则用内置模拟判定（仅演示，不可用于生产统计）"),
     ("cs_url", "CubeStudio 地址", "预留，本机资源不足未部署"),
     ("cs_token", "CubeStudio Token", "预留"),
+    ("workflow_url", "视觉工作流地址", "真实标注工作流界面，缺陷标注页「进入工作流」内嵌它（浏览器需能访问）"),
 ]
 
 _cfg_cache = {"t": 0.0, "d": {}}
@@ -1810,6 +1812,17 @@ def label_anno(unit_id):
     db.commit()
     return render_template("label_cs.html", title=title, unit_id=unit_id, active="label",
                            cs_src=src, total=total, annotated=annotated)
+
+
+@app.route("/label/workflow")
+@login_required
+def label_workflow():
+    """内嵌真实视觉标注工作流界面（保留平台导航）。地址取自集成配置 workflow_url。"""
+    url = get_cfg("workflow_url")
+    if not url:
+        flash("未配置视觉工作流地址（基础配置 → 系统集成）", "error")
+        return redirect(url_for("label"))
+    return render_template("label_workflow.html", wf_src=url, active="label")
 
 
 @app.route("/api/label/unit/<int:unit_id>/stats")

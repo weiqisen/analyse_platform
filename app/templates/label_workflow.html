@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}视觉标注工作流 · 缺陷图片分析平台{% endblock %}
+{% block content %}
+<style>
+  .wf-frame-wrap { height: calc(100vh - 200px); min-height: 460px; }
+  .wf-frame-wrap iframe { width: 100%; height: 100%; border: 0; display: block; }
+</style>
+<div class="toolbar">
+  <div class="page-title" style="margin:0">视觉标注工作流</div>
+  <div class="form-inline">
+    <a class="btn btn-sm" href="{{ wf_src }}" target="_blank" rel="noopener">↗ 新窗口打开</a>
+    <a class="btn btn-sm" href="{{ url_for('label') }}">« 返回列表</a>
+  </div>
+</div>
+<div class="card"><div class="card-body" style="padding:0">
+  <div class="wf-frame-wrap">
+    <iframe src="{{ wf_src }}" title="视觉标注工作流" allow="clipboard-read; clipboard-write; fullscreen"></iframe>
+  </div>
+</div></div>
+<div style="margin-top:10px;font-size:12.5px;color:var(--text-secondary)">
+  这是真实的视觉标注工作流界面。若需登录，账号密码均为 admin。地址可在「基础配置 → 系统集成 → 视觉工作流地址」修改。
+</div>
+{% endblock %}
