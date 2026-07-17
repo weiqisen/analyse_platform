@@ -1119,7 +1119,16 @@ def collect(tab):
         for s in ctx["sources"]:
             s["used_by"] = ref.get(s["id"], [])
             s["line_ids"] = ref_ids.get(s["id"], [])
-        ctx["bind_lines"] = [dict(l) for l in lines]   # 供数据源弹窗勾选产线
+        # 供数据源弹窗勾选产线：按 车间 → 区域 两级分组
+        from collections import OrderedDict
+        grouped = OrderedDict()
+        for l in lines:
+            ws = l["workshop"] or "未分车间"
+            ar = l["area"] or "未分区域"
+            grouped.setdefault(ws, OrderedDict()).setdefault(ar, []).append(
+                {"id": l["id"], "name": l["name"]})
+        ctx["bind_groups"] = [{"workshop": ws, "areas": [{"area": ar, "lines": ls}
+                               for ar, ls in areas.items()]} for ws, areas in grouped.items()]
     elif tab == "monitor":
         sync_label_images()
         ctx["cams"] = []; ctx["err"] = None

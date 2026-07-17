@@ -76,6 +76,11 @@
   #dsModal .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px 16px}
   #dsModal label{margin-bottom:3px}
   #dsModal .lines-pick{display:flex;flex-wrap:wrap;gap:8px 14px;margin-top:4px}
+  #dsModal .bind-tree{margin-top:4px;max-height:200px;overflow:auto}
+  #dsModal .bind-ws{margin-bottom:8px}
+  #dsModal .bind-ws-name{font-size:13px;font-weight:600;margin-bottom:4px}
+  #dsModal .bind-area{display:flex;align-items:baseline;gap:10px;margin:2px 0 2px 16px}
+  #dsModal .bind-area-name{font-size:12px;color:var(--text-secondary);min-width:52px;flex-shrink:0}
 </style>
 <div class="modal-mask" id="dsModal">
   <div class="modal" style="width:620px;max-width:94vw">
@@ -113,13 +118,24 @@
         <div style="margin-top:8px"><button class="btn btn-sm" type="button" onclick="dsTest()">测试连接</button>
           <span class="test-msg" id="ds_msg" style="font-size:12.5px;margin-left:10px"></span></div>
         <div class="form-item" style="margin:10px 0 0;border-top:1px solid var(--split);padding-top:12px">
-          <label>绑定产线（可多选，多条产线可共用本数据源）</label>
-          <div class="lines-pick">
-            {% for l in bind_lines %}
-            <label style="display:inline-flex;align-items:center;gap:5px;font-size:13px;cursor:pointer">
-              <input type="checkbox" name="lines" value="{{ l.id }}" class="ds-line-cb"> {{ l.name }}
-              <span style="color:var(--text-secondary);font-size:12px">{{ l.workshop }}</span>
-            </label>
+          <label>绑定产线（按车间 / 区域，可多选，多条产线可共用本数据源）</label>
+          <div class="bind-tree">
+            {% for g in bind_groups %}
+            <div class="bind-ws">
+              <div class="bind-ws-name"><label style="cursor:pointer"><input type="checkbox" class="ws-all"> {{ g.workshop }}</label></div>
+              {% for a in g.areas %}
+              <div class="bind-area">
+                <span class="bind-area-name">{{ a.area }}</span>
+                <div class="lines-pick">
+                  {% for l in a.lines %}
+                  <label style="display:inline-flex;align-items:center;gap:5px;font-size:13px;cursor:pointer">
+                    <input type="checkbox" name="lines" value="{{ l.id }}" class="ds-line-cb"> {{ l.name }}
+                  </label>
+                  {% endfor %}
+                </div>
+              </div>
+              {% endfor %}
+            </div>
             {% endfor %}
           </div>
         </div>
@@ -138,6 +154,21 @@ function dsToggle(){
   document.getElementById('ds_minio').style.display = isFtp ? 'none' : '';
   document.getElementById('ds_ftp').style.display = isFtp ? '' : 'none';
 }
+// 车间「全选」联动：勾车间=勾它下面所有产线；子项变化时回填车间半选/全选态
+document.querySelectorAll('#dsModal .ws-all').forEach(function(wsCb){
+  var ws = wsCb.closest('.bind-ws');
+  var cbs = ws.querySelectorAll('.ds-line-cb');
+  wsCb.addEventListener('change', function(){
+    cbs.forEach(function(c){ c.checked = wsCb.checked; });
+  });
+  cbs.forEach(function(c){
+    c.addEventListener('change', function(){
+      var all = Array.prototype.every.call(cbs, function(x){ return x.checked; });
+      var none = Array.prototype.every.call(cbs, function(x){ return !x.checked; });
+      wsCb.checked = all; wsCb.indeterminate = !all && !none;
+    });
+  });
+});
 function openDs(s){
   s = s || {};
   document.getElementById('dsTitle').textContent = (s.id ? '编辑' : '新增') + '数据源';
@@ -158,9 +189,15 @@ function openDs(s){
   document.getElementById('ds_ak_f').value = ftp ? (s.username||'') : '';
   document.getElementById('ds_sk_f').value = ftp ? (s.password||'') : '';
   document.getElementById('ds_msg').textContent = '';
-  // 回显已绑定的产线勾选
+  // 回显已绑定的产线勾选，并刷新车间全选/半选态
   var bound = (s.line_ids || []).map(String);
   document.querySelectorAll('.ds-line-cb').forEach(function(cb){ cb.checked = bound.indexOf(cb.value) >= 0; });
+  document.querySelectorAll('#dsModal .ws-all').forEach(function(wsCb){
+    var cbs = wsCb.closest('.bind-ws').querySelectorAll('.ds-line-cb');
+    var all = Array.prototype.every.call(cbs, function(x){ return x.checked; });
+    var none = Array.prototype.every.call(cbs, function(x){ return !x.checked; });
+    wsCb.checked = all; wsCb.indeterminate = !all && !none;
+  });
   dsToggle(); openModal('dsModal');
 }
 // 提交前把 ftp 分组的字段名归一到 server_addr/username/password
