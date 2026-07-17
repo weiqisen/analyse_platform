@@ -28,7 +28,7 @@
     display: flex; align-items: center; gap: 9px; font-size: 13px; box-shadow: var(--shadow);
     position: sticky; top: 56px; z-index: 90; }
   .layout-sider { position: sticky; top: 95px; align-self: flex-start;
-    max-height: calc(100vh - 95px); overflow-y: auto; }
+    height: calc(100vh - 95px); overflow-y: auto; }
   .dot-status { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
   .dot-status.on { background: #52c41a; box-shadow: 0 0 0 3px rgba(82,196,26,.18); }
   .dot-status.off { background: #bbb; }
@@ -55,10 +55,10 @@
 <header class="layout-header">
   <div class="logo">{{ leaf_logo() }}<span>缺陷图片分析平台</span></div>
   <nav class="header-nav">
-    <a href="{{ url_for('collect', tab='config') }}" class="{{ 'active' if active=='collect' }}">① 图片采集</a>
-    <a href="{{ url_for('label') }}" class="{{ 'active' if active=='label' }}">② 缺陷标注</a>
-    <a href="{{ url_for('model') }}" class="{{ 'active' if active=='model' }}">③ 模型管理</a>
-    <a href="{{ url_for('analysis', tab='shift') }}" class="{{ 'active' if active=='analysis' }}">④ 分析结果</a>
+    <a href="{{ url_for('collect', tab='config') }}" class="{{ 'active' if active=='collect' }}">图片采集</a>
+    <a href="{{ url_for('label') }}" class="{{ 'active' if active=='label' }}">缺陷标注</a>
+    <a href="{{ url_for('model') }}" class="{{ 'active' if active=='model' }}">模型管理</a>
+    <a href="{{ url_for('analysis', tab='shift') }}" class="{{ 'active' if active=='analysis' }}">分析结果</a>
     <a href="{{ url_for('config', tab='workshops') }}" class="{{ 'active' if active=='config' }}">基础配置</a>
   </nav>
   <div class="header-right">

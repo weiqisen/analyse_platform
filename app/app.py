@@ -169,6 +169,11 @@ def migrate_db(db):
         ("inference_results", "face_name", "VARCHAR(64) DEFAULT '' COMMENT '相机面'"),
         ("inference_results", "unit_id", "INT DEFAULT 0 COMMENT '建模单元(model_units.id)'"),
         ("inference_results", "src_key", "VARCHAR(512) DEFAULT '' COMMENT '对象key'"),
+        # 实时图像目录：绑定相机采集图片的持续输入目录，job 服务定时从此读图送推理
+        ("model_units", "rt_type", "VARCHAR(16) DEFAULT '' COMMENT '实时目录类型: minio/ftp'"),
+        ("model_units", "rt_line_id", "INT DEFAULT 0 COMMENT '复用哪条产线的数据源凭据(prod_lines.id)'"),
+        ("model_units", "rt_bucket", "VARCHAR(128) DEFAULT '' COMMENT '桶名(minio)'"),
+        ("model_units", "rt_path", "VARCHAR(512) DEFAULT '' COMMENT '目录路径'"),
     ]
     added = set()
     for table, col, ddl in adds:
@@ -1856,9 +1861,22 @@ def model():
         models = cs_project_models(u["cs_project_id"]) if (cs_online and u["cs_project_id"]) else []
         rows.append({"unit_id": u["id"], "face_name": u["face_name"],
                      "bound_model": u["model_id"], "bound_version": u["model_version"],
-                     "bound_endpoint": u["model_endpoint"], "models": models})
+                     "bound_endpoint": u["model_endpoint"], "models": models,
+                     "rt_type": u.get("rt_type", ""), "rt_line_id": u.get("rt_line_id", 0),
+                     "rt_bucket": u.get("rt_bucket", ""), "rt_path": u.get("rt_path", "")})
+    # 已配置的数据源（供实时目录选择复用凭据）：minio 用 storage_config，ftp 用 terminal_config
+    sources = []
+    for l in db.execute("SELECT * FROM prod_lines WHERE status=1 ORDER BY id").fetchall():
+        sc = db.execute("SELECT * FROM storage_config WHERE line_id=?", (l["id"],)).fetchone()
+        tc = db.execute("SELECT * FROM terminal_config WHERE line_id=?", (l["id"],)).fetchone()
+        if sc and sc["server_addr"]:
+            sources.append({"line_id": l["id"], "line": l["name"], "type": "minio",
+                            "addr": sc["server_addr"], "bucket": sc["in_bucket"]})
+        elif tc and tc["sys_addr"]:
+            sources.append({"line_id": l["id"], "line": l["name"], "type": "ftp",
+                            "addr": tc["sys_addr"], "dir": tc["ng_dir"]})
     return render_template("model.html", brands=brands, cur_brand=cur_brand,
-                           rows=rows, pg=pg, cs_online=cs_online, active="model")
+                           rows=rows, pg=pg, cs_online=cs_online, sources=sources, active="model")
 
 
 @app.route("/model/bind", methods=["POST"])
@@ -1901,6 +1919,70 @@ def model_train():
         flash("已触发训练（run: %s）" % (r or {}).get("run_id", ""), "success")
     except Exception as e:
         flash("触发训练失败：%s" % str(e)[:120], "error")
+    return redirect(url_for("model", brand=u["brand"]))
+
+
+def _rtdir_check(db, rt_type, line_id, bucket, path):
+    """校验实时图像目录是否可达、有无图片。返回 (ok, msg)。"""
+    line = db.execute("SELECT * FROM prod_lines WHERE id=?", (line_id,)).fetchone()
+    if not line:
+        return False, "请选择数据源"
+    path = (path or "").strip().strip("/")
+    if rt_type == "minio":
+        scfg = db.execute("SELECT * FROM storage_config WHERE line_id=?", (line_id,)).fetchone()
+        if not scfg or not scfg["server_addr"]:
+            return False, "该数据源未配置对象存储"
+        try:
+            s3, _ = get_s3(scfg)
+            r = s3.list_objects_v2(Bucket=(bucket or scfg["in_bucket"]),
+                                   Prefix=(path + "/") if path else "", MaxKeys=50)
+            n = len([o for o in r.get("Contents", [])
+                     if o["Key"].lower().endswith((".jpg", ".jpeg", ".png", ".bmp"))])
+            return True, "连接成功，目录下约 %d+ 张图片" % n if n else "连接成功，但目录下暂无图片"
+        except Exception as e:
+            return False, "连接失败：%s" % str(e)[:110]
+    else:  # ftp/工控机
+        tcfg = db.execute("SELECT * FROM terminal_config WHERE line_id=?", (line_id,)).fetchone()
+        if not tcfg or not tcfg["sys_addr"]:
+            return False, "该数据源未配置工控机"
+        try:
+            import stat as _st
+            root = (tcfg["ng_dir"] or "").rstrip("/")
+            full = root + ("/" + path if path else "")
+            t, sftp = _ws_sftp(tcfg)
+            try:
+                n = len([e for e in sftp.listdir_attr(full)
+                         if e.filename.lower().endswith((".jpg", ".jpeg", ".png", ".bmp"))])
+            finally:
+                t.close()
+            return True, "连接成功，目录下 %d 张图片" % n if n else "连接成功，但目录下暂无图片"
+        except Exception as e:
+            return False, "连接失败：%s" % str(e)[:110]
+
+
+@app.route("/model/rtdir/test", methods=["POST"])
+@login_required
+def model_rtdir_test():
+    ok, msg = _rtdir_check(get_db(), request.form.get("rt_type", ""),
+                           request.form.get("rt_line_id", type=int) or 0,
+                           request.form.get("rt_bucket", ""), request.form.get("rt_path", ""))
+    return jsonify({"ok": ok, "msg": msg})
+
+
+@app.route("/model/rtdir/save", methods=["POST"])
+@login_required
+def model_rtdir_save():
+    db = get_db()
+    unit_id = request.form.get("unit_id", type=int)
+    u = db.execute("SELECT * FROM model_units WHERE id=?", (unit_id,)).fetchone()
+    if not u:
+        abort(404)
+    db.execute("UPDATE model_units SET rt_type=?,rt_line_id=?,rt_bucket=?,rt_path=? WHERE id=?",
+               (request.form.get("rt_type", ""), request.form.get("rt_line_id", type=int) or 0,
+                request.form.get("rt_bucket", "").strip(),
+                request.form.get("rt_path", "").strip().strip("/"), unit_id))
+    db.commit()
+    flash("实时图像目录已保存", "success")
     return redirect(url_for("model", brand=u["brand"]))
 
 

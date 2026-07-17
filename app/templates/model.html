@@ -14,18 +14,18 @@
 {% endblock %}
 {% block content %}
 <div class="toolbar">
-  <div class="page-title" style="margin:0">③ 模型管理 — {{ cur_brand or '（未选牌号）' }}
+  <div class="page-title" style="margin:0">模型管理 — {{ cur_brand or '（未选牌号）' }}
     {% if cs_online %}<span style="font-size:12px;font-weight:400;color:#52c41a;margin-left:10px">● CubeStudio 已连接</span>
     {% else %}<span style="font-size:12px;font-weight:400;color:#ff4d4f;margin-left:10px">● CubeStudio 离线</span>{% endif %}
   </div>
 </div>
 <div style="font-size:12.5px;color:var(--text-secondary);margin-bottom:12px">
-  每个「牌号 × 相机面」单元的模型由对方 CubeStudio 训练产出。在这里选一个训好的版本绑定，绑定即上线推理服务，供④推理统计调用。
+  每个「牌号 × 相机面」单元的模型由对方 CubeStudio 训练产出。在这里选一个训好的版本绑定，绑定即上线推理服务，供推理统计调用。
 </div>
 
 <div class="card tbl-card"><div class="card-body" style="padding:0">
 <table class="table">
-  <thead><tr><th>相机面</th><th>已绑定模型</th><th>CubeStudio 可用模型</th><th>操作</th></tr></thead>
+  <thead><tr><th>相机面</th><th>已绑定模型</th><th>CubeStudio 可用模型</th><th>实时图像目录</th><th>操作</th></tr></thead>
   <tbody>
   {% for r in rows %}
   <tr>
@@ -53,10 +53,17 @@
         </div>
         {% endfor %}
       {% else %}
-        <span style="color:var(--text-secondary);font-size:12.5px">暂无 —— 需在②标注页训练</span>
+        <span style="color:var(--text-secondary);font-size:12.5px">暂无 —— 需在标注页训练</span>
       {% endif %}
     </td>
+    <td>
+      {% if r.rt_path or r.rt_bucket %}
+        <div style="font-size:12px"><span class="tag {{ 'tag-orange' if r.rt_type=='ftp' else '' }}">{{ 'FTP' if r.rt_type=='ftp' else 'MinIO' }}</span></div>
+        <code style="font-size:11.5px;color:var(--text-secondary)">{{ (r.rt_bucket + '/' if r.rt_bucket else '') ~ r.rt_path }}</code>
+      {% else %}<span style="color:var(--text-secondary)">未配置</span>{% endif %}
+    </td>
     <td style="white-space:nowrap">
+      <a class="btn-link" href="javascript:;" onclick='openRt({{ r|tojson }})'>配置实时目录</a>
       <form method="post" action="{{ url_for('model_train') }}" style="display:inline">
         <input type="hidden" name="unit_id" value="{{ r.unit_id }}">
         <button class="btn-link" type="submit" {{ 'disabled' if not cs_online }}>触发训练</button>
@@ -64,10 +71,94 @@
     </td>
   </tr>
   {% else %}
-  <tr><td colspan="4" class="empty">该牌号暂无建模单元，请先到「②缺陷标注」为相机面建模</td></tr>
+  <tr><td colspan="5" class="empty">该牌号暂无建模单元，请先到「缺陷标注」为相机面建模</td></tr>
   {% endfor %}
   </tbody>
 </table>
 {% if pg %}<div class="pager" data-page="{{ pg.page }}" data-pages="{{ pg.pages }}" data-total="{{ pg.total }}"></div>{% endif %}
 </div></div>
+
+<div class="modal-mask" id="rtModal">
+  <div class="modal" style="width:560px;max-width:94vw">
+    <div class="modal-head"><span id="rtTitle">配置实时图像目录</span><span class="close" onclick="closeModal('rtModal')">×</span></div>
+    <form method="post" action="{{ url_for('model_rtdir_save') }}" id="rtForm">
+      <input type="hidden" name="unit_id" id="rt_unit_id">
+      <div class="modal-body">
+        <div style="font-size:12.5px;color:var(--text-secondary);margin-bottom:14px">
+          绑定该相机面持续采集图片的目录。后续 job 服务定时从此目录读新图，送绑定的推理模型判定。
+        </div>
+        <div class="form-item"><label>类型</label>
+          <div class="form-inline">
+            <label class="mode-radio"><input type="radio" name="rt_type" value="minio" onchange="rtToggle()"><span class="rdot"></span><span>MinIO 对象存储</span></label>
+            <label class="mode-radio" style="margin-left:18px"><input type="radio" name="rt_type" value="ftp" onchange="rtToggle()"><span class="rdot"></span><span>FTP / 工控机</span></label>
+          </div>
+        </div>
+        <div class="form-item"><label>数据源（复用已配置的采集凭据）</label>
+          <select class="select input" name="rt_line_id" id="rt_line_id" onchange="rtPickSource()">
+            <option value="">请选择数据源</option>
+            {% for s in sources %}
+            <option value="{{ s.line_id }}" data-type="{{ s.type }}" data-bucket="{{ s.bucket or '' }}" data-dir="{{ s.dir or '' }}">
+              {{ s.line }} · {{ '对象存储' if s.type=='minio' else '工控机' }} · {{ s.addr }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-item" id="rt_bucket_box"><label>桶名</label>
+          <input class="input" name="rt_bucket" id="rt_bucket" placeholder="如 defect-images"></div>
+        <div class="form-item"><label>目录路径</label>
+          <input class="input" name="rt_path" id="rt_path" placeholder="如 jb1/a01/XB/.../is7600C_D 或留空=根目录"></div>
+        <div style="margin-top:8px">
+          <button class="btn btn-sm" type="button" onclick="rtTest()">测试有效性</button>
+          <span class="test-msg" id="rt_msg" style="font-size:12.5px;margin-left:10px"></span>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn" onclick="closeModal('rtModal')">取消</button>
+        <button type="submit" class="btn btn-primary">保存</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<style>
+  .mode-radio{position:relative;padding-left:22px;cursor:pointer;user-select:none}
+  .mode-radio>input{position:absolute;opacity:0;width:0;height:0}
+  .mode-radio .rdot{position:absolute;left:0;top:50%;margin-top:-7px;width:14px;height:14px;border-radius:50%;border:1.5px solid var(--border);background:#fff}
+  .mode-radio>input:checked + .rdot{border-color:var(--primary);background:var(--primary);box-shadow:inset 0 0 0 2.5px #fff}
+  .mode-radio>input:checked ~ *{color:var(--primary);font-weight:600}
+</style>
+<script>
+function openRt(r){
+  document.getElementById('rt_unit_id').value = r.unit_id;
+  document.getElementById('rt_msg').textContent = '';
+  var type = r.rt_type || 'minio';
+  document.querySelectorAll('#rtForm input[name=rt_type]').forEach(function(x){ x.checked = (x.value===type); });
+  document.getElementById('rt_line_id').value = r.rt_line_id || '';
+  document.getElementById('rt_bucket').value = r.rt_bucket || '';
+  document.getElementById('rt_path').value = r.rt_path || '';
+  rtToggle();
+  openModal('rtModal');
+}
+function rtToggle(){
+  var isMinio = (document.querySelector('#rtForm input[name=rt_type]:checked')||{}).value === 'minio';
+  document.getElementById('rt_bucket_box').style.display = isMinio ? '' : 'none';
+}
+function rtPickSource(){
+  var opt = document.getElementById('rt_line_id').selectedOptions[0];
+  if(!opt || !opt.value) return;
+  // 按数据源类型自动选类型、回填桶名
+  var t = opt.dataset.type;
+  document.querySelectorAll('#rtForm input[name=rt_type]').forEach(function(x){ x.checked = (x.value===t); });
+  if(t==='minio' && !document.getElementById('rt_bucket').value) document.getElementById('rt_bucket').value = opt.dataset.bucket||'';
+  rtToggle();
+}
+function rtTest(){
+  var msg = document.getElementById('rt_msg');
+  msg.textContent = '测试中…'; msg.style.color = 'var(--text-secondary)';
+  var fd = new FormData(document.getElementById('rtForm'));
+  fetch('{{ url_for("model_rtdir_test") }}', {method:'POST', body: fd})
+    .then(function(r){ return r.json(); })
+    .then(function(d){ msg.textContent = d.msg; msg.style.color = d.ok ? '#52c41a' : '#ff4d4f'; })
+    .catch(function(e){ msg.textContent = '请求失败'; msg.style.color = '#ff4d4f'; });
+}
+</script>
 {% endblock %}

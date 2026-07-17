@@ -2,7 +2,7 @@
 {% block title %}图片采集&集成 · 缺陷图片分析平台{% endblock %}
 {% block sider %}
 <aside class="layout-sider">
-  <div class="sider-title">① 图片采集 & 集成</div>
+  <div class="sider-title">图片采集 & 集成</div>
   <nav class="sider-menu">
     {% for key, name in tabs %}
     <a href="{{ url_for('collect', tab=key, item=cur_item) }}" class="{{ 'active' if tab==key }}">{{ name }}</a>

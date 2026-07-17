@@ -2,7 +2,7 @@
 {% block title %}分析结果&展示 · 缺陷图片分析平台{% endblock %}
 {% block sider %}
 <aside class="layout-sider">
-  <div class="sider-title">④ 分析结果 & 展示</div>
+  <div class="sider-title">分析结果 & 展示</div>
   <nav class="sider-menu">
     {% for key, name in tabs %}
     <a href="{{ url_for('analysis', tab=key, line=cur_line, item=cur_item) }}"
@@ -42,7 +42,7 @@
     <div style="font-size:22px;font-weight:600;color:#52c41a">{{ ready_units }}</div></div></div>
 </div>
 {% if ready_units == 0 %}
-<div class="hint">还没有建模单元绑定模型。请先在「②缺陷标注」建模、「③模型管理」绑定模型，再运行推理。</div>
+<div class="hint">还没有建模单元绑定模型。请先在「缺陷标注」建模、「模型管理」绑定模型，再运行推理。</div>
 {% elif infer_total == 0 %}
 <div class="hint">暂无推理结果。点「运行推理」：平台按机台排程反查牌号、按相机面找到绑定模型，逐张推理并入库。若排程未维护，可到「基础配置→机台排程」补。</div>
 {% endif %}
