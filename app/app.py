@@ -36,7 +36,7 @@ CFG_DEFAULTS = {
     "ls_webhook_url": os.environ.get("LS_WEBHOOK_URL", ""),  # 本平台回调地址，注册进 LS
     "cs_url": os.environ.get("CS_URL", ""),                 # CubeStudio（预留）
     "cs_token": os.environ.get("CS_TOKEN", ""),
-    "workflow_url": os.environ.get("WORKFLOW_URL", "http://10.10.52.127/frontend/visionWorkflow"),
+    "workflow_url": os.environ.get("WORKFLOW_URL", "http://10.10.52.127/frontend/visionWorkflow/embed/1?embed=1"),
 }
 CFG_LABELS = [
     ("ls_url", "Label Studio 地址", "浏览器与平台都要能访问，故必须用 IP 不能用 127.0.0.1"),
