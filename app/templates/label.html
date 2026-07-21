@@ -31,21 +31,25 @@ window.__INIT__ = {
   uploadUrl: '{{ url_for("label_sample_upload") }}',
   historyUrl: '{{ url_for("api_label_sample_history") }}',
   classUrl: '{{ url_for("label_unit_class") }}',
+  wfUrl: '{{ url_for("label_workflow") }}',
+  unitCreateUrl: '{{ url_for("label_unit_create") }}',
   page: {% if pg %}{ page: {{ pg.page }}, pages: {{ pg.pages }}, total: {{ pg.total }}, size: {{ pg.size }} }{% else %}null{% endif %},
+  emptyHint: '{{ empty_hint }}',
 };
 </script>
 
+{% raw %}
 <div id="label-app" v-cloak style="margin-bottom:12px">
   <a-card :body-style="{padding:0}">
     <a-table :data-source="units" :columns="columns" row-key="face_id"
              :pagination="false" :scroll="{x:1100}" size="small">
       <template #bodyCell="{column,record}">
-        <template v-if="column.key==='face'"><b>{$ record.face_name $}</b></template>
+        <template v-if="column.key==='face'"><b>{{ record.face_name }}</b></template>
         <template v-else-if="column.key==='unit_key'">
-          <code style="font-size:11.5px">{$ record.unit_key $}</code></template>
+          <code style="font-size:11.5px">{{ record.unit_key }}</code></template>
         <template v-else-if="column.key==='class'">
           <template v-for="c in (record.class_list||[])" :key="c.class_id">
-            <a-tag>{$ c.class_name $}</a-tag>
+            <a-tag>{{ c.class_name }}</a-tag>
           </template>
           <template v-if="!(record.class_list||[]).length">
             <span style="color:#ff4d4f;font-size:12.5px">未设置</span>
@@ -53,7 +57,7 @@ window.__INIT__ = {
           <a @click="openClassEdit(record)" style="margin-left:4px">编辑</a>
         </template>
         <template v-else-if="column.key==='samples'">
-          <a @click="openHistory(record)">{$ record.sample_count $} 张</a>
+          <a @click="openHistory(record)">{{ record.sample_count }} 张</a>
           <span v-if="record.sample_proc" style="color:#faad14;font-size:12px">● 处理中</span>
         </template>
         <template v-else-if="column.key==='unit'">
@@ -61,15 +65,15 @@ window.__INIT__ = {
           <a-tag v-else>未建</a-tag>
         </template>
         <template v-else-if="column.key==='model'">
-          <span v-if="record.model_version" style="color:#52c41a">{$ record.model_version $}</span>
+          <span v-if="record.model_version" style="color:#52c41a">{{ record.model_version }}</span>
           <span v-else style="color:var(--text-secondary)">未绑定</span>
         </template>
         <template v-else-if="column.key==='action'">
           <a-space>
             <a @click="openUpload(record)">上传样本</a>
-            <a :href="workflowUrl(record.unit_key)">进入工作流</a>
-            <form v-if="!record.exists" method="post" action="{{ url_for('label_unit_create') }}" style="display:inline">
-              <input type="hidden" name="brand" value="{{ cur_brand }}">
+            <a :href="wfUrl + '?unit_key=' + record.unit_key">进入工作流</a>
+            <form v-if="!record.exists" :action="unitCreateUrl" method="post" style="display:inline">
+              <input type="hidden" name="brand" :value="_brand">
               <input type="hidden" name="face_id" :value="record.face_id">
               <a-button type="link" html-type="submit" size="small">建模型</a-button>
             </form>
@@ -77,20 +81,21 @@ window.__INIT__ = {
         </template>
       </template>
       <template #emptyText>
-        <div style="padding:28px;color:var(--text-secondary,#999);text-align:center;font-size:13px">{{ empty_hint }}</div>
+        <div style="padding:28px;color:var(--text-secondary,#999);text-align:center;font-size:13px">{{ emptyHint }}</div>
       </template>
     </a-table>
   </a-card>
+  {% endraw %}
   {% if pg %}<div class="pager" data-page="{{ pg.page }}" data-pages="{{ pg.pages }}" data-total="{{ pg.total }}"></div>{% endif %}
-
-  <!-- 上传样本 Modal -->
+  {% raw %}
+  <!-- 上传样本 -->
   <a-modal v-model:visible="upVisible" title="上传样本图片"
            @ok="doUpload" :confirm-loading="uploading" ok-text="上传" @cancel="resetUp">
     <div style="font-size:13px;margin-bottom:14px">
-      项目 <b>{$ _detName $}</b> ·
-      牌号 <b>{$ _brand $}</b> ·
-      相机面 <b>{$ upFace.faceName $}</b> ·
-      缺陷分类 <b style="color:var(--primary)">{$ upFace.className $}</b>
+      项目 <b>{{ _detName }}</b> ·
+      牌号 <b>{{ _brand }}</b> ·
+      相机面 <b>{{ upFace.faceName }}</b> ·
+      缺陷分类 <b style="color:var(--primary)">{{ upFace.className }}</b>
     </div>
     <div class="up-dragger" :class="{'drag-over': dragOver}"
          @click="$refs.fileInput.click()" @dragover.prevent="dragOver=true"
@@ -101,11 +106,10 @@ window.__INIT__ = {
     </div>
     <input type="file" ref="fileInput" multiple accept="image/*" @change="onFileSelect" style="display:none">
     <div v-if="upFiles.length" style="margin-top:8px;font-size:12.5px;color:var(--text-secondary)">
-      已选 {$ upFiles.length $} 张图片</div>
-    <div v-if="upMsg" style="margin-top:10px;font-size:13px;color:{$ upMsgColor $}">{$ upMsg $}</div>
+      已选 {{ upFiles.length }} 张图片</div>
   </a-modal>
 
-  <!-- 上传历史 Modal -->
+  <!-- 上传历史 -->
   <a-modal v-model:visible="histVisible" :title="'上传记录 — ' + histFaceName + '（累计 ' + histTotal + ' 张）'"
            width="960px" :footer="null" @cancel="closeHistory">
     <a-table :data-source="histRows" :columns="histCols" row-key="row_id"
@@ -120,7 +124,7 @@ window.__INIT__ = {
     </a-table>
   </a-modal>
 
-  <!-- 设置缺陷分类 Modal -->
+  <!-- 设置缺陷分类 -->
   <a-modal v-model:visible="clsVisible" :title="'设置缺陷分类 — ' + clsFaceName"
            @ok="saveClass" :confirm-loading="clsSaving" ok-text="保存" @cancel="clsChecked=[]">
     <div style="font-size:12.5px;color:var(--text-secondary);margin-bottom:10px">
@@ -142,6 +146,7 @@ window.__INIT__ = {
     </div>
   </a-modal>
 </div>
+{% endraw %}
 
 <style>
 [v-cloak]{display:none}
@@ -166,169 +171,169 @@ window.__INIT__ = {
 <script src="{{ url_for('static', filename='lib/antd.min.js') }}"></script>
 <script>
 (function(){
-  if(typeof Vue==='undefined') return;
   var init = window.__INIT__ || {};
-  var app = Vue.createApp({
-    data: function(){
-      return {
-        units: init.units || [],
-        classes: init.classes || [],
-        // upload
-        upVisible: false,
-        uploading: false,
-        upFace: {id:0, faceName:'', className:''},
-        upFiles: [],
-        upMsg: '',
-        upMsgColor: 'var(--text-secondary)',
-        _detName: init.detName || '',
-        _brand: init.curBrand || '',
-        dragOver: false,
-        // history
-        histVisible: false,
-        histRows: [],
-        histTotal: 0,
-        histFaceName: '',
-        histTimer: null,
-        histCols: [
-          {title:'上传时间',key:'time',width:150},
-          {title:'缺陷分类',key:'class_name',width:180,ellipsis:true},
-          {title:'数量',key:'count',width:60},
-          {title:'状态',key:'status',width:90},
-          {title:'回执时间',key:'reply_time',width:150},
-          {title:'上传人',key:'by',width:70},
-        ],
-        // class edit
-        clsVisible: false,
-        clsSaving: false,
-        clsFaceId: 0,
-        clsFaceName: '',
-        clsChecked: [],
-      };
-    },
-    computed: {
-      columns: function(){
-        return [
-          {title:'相机面',key:'face',width:80},
-          {title:'单元标识',key:'unit_key',width:200,ellipsis:true},
-          {title:'缺陷分类',key:'class',width:200},
-          {title:'样本数量',key:'samples',width:110},
-          {title:'建模单元',key:'unit',width:80},
-          {title:'已绑定模型',key:'model',width:120},
-          {title:'操作',key:'action',width:230},
-        ];
+  if(typeof Vue==='undefined'){ document.getElementById('label-app').innerHTML='Vue 未加载'; return; }
+  if(!window.antd){ document.getElementById('label-app').innerHTML='Ant Design Vue 未加载'; return; }
+  try {
+    var app = Vue.createApp({
+      data: function(){
+        return {
+          units: init.units || [],
+          classes: init.classes || [],
+          _detName: init.detName || '',
+          _brand: init.curBrand || '',
+          wfUrl: init.wfUrl || '',
+          unitCreateUrl: init.unitCreateUrl || '',
+          emptyHint: init.emptyHint || '',
+          // upload
+          upVisible: false,
+          uploading: false,
+          upFace: {id:0, faceName:'', className:''},
+          upFiles: [],
+          dragOver: false,
+          // history
+          histVisible: false,
+          histRows: [],
+          histTotal: 0,
+          histFaceName: '',
+          histTimer: null,
+          histCols: [
+            {title:'上传时间',key:'time',width:150},
+            {title:'缺陷分类',key:'class_name',width:180,ellipsis:true},
+            {title:'数量',key:'count',width:60},
+            {title:'状态',key:'status',width:90},
+            {title:'回执时间',key:'reply_time',width:150},
+            {title:'上传人',key:'by',width:70},
+          ],
+          // class edit
+          clsVisible: false,
+          clsSaving: false,
+          clsFaceId: 0,
+          clsFaceName: '',
+          clsChecked: [],
+        };
       },
-      clsOpts: function(){
-        return this.classes.map(function(c){ return {label:c.name, value:c.id}; });
+      computed: {
+        columns: function(){
+          return [
+            {title:'相机面',key:'face',width:80},
+            {title:'单元标识',key:'unit_key',width:200,ellipsis:true},
+            {title:'缺陷分类',key:'class',width:200},
+            {title:'样本数量',key:'samples',width:110},
+            {title:'建模单元',key:'unit',width:80},
+            {title:'已绑定模型',key:'model',width:120},
+            {title:'操作',key:'action',width:230},
+          ];
+        },
+        clsOpts: function(){
+          return this.classes.map(function(c){ return {label:c.name, value:c.id}; });
+        },
       },
-    },
-    methods: {
-      openUpload: function(r){
-        if(!init.curBrand){ antd.message.warning('请先在左侧选择牌号'); return; }
-        if(!r.class_name){ antd.message.warning('请先为该相机面设置缺陷分类'); return; }
-        this.upFace = {id:r.face_id, faceName:r.face_name, className:r.class_name};
-        this.upFiles = [];
-        this.upMsg = '';
-        this.upVisible = true;
-      },
-      onFileSelect: function(e){ this.processFiles(e.target.files); e.target.value=''; },
-      onDrop: function(e){ this.dragOver=false; this.processFiles(e.dataTransfer.files); },
-      processFiles: function(list){
-        var self=this;
-        Array.from(list).forEach(function(f){
-          if(/\.(jpe?g|png|bmp)$/i.test(f.name)){ self.upFiles.push(f); }
-        });
-      },
-      doUpload: function(){
-        var self=this;
-        if(!self.upFiles.length){ antd.message.warning('请先选择图片'); return; }
-        self.uploading = true;
-        var fd = new FormData();
-        fd.append('project', init.detName);
-        fd.append('brand', init.curBrand);
-        fd.append('face_id', self.upFace.id);
-        self.upFiles.forEach(function(f){ fd.append('files', f); });
-        fetch(init.uploadUrl, {method:'POST', body:fd})
-          .then(function(r){ return r.json(); })
-          .then(function(d){
-            self.uploading = false;
-            if(!d.ok){
-              antd.message.error(d.msg);
-              return;
-            }
-            antd.message.success('已上传 ' + d.count + ' 张');
-            setTimeout(function(){ location.reload(); }, 900);
-          })
-          .catch(function(e){
-            self.uploading = false;
-            antd.message.error('请求失败：' + e);
+      methods: {
+        openUpload: function(r){
+          if(!init.curBrand){ antd.message.warning('请先在左侧选择牌号'); return; }
+          if(!r.class_name){ antd.message.warning('请先为该相机面设置缺陷分类'); return; }
+          this.upFace = {id:r.face_id, faceName:r.face_name, className:r.class_name};
+          this.upFiles = [];
+          this.upVisible = true;
+        },
+        onFileSelect: function(e){ this.processFiles(e.target.files); e.target.value=''; },
+        onDrop: function(e){ this.dragOver=false; this.processFiles(e.dataTransfer.files); },
+        processFiles: function(list){
+          var self=this;
+          Array.from(list).forEach(function(f){
+            if(/\.(jpe?g|png|bmp)$/i.test(f.name)){ self.upFiles.push(f); }
           });
+        },
+        doUpload: function(){
+          var self=this;
+          if(!self.upFiles.length){ antd.message.warning('请先选择图片'); return; }
+          self.uploading = true;
+          var fd = new FormData();
+          fd.append('project', init.detName);
+          fd.append('brand', init.curBrand);
+          fd.append('face_id', self.upFace.id);
+          self.upFiles.forEach(function(f){ fd.append('files', f); });
+          fetch(init.uploadUrl, {method:'POST', body:fd})
+            .then(function(r){ return r.json(); })
+            .then(function(d){
+              self.uploading = false;
+              if(!d.ok){ antd.message.error(d.msg); return; }
+              antd.message.success('已上传 ' + d.count + ' 张');
+              setTimeout(function(){ location.reload(); }, 900);
+            })
+            .catch(function(e){
+              self.uploading = false;
+              antd.message.error('请求失败：' + e);
+            });
+        },
+        resetUp: function(){ this.upFiles=[]; },
+        openHistory: function(r){
+          var self=this;
+          self.histFaceName = r.face_name;
+          self.histVisible = true;
+          self.histRows = [];
+          self.histTotal = 0;
+          self.loadHistory();
+          if(self.histTimer) clearInterval(self.histTimer);
+          self.histTimer = setInterval(function(){ self.loadHistory(); }, 5000);
+        },
+        closeHistory: function(){
+          if(this.histTimer){ clearInterval(this.histTimer); this.histTimer=null; }
+          this.histVisible = false;
+        },
+        loadHistory: function(){
+          var self=this;
+          fetch(init.historyUrl + '?face_id=' + self.histFaceId + '&brand=' + encodeURIComponent(init.curBrand))
+            .then(function(r){ return r.json(); })
+            .then(function(d){
+              self.histTotal = d.total || 0;
+              self.histRows = (d.rows || []).map(function(r,i){ r.row_id=i; return r; });
+              if(!d.proc && self.histTimer){ clearInterval(self.histTimer); self.histTimer=null; }
+            })
+            .catch(function(){});
+        },
+        openClassEdit: function(r){
+          this.clsFaceId = r.face_id;
+          this.clsFaceName = r.face_name;
+          this.clsChecked = (r.class_ids || '').split(',').filter(function(x){ return x; }).map(Number);
+          this.clsVisible = true;
+        },
+        saveClass: function(){
+          var self=this;
+          self.clsSaving = true;
+          var fd = new FormData();
+          fd.append('brand', init.curBrand);
+          fd.append('face_id', self.clsFaceId);
+          fd.append('class_ids', self.clsChecked.join(','));
+          fetch(init.classUrl, {method:'POST', body:fd})
+            .then(function(r){ return r.json(); })
+            .then(function(d){
+              self.clsSaving = false;
+              if(!d.ok){ antd.message.error(d.msg); return; }
+              antd.message.success('已保存');
+              setTimeout(function(){ location.reload(); }, 600);
+            })
+            .catch(function(e){ self.clsSaving=false; antd.message.error('请求失败：' + e); });
+        },
       },
-      resetUp: function(){ this.upFiles=[]; this.upMsg=''; },
-      openHistory: function(r){
+      mounted: function(){
         var self=this;
-        self.histFaceName = r.face_name;
-        self.histVisible = true;
-        self.histRows = [{count:'', status:'', row_id:0}];
-        self.histTotal = 0;
-        self.loadHistory();
-        if(self.histTimer) clearInterval(self.histTimer);
-        self.histTimer = setInterval(function(){ self.loadHistory(); }, 5000);
+        self.histFaceId = 0;
+        if(self.units.some(function(u){ return u.sample_proc; })){
+          setTimeout(function(){ location.reload(); }, 5000);
+        }
       },
-      closeHistory: function(){
-        if(this.histTimer){ clearInterval(this.histTimer); this.histTimer=null; }
-        this.histVisible = false;
+      beforeUnmount: function(){
+        if(this.histTimer) clearInterval(this.histTimer);
       },
-      loadHistory: function(){
-        var self=this;
-        fetch(init.historyUrl + '?face_id=' + self.upFace.id + '&brand=' + encodeURIComponent(init.curBrand))
-          .then(function(r){ return r.json(); })
-          .then(function(d){
-            self.histTotal = d.total || 0;
-            self.histRows = (d.rows || []).map(function(r,i){ r.row_id=i; return r; });
-            if(!d.proc && self.histTimer){ clearInterval(self.histTimer); self.histTimer=null; }
-          })
-          .catch(function(){});
-      },
-      openClassEdit: function(r){
-        this.clsFaceId = r.face_id;
-        this.clsFaceName = r.face_name;
-        this.clsChecked = (r.class_ids || '').split(',').filter(function(x){ return x; }).map(Number);
-        this.clsVisible = true;
-      },
-      saveClass: function(){
-        var self=this;
-        self.clsSaving = true;
-        var fd = new FormData();
-        fd.append('brand', init.curBrand);
-        fd.append('face_id', self.clsFaceId);
-        fd.append('class_ids', self.clsChecked.join(','));
-        fetch(init.classUrl, {method:'POST', body:fd})
-          .then(function(r){ return r.json(); })
-          .then(function(d){
-            self.clsSaving = false;
-            if(!d.ok){ antd.message.error(d.msg); return; }
-            antd.message.success('已保存');
-            setTimeout(function(){ location.reload(); }, 600);
-          })
-          .catch(function(e){ self.clsSaving=false; antd.message.error('请求失败：' + e); });
-      },
-      workflowUrl: function(unitKey){
-        return '{{ url_for("label_workflow") }}?unit_key=' + unitKey;
-      },
-    },
-    mounted: function(){
-      var self=this;
-      if(self.units.some(function(u){ return u.sample_proc; })){
-        setTimeout(function(){ location.reload(); }, 5000);
-      }
-    },
-    beforeUnmount: function(){
-      if(this.histTimer) clearInterval(this.histTimer);
-    },
-  });
-  app.config.compilerOptions.delimiters = ['{$', '$}'];
-  app.use(window.antd);
-  app.mount('#label-app');
+    });
+    app.use(window.antd);
+    app.mount('#label-app');
+  } catch(e) {
+    var el = document.getElementById('label-app');
+    if(el) el.innerHTML = '<div style="padding:20px;color:#ff4d4f;font-size:14px">初始化失败: ' + e.message + '</div>';
+  }
 })();
 </script>
 {% endblock %}
