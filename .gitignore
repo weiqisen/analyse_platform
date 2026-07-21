@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+.idea/
+小包外观剔除图片/
+*.bmp
