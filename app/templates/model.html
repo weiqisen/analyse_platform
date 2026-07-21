@@ -34,11 +34,12 @@
 
 <div class="card tbl-card"><div class="card-body" style="padding:0">
 <table class="table">
-  <thead><tr><th>相机面</th><th>已绑定模型</th><th>CubeStudio 可用模型</th><th>实时图像目录</th><th>工作状态</th></tr></thead>
+  <thead><tr><th>相机面</th><th>单元标识</th><th>已绑定模型</th><th>CubeStudio 可用模型</th><th>实时图像目录</th><th>工作状态</th></tr></thead>
   <tbody>
   {% for r in rows %}
   <tr>
     <td><b>{{ r.face_name }}</b></td>
+    <td><code style="font-size:11.5px">{{ r.unit_key }}</code></td>
     <td>
       {% if r.bound_version %}<span style="color:#52c41a">● {{ r.bound_version }}</span>
         {% if r.bound_endpoint %}<div style="font-size:11px;color:var(--text-secondary)">已上线</div>{% endif %}
@@ -94,7 +95,7 @@
     </td>
   </tr>
   {% else %}
-  <tr><td colspan="5" class="empty">该牌号暂无建模单元，请先到「缺陷标注」为相机面建模</td></tr>
+  <tr><td colspan="6" class="empty">该牌号暂无建模单元，请先到「缺陷标注」为相机面建模</td></tr>
   {% endfor %}
   </tbody>
 </table>

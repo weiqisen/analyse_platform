@@ -1899,10 +1899,11 @@ def label():
     classes = [dict(c) for c in db.execute(
         "SELECT id, name FROM label_classes WHERE item_id=? AND status=1 ORDER BY id",
         (cur_det,)).fetchall()]
+    wf_base = get_cfg("workflow_url").rstrip("/")
     return render_template("label.html", det_items=det_items, cur_det=cur_det,
                            brands=brands, cur_brand=cur_brand,
                            units=units, pg=pg, cs_online=cs_online,
-                           classes=classes, active="label")
+                           classes=classes, wf_base=wf_base, active="label")
 
 
 @app.route("/label/unit/create", methods=["POST"])
@@ -2451,7 +2452,7 @@ def model():
     cs_online = cs_ok()
     # 只列当前检测项目(由相机面 item_id 隐含)下、该牌号的建模单元
     all_units = [dict(u) for u in db.execute(
-        """SELECT mu.*, cf.face_name, cf.sort_order FROM model_units mu
+        """SELECT mu.*, cf.face_name, cf.face_code, cf.item_id, cf.sort_order FROM model_units mu
            JOIN camera_faces cf ON cf.id=mu.face_id
            WHERE mu.brand=? AND cf.item_id=? ORDER BY cf.sort_order, cf.id""",
         (cur_brand, cur_det)).fetchall()]
@@ -2462,6 +2463,7 @@ def model():
         models = cs_project_models(u["cs_project_id"]) if (cs_online and u["cs_project_id"]) else []
         job = db.execute("SELECT * FROM analysis_jobs WHERE unit_id=?", (u["id"],)).fetchone()
         rows.append({"unit_id": u["id"], "face_name": u["face_name"],
+                     "unit_key": unit_key_of(db, cur_brand, dict(u)),
                      "bound_model": u["model_id"], "bound_version": u["model_version"],
                      "bound_endpoint": u["model_endpoint"], "models": models,
                      "rt_type": u.get("rt_type", ""), "rt_line_id": u.get("rt_line_id", 0),

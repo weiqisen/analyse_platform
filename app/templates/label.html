@@ -1,24 +1,5 @@
 {% extends "base.html" %}
 {% block title %}缺陷标注 · 缺陷图片分析平台{% endblock %}
-
-{% block script %}
-<style>
-/* antd 风格的弹窗遮罩 + 居中 */
-.modal-mask{display:none;position:fixed;top:0;right:0;bottom:0;left:0;z-index:1050;
-  background:rgba(0,0,0,.45);transition:all .3s}
-.modal-mask.open{display:flex;align-items:center;justify-content:center}
-.modal-mask.open>.ant-modal-content{animation:antZoomIn .3s}
-.modal-mask>.ant-modal-content{width:560px;max-width:94vw;position:static;margin:0}
-@keyframes antZoomIn{0%{transform:scale(.8);opacity:0}to{transform:scale(1);opacity:1}}
-.up-area{border:2px dashed #d9d9d9;border-radius:8px;padding:28px 16px;text-align:center;
-  cursor:pointer;background:#fafafa;transition:border-color .3s,background .3s}
-.up-area:hover,.up-area.drag{border-color:#00923f;background:#e8f5ee}
-.up-area .up-icon{font-size:32px;color:#00923f;line-height:1}
-.up-area .up-main{font-size:14px;font-weight:500;margin-top:8px;color:#333}
-.up-area .up-sub{font-size:12px;color:#999;margin-top:5px}
-</style>
-{% endblock %}
-
 {% block sider %}
 <aside class="layout-sider">
   <div class="sider-title">牌号</div>
@@ -31,7 +12,6 @@
   </nav>
 </aside>
 {% endblock %}
-
 {% block content %}
 <div class="toolbar">
   <div class="page-title" style="margin:0">缺陷标注 — {{ cur_brand or '（未选牌号）' }}
@@ -40,143 +20,81 @@
   </div>
 </div>
 
+
 <div class="card tbl-card"><div class="card-body" style="padding:0">
-<div class="ant-table"><div class="ant-table-container"><div class="ant-table-content">
-<table class="ant-table-thead">
-  <thead><tr>
-    <th>相机面</th><th>单元标识</th><th>缺陷分类</th><th>样本数量</th><th>建模单元</th><th>已绑定模型</th><th>操作</th>
-  </tr></thead>
-</table>
-<div style="max-height:calc(100vh - 320px);overflow-y:auto">
-<table class="ant-table-tbody">
+<table class="table">
+  <thead><tr><th>相机面</th><th>单元标识</th><th>缺陷分类</th><th>样本数量</th><th>建模单元</th><th>已绑定模型</th><th>操作</th></tr></thead>
   <tbody>
   {% for u in units %}
-  <tr class="ant-table-row">
+  <tr>
     <td><b>{{ u.face_name }}</b></td>
     <td><code style="font-size:11.5px">{{ u.unit_key }}</code></td>
     <td>
       {% if u.class_list %}
-        {% for c in u.class_list %}<span class="ant-tag ant-tag-green">{{ c.class_name }}</span>{% endfor %}
+        {% for c in u.class_list %}<span class="tag">{{ c.class_name }}</span>{% endfor %}
       {% else %}<span style="color:#ff4d4f;font-size:12.5px">未设置</span>{% endif %}
-      <a class="ant-btn ant-btn-link ant-btn-sm" href="javascript:;"
+      <a class="btn-link" href="javascript:;" style="margin-left:6px"
          onclick="openClassEdit({{ u.face_id }},'{{ u.face_name }}','{{ u.class_ids }}')">编辑</a>
     </td>
     <td>
-      <a class="ant-btn ant-btn-link ant-btn-sm" href="javascript:;"
-         onclick="openHistory({{ u.face_id }},'{{ u.face_name }}')">{{ u.sample_count }} 张</a>
-      {% if u.sample_proc %}<span style="color:#faad14;font-size:12px;margin-left:4px">● 处理中</span>{% endif %}
+      <a class="btn-link" href="javascript:;" onclick="openHistory({{ u.face_id }},'{{ u.face_name }}')">
+        {{ u.sample_count }} 张</a>
+      {% if u.sample_proc %}<span style="color:#faad14;font-size:12px" title="有上传处理中">● 处理中</span>{% endif %}
     </td>
-    <td>{% if u.exists %}<span class="ant-tag ant-tag-blue">已建</span>{% else %}<span class="ant-tag">未建</span>{% endif %}</td>
-    <td>{% if u.model_version %}<span style="color:#52c41a">{{ u.model_version }}</span>{% else %}<span style="color:#999">未绑定</span>{% endif %}</td>
-    <td class="ant-table-cell" style="white-space:nowrap">
-      <a class="ant-btn ant-btn-link ant-btn-sm" href="javascript:;"
-         onclick="openUpload({{ u.face_id }},'{{ u.face_name }}','{{ u.class_name }}')">上传样本</a>
-      <a class="ant-btn ant-btn-link ant-btn-sm"
-         href="{{ url_for('label_workflow', unit_key=u.unit_key) }}">进入工作流</a>
+    <td>{% if u.exists %}<span class="tag">已建</span>{% else %}<span class="tag tag-gray">未建</span>{% endif %}</td>
+    <td>{% if u.model_version %}<span style="color:#52c41a">{{ u.model_version }}</span>{% else %}<span style="color:var(--text-secondary)">未绑定</span>{% endif %}</td>
+    <td style="white-space:nowrap">
+      <a class="btn-link" href="javascript:;" onclick="openUpload({{ u.face_id }},'{{ u.face_name }}','{{ u.class_name }}')">上传样本</a>
+      <a class="btn-link" href="{{ url_for('label_workflow', unit_key=u.unit_key) }}">进入工作流</a>
       {% if not u.exists %}
       <form method="post" action="{{ url_for('label_unit_create') }}" style="display:inline">
         <input type="hidden" name="brand" value="{{ cur_brand }}">
         <input type="hidden" name="face_id" value="{{ u.face_id }}">
-        <button class="ant-btn ant-btn-link ant-btn-sm" type="submit">建模型</button>
+        <button class="btn-link" type="submit">建模型</button>
       </form>
       {% endif %}
     </td>
   </tr>
   {% else %}
-  <tr><td colspan="7" style="text-align:center;padding:28px;color:#999">未配置相机面，请到「基础配置 → 图像分类」维护</td></tr>
+  <tr><td colspan="7" class="empty">未配置相机面，请到「基础配置 → 图像分类」维护</td></tr>
   {% endfor %}
   </tbody>
 </table>
-</div></div></div></div>
 {% if pg %}<div class="pager" data-page="{{ pg.page }}" data-pages="{{ pg.pages }}" data-total="{{ pg.total }}"></div>{% endif %}
 </div></div>
 
-<!-- 上传样本 Modal（antd 结构） -->
 <div class="modal-mask" id="upModal">
-  <div class="ant-modal-content" style="width:560px">
-    <div class="ant-modal-header"><div class="ant-modal-title">上传样本图片</div></div>
-    <div class="ant-modal-body">
-      <div style="font-size:13px;margin-bottom:14px;color:#666">
+  <div class="modal" style="width:560px;max-width:94vw">
+    <div class="modal-head"><span>上传样本图片</span><span class="close" onclick="closeModal('upModal')">×</span></div>
+    <div class="modal-body">
+      <div style="font-size:13px;margin-bottom:12px">
         项目 <b>{{ g_cur_det_name or '—' }}</b> · 牌号 <b>{{ cur_brand or '—' }}</b> · 相机面 <b id="up_face">—</b>
-        · 缺陷分类 <b id="up_class_name" style="color:#00923f">—</b>
+        · 缺陷分类 <b id="up_class_name" style="color:var(--primary)">—</b>
       </div>
-      <div class="up-area" id="up_drop"
-           onclick="document.getElementById('up_files').click()">
-        <div class="up-icon">⬆</div>
-        <div class="up-main">点击或拖拽图片到此处上传</div>
-        <div class="up-sub">支持 JPG、PNG、BMP 等常见图片格式，可批量上传</div>
+      <div id="up_drop" onclick="document.getElementById('up_files').click()">
+        <div class="up-drop-icon">⬆</div>
+        <div class="up-drop-main">点击或拖拽图片到此处上传</div>
+        <div class="up-drop-sub">支持 JPG、PNG、BMP 等常见图片格式，可批量上传</div>
       </div>
       <input type="file" id="up_files" multiple accept="image/*" style="display:none">
-      <div id="up_preview" style="margin-top:8px;font-size:12.5px;color:#999"></div>
+      <div id="up_preview" style="margin-top:8px;font-size:12.5px;color:var(--text-secondary)"></div>
       <div id="up_status" style="margin-top:12px;font-size:13px"></div>
     </div>
-    <div class="ant-modal-footer">
-      <button class="ant-btn" onclick="closeModal('upModal')">取消</button>
-      <button class="ant-btn ant-btn-primary" id="up_btn" onclick="doUpload()">上传</button>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeModal('upModal')">关闭</button>
+      <button class="btn btn-primary" id="up_btn" onclick="doUpload()">上传</button>
     </div>
   </div>
 </div>
-
-<!-- 上传历史 Modal -->
-<div class="modal-mask" id="histModal">
-  <div class="ant-modal-content" style="width:900px;max-width:94vw">
-    <div class="ant-modal-header">
-      <div class="ant-modal-title">上传记录 — <b id="hist_face">—</b>（累计 <b id="hist_total">0</b> 张）</div>
-    </div>
-    <div class="ant-modal-body" style="padding:0">
-      <div class="ant-table"><div class="ant-table-container"><div class="ant-table-content">
-      <table><thead><tr>
-        <th style="width:150px">上传时间</th><th style="width:180px">缺陷分类</th>
-        <th style="width:60px">数量</th><th style="width:90px">状态</th>
-        <th style="width:150px">回执时间</th><th style="width:70px">上传人</th>
-      </tr></thead>
-      <tbody id="hist_body"></tbody></table>
-      </div></div></div>
-    </div>
-    <div class="ant-modal-footer">
-      <button class="ant-btn" onclick="closeHistory()">关闭</button>
-    </div>
-  </div>
-</div>
-
-<!-- 设置缺陷分类 Modal -->
-<div class="modal-mask" id="clsModal">
-  <div class="ant-modal-content" style="width:480px;max-width:94vw">
-    <div class="ant-modal-header"><div class="ant-modal-title">设置缺陷分类 — <b id="cls_face">—</b></div></div>
-    <div class="ant-modal-body">
-      <div style="font-size:12.5px;color:#999;margin-bottom:10px">
-        该建模单元可绑定多个缺陷分类，所有样本上传时一并发送给 CubeStudio。
-      </div>
-      {% if classes %}
-      <div style="margin-bottom:8px">
-        <span style="font-size:13px;font-weight:500">缺陷分类（可多选）</span>
-        <a class="ant-btn ant-btn-link ant-btn-sm" href="javascript:;" onclick="clsCheckAll(true)">全选</a>
-        <a class="ant-btn ant-btn-link ant-btn-sm" href="javascript:;" onclick="clsCheckAll(false)">反选</a>
-      </div>
-      <div id="cls_list" style="max-height:260px;overflow-y:auto;border:1px solid #d9d9d9;border-radius:6px;padding:8px 12px">
-        {% for c in classes %}
-        <label style="display:flex;align-items:center;padding:5px 0;font-size:13px;cursor:pointer">
-          <span class="ant-checkbox"><input type="checkbox" value="{{ c.id }}" style="width:14px;height:14px;margin-right:8px;cursor:pointer"></span>
-          {{ c.name }}
-        </label>
-        {% endfor %}
-      </div>
-      {% else %}
-      <div style="color:#ff4d4f;padding:8px 10px;background:#fff1f0;border-radius:6px;font-size:12.5px">
-        当前检测项目还没有缺陷分类，请先到「基础配置 → 缺陷分类」维护。
-      </div>
-      {% endif %}
-      <div id="cls_status" style="margin-top:10px;font-size:13px"></div>
-    </div>
-    <div class="ant-modal-footer">
-      <button class="ant-btn" onclick="closeModal('clsModal')">取消</button>
-      <button class="ant-btn ant-btn-primary" onclick="saveClass()">保存</button>
-    </div>
-  </div>
-</div>
-
+<style>
+  #up_drop{border:2px dashed var(--split,#d9d9d9);border-radius:10px;padding:28px 16px;text-align:center;
+    cursor:pointer;background:#fafafa;transition:all .15s}
+  #up_drop:hover,#up_drop.drag{border-color:var(--primary,#00923f);background:var(--primary-bg,#e8f5ee)}
+  #up_drop .up-drop-icon{font-size:30px;color:var(--primary,#00923f);line-height:1}
+  #up_drop .up-drop-main{font-size:14px;font-weight:600;margin-top:8px}
+  #up_drop .up-drop-sub{font-size:12px;color:var(--text-secondary);margin-top:5px}
+</style>
 <script>
-/* ===== 上传弹窗 ===== */
 var upFace = {id:0, name:''};
 function openUpload(faceId, faceName, className){
   {% if not cur_brand %}alert('请先在左侧选择牌号'); return;{% endif %}
@@ -193,20 +111,14 @@ function openUpload(faceId, faceName, className){
 }
 var selectedFiles = [];
 function setFiles(list){
-  selectedFiles = Array.prototype.filter.call(list, function(f){
-    return f.type.indexOf('image')===0 || /\.(jpe?g|png|bmp)$/i.test(f.name);
-  });
+  selectedFiles = Array.prototype.filter.call(list, function(f){ return f.type.indexOf('image')===0 || /\.(jpe?g|png|bmp)$/i.test(f.name); });
   document.getElementById('up_preview').textContent = selectedFiles.length ? ('已选 ' + selectedFiles.length + ' 张图片') : '';
 }
 document.getElementById('up_files').addEventListener('change', function(){ setFiles(this.files); });
 (function(){
   var drop = document.getElementById('up_drop');
-  ['dragenter','dragover'].forEach(function(ev){
-    drop.addEventListener(ev, function(e){ e.preventDefault(); drop.classList.add('drag'); });
-  });
-  ['dragleave','drop'].forEach(function(ev){
-    drop.addEventListener(ev, function(e){ e.preventDefault(); drop.classList.remove('drag'); });
-  });
+  ['dragenter','dragover'].forEach(function(ev){ drop.addEventListener(ev, function(e){ e.preventDefault(); drop.classList.add('drag'); }); });
+  ['dragleave','drop'].forEach(function(ev){ drop.addEventListener(ev, function(e){ e.preventDefault(); drop.classList.remove('drag'); }); });
   drop.addEventListener('drop', function(e){ setFiles(e.dataTransfer.files); });
 })();
 function doUpload(){
@@ -217,20 +129,21 @@ function doUpload(){
   var fd = new FormData();
   fd.append('project', '{{ g_cur_det_name }}');
   fd.append('brand', '{{ cur_brand }}');
-  fd.append('face_id', upFace.id);
+  fd.append('face_id', upFace.id);   // 缺陷分类由后端按该单元的绑定取，不从前端传
   for(var i=0;i<files.length;i++){ fd.append('files', files[i]); }
-  st.textContent = '上传中…'; st.style.color = '#999';
+  st.textContent = '上传中…'; st.style.color = 'var(--text-secondary)';
   fetch('{{ url_for("label_sample_upload") }}', {method:'POST', body: fd})
     .then(function(r){ return r.json(); })
     .then(function(d){
       if(!d.ok){ st.textContent = '失败：' + d.msg; st.style.color='#ff4d4f'; document.getElementById('up_btn').disabled=false; return; }
+      // 存到 MinIO 就算成功；后续处理状态在「样本数量」历史小窗里看
       st.innerHTML = '<span style="color:#52c41a">✓ 已上传 ' + d.count + ' 张</span>';
       setTimeout(function(){ location.reload(); }, 900);
     })
     .catch(function(e){ st.textContent = '请求失败：' + e; st.style.color='#ff4d4f'; document.getElementById('up_btn').disabled=false; });
 }
 
-/* ===== 缺陷分类绑定 ===== */
+// ---- 缺陷分类绑定（建模单元级，可多选）----
 var clsFace = 0;
 function openClassEdit(faceId, faceName, curClassIds){
   clsFace = faceId;
@@ -253,8 +166,7 @@ function saveClass(){
   fd.append('brand', '{{ cur_brand }}');
   fd.append('face_id', clsFace);
   fd.append('class_ids', ids);
-  st.textContent = '保存中…'; st.style.color = '#999';
-  st.style.color='#999';
+  st.textContent = '保存中…'; st.style.color = 'var(--text-secondary)';
   fetch('{{ url_for("label_unit_class") }}', {method:'POST', body: fd})
     .then(function(r){ return r.json(); })
     .then(function(d){
@@ -265,16 +177,16 @@ function saveClass(){
     .catch(function(e){ st.textContent = '请求失败：' + e; st.style.color='#ff4d4f'; });
 }
 
-/* ===== 上传历史小窗 ===== */
+// ---- 样本上传历史小窗 ----
 var histTimer = null, histFace = 0;
 function openHistory(faceId, faceName){
   histFace = faceId;
   document.getElementById('hist_face').textContent = faceName;
-  document.getElementById('hist_body').innerHTML = '<tr><td colspan="6" style="text-align:center;padding:28px;color:#999">加载中…</td></tr>';
+  document.getElementById('hist_body').innerHTML = '<tr><td colspan="6" class="hist-empty">加载中…</td></tr>';
   openModal('histModal');
   loadHistory();
   clearInterval(histTimer);
-  histTimer = setInterval(loadHistory, 5000);
+  histTimer = setInterval(loadHistory, 5000);   // 有处理中时自动刷新
 }
 function closeHistory(){ clearInterval(histTimer); closeModal('histModal'); }
 function loadHistory(){
@@ -283,24 +195,91 @@ function loadHistory(){
     .then(function(d){
       document.getElementById('hist_total').textContent = d.total || 0;
       var b = document.getElementById('hist_body');
-      if(!d.rows.length){ b.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:28px;color:#999">暂无上传记录</td></tr>'; clearInterval(histTimer); return; }
+      if(!d.rows.length){ b.innerHTML = '<tr><td colspan="6" class="hist-empty">暂无上传记录</td></tr>'; clearInterval(histTimer); return; }
       b.innerHTML = d.rows.map(function(r){
-        var badge = r.status==='done' ? '<span class="ant-tag ant-tag-green">上传成功</span>'
-          : (r.status==='error' ? '<span class="ant-tag" style="color:#cf1322;background:#fff1f0;border-color:#ffa39e">失败</span>'
-          : '<span class="ant-tag" style="color:#ad8b00;background:#fffbe6;border-color:#ffe58f">处理中</span>');
-        return '<tr><td style="white-space:nowrap">' + r.time + '</td><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#666" title="' + (r.class_name||'') + '">' + (r.class_name||'—') + '</td>'
-          + '<td style="text-align:center">' + r.count + '</td><td>' + badge
-          + '</td><td style="white-space:nowrap;color:#666">' + (r.reply_time||'—') + '</td>'
-          + '<td style="color:#666">' + (r.by||'') + '</td></tr>';
+        var badge = r.status==='done' ? '<span class="tag">上传成功</span>'
+          : (r.status==='error' ? '<span class="tag" style="background:#fff1f0;color:#cf1322">失败</span>'
+          : '<span class="tag tag-orange">处理中</span>');
+        return '<tr><td class="td-time">' + r.time + '</td><td class="td-cls" title="' + (r.class_name||'') + '">' + (r.class_name||'—') + '</td>'
+          + '<td class="td-num">' + r.count + '</td><td class="td-st">' + badge
+          + '</td><td class="td-time">' + (r.reply_time||'—') + '</td>'
+          + '<td class="td-by">' + (r.by||'') + '</td></tr>';
       }).join('');
-      if(!d.proc) clearInterval(histTimer);
+      if(!d.proc) clearInterval(histTimer);   // 没有处理中就停止刷新
     }).catch(function(){});
 }
+</script>
 
-/* ===== 页面加载时：有处理中则自动刷新 ===== */
+<div class="modal-mask" id="histModal">
+  <div class="modal" style="width:960px;max-width:97vw">
+    <div class="modal-head"><span>上传记录 — <b id="hist_face">—</b>（累计 <span id="hist_total">0</span> 张）</span>
+      <span class="close" onclick="closeHistory()">×</span></div>
+    <div class="modal-body" style="padding:16px">
+      <style scoped>
+        #histModal .hist-tbl { width:100%; table-layout:fixed; border-collapse:collapse; font-size:13px }
+        #histModal .hist-tbl th { background:#fafafa; border-bottom:2px solid var(--border,#e8e8e8); padding:8px 10px;
+          text-align:left; font-weight:600; color:var(--text); white-space:nowrap }
+        #histModal .hist-tbl td { padding:8px 10px; border-bottom:1px solid var(--border,#f0f0f0);
+          white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+        #histModal .hist-tbl tr:hover td { background:#fafafa }
+        #histModal .td-time { width:150px }
+        #histModal .td-cls { width:180px }
+        #histModal .td-num { width:60px }
+        #histModal .td-st { width:90px }
+        #histModal .td-by { width:70px }
+        #histModal .hist-empty { text-align:center; padding:28px 10px; color:var(--text-secondary,#999); font-size:13px }
+      </style>
+      <table class="hist-tbl">
+        <thead><tr><th class="td-time">上传时间</th><th class="td-cls">缺陷分类</th><th class="td-num">数量</th><th class="td-st">状态</th><th class="td-time">回执时间</th><th class="td-by">上传人</th></tr></thead>
+        <tbody id="hist_body"></tbody>
+      </table>
+    </div>
+    <div class="modal-foot"><button class="btn" onclick="closeHistory()">关闭</button></div>
+  </div>
+</div>
+
+<div class="modal-mask" id="clsModal">
+  <div class="modal" style="width:460px;max-width:94vw">
+    <div class="modal-head"><span>设置缺陷分类 — <b id="cls_face">—</b></span>
+      <span class="close" onclick="closeModal('clsModal')">×</span></div>
+    <div class="modal-body">
+      <div style="font-size:12.5px;color:var(--text-secondary);margin-bottom:10px">
+        该建模单元可绑定多个缺陷分类（多选），所有样本上传时一并发送给 CubeStudio。
+      </div>
+      {% if classes %}
+      <div style="margin-bottom:6px">
+        <span style="font-size:13px;font-weight:600">缺陷分类（可多选）</span>
+        <a class="btn-link" href="javascript:;" onclick="clsCheckAll(true)" style="margin-left:12px">全选</a>
+        <a class="btn-link" href="javascript:;" onclick="clsCheckAll(false)" style="margin-left:8px">反选</a>
+      </div>
+      <div id="cls_list" style="max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:6px 10px">
+        {% for c in classes %}
+        <label style="display:block;padding:4px 0;font-size:13px;cursor:pointer">
+          <input type="checkbox" value="{{ c.id }}" style="margin-right:6px">{{ c.name }}
+        </label>
+        {% endfor %}
+      </div>
+      <div style="font-size:11.5px;color:var(--text-secondary);margin-top:4px">不勾选任何项 = 清空绑定</div>
+      {% else %}
+      <div style="font-size:12.5px;color:#ff4d4f;padding:8px 10px;background:#fff1f0;border-radius:6px">
+        当前检测项目还没有缺陷分类，请先到「基础配置 → 缺陷分类」维护。
+      </div>
+      {% endif %}
+      <div id="cls_status" style="margin-top:12px;font-size:13px"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeModal('clsModal')">取消</button>
+      <button class="btn btn-primary" onclick="saveClass()">保存</button>
+    </div>
+  </div>
+</div>
+<script>
+// 有上传处理中时自动刷新页面，直到「处理中」消失
 (function(){
-  var els = document.querySelectorAll('[title="有上传处理中"]');
-  if(els.length) setTimeout(function(){ location.reload(); }, 5000);
+  var procEls = document.querySelectorAll('[title="有上传处理中"]');
+  if(procEls.length){
+    setTimeout(function(){ location.reload(); }, 5000);
+  }
 })();
 </script>
 {% endblock %}
