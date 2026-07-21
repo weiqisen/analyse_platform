@@ -1,5 +1,7 @@
 # 样本上传 · RabbitMQ 消息契约
 
+**文档版本：v1**（2026-07-21，含 unit_key 稳定标识 + 缺陷分类字段）
+
 平台（缺陷标注页批量上传样本）与CubeStudio服务之间，通过 RabbitMQ 交换样本上传信息。
 
 ## RabbitMQ 连接
