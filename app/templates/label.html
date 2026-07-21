@@ -64,10 +64,12 @@
       <div style="font-size:13px;margin-bottom:12px">
         项目 <b>{{ g_cur_det_name or '—' }}</b> · 牌号 <b>{{ cur_brand or '—' }}</b> · 相机面 <b id="up_face">—</b>
       </div>
-      <div style="font-size:12.5px;color:var(--text-secondary);margin-bottom:10px">
-        图片将上传到样本桶 <code>项目/牌号/相机面/</code> 目录，并把路径信息通过消息队列通知算法侧。
+      <div id="up_drop" onclick="document.getElementById('up_files').click()">
+        <div class="up-drop-icon">⬆</div>
+        <div class="up-drop-main">点击或拖拽图片到此处上传</div>
+        <div class="up-drop-sub">支持 JPG、PNG、BMP 等常见图片格式，可批量上传</div>
       </div>
-      <input type="file" id="up_files" multiple accept="image/*" style="font-size:13px">
+      <input type="file" id="up_files" multiple accept="image/*" style="display:none">
       <div id="up_preview" style="margin-top:8px;font-size:12.5px;color:var(--text-secondary)"></div>
       <div id="up_status" style="margin-top:12px;font-size:13px"></div>
     </div>
@@ -77,24 +79,41 @@
     </div>
   </div>
 </div>
+<style>
+  #up_drop{border:2px dashed var(--split,#d9d9d9);border-radius:10px;padding:28px 16px;text-align:center;
+    cursor:pointer;background:#fafafa;transition:all .15s}
+  #up_drop:hover,#up_drop.drag{border-color:var(--primary,#00923f);background:var(--primary-bg,#e8f5ee)}
+  #up_drop .up-drop-icon{font-size:30px;color:var(--primary,#00923f);line-height:1}
+  #up_drop .up-drop-main{font-size:14px;font-weight:600;margin-top:8px}
+  #up_drop .up-drop-sub{font-size:12px;color:var(--text-secondary);margin-top:5px}
+</style>
 <script>
 var upFace = {id:0, name:''};
 function openUpload(faceId, faceName){
   upFace = {id: faceId, name: faceName};
   document.getElementById('up_face').textContent = faceName;
   document.getElementById('up_files').value = '';
+  selectedFiles = [];
   document.getElementById('up_preview').textContent = '';
   document.getElementById('up_status').textContent = '';
   document.getElementById('up_btn').disabled = false;
   {% if not cur_brand %}alert('请先在左侧选择牌号'); return;{% endif %}
   openModal('upModal');
 }
-document.getElementById('up_files').addEventListener('change', function(){
-  var n = this.files.length;
-  document.getElementById('up_preview').textContent = n ? ('已选 ' + n + ' 张图片') : '';
-});
+var selectedFiles = [];
+function setFiles(list){
+  selectedFiles = Array.prototype.filter.call(list, function(f){ return f.type.indexOf('image')===0 || /\.(jpe?g|png|bmp)$/i.test(f.name); });
+  document.getElementById('up_preview').textContent = selectedFiles.length ? ('已选 ' + selectedFiles.length + ' 张图片') : '';
+}
+document.getElementById('up_files').addEventListener('change', function(){ setFiles(this.files); });
+(function(){
+  var drop = document.getElementById('up_drop');
+  ['dragenter','dragover'].forEach(function(ev){ drop.addEventListener(ev, function(e){ e.preventDefault(); drop.classList.add('drag'); }); });
+  ['dragleave','drop'].forEach(function(ev){ drop.addEventListener(ev, function(e){ e.preventDefault(); drop.classList.remove('drag'); }); });
+  drop.addEventListener('drop', function(e){ setFiles(e.dataTransfer.files); });
+})();
 function doUpload(){
-  var files = document.getElementById('up_files').files;
+  var files = selectedFiles;
   var st = document.getElementById('up_status');
   if(!files.length){ st.textContent = '请先选择图片'; st.style.color='#ff4d4f'; return; }
   document.getElementById('up_btn').disabled = true;
