@@ -1,285 +1,335 @@
-{% extends "base.html" %}
-{% block title %}缺陷标注 · 缺陷图片分析平台{% endblock %}
+﻿{% extends "base.html" %}
+{% block title %}缂洪櫡鏍囨敞 路 缂洪櫡鍥剧墖鍒嗘瀽骞冲彴{% endblock %}
 {% block sider %}
 <aside class="layout-sider">
-  <div class="sider-title">牌号</div>
+  <div class="sider-title">鐗屽彿</div>
   <nav class="sider-menu">
     {% for b in brands %}
     <a href="{{ url_for('label', brand=b.spec) }}" class="{{ 'active' if cur_brand==b.spec }}">{{ b.spec }}</a>
     {% else %}
-    <div style="padding:10px;color:var(--text-secondary);font-size:13px">暂无牌号</div>
+    <div style="padding:10px;color:var(--text-secondary);font-size:13px">鏆傛棤鐗屽彿</div>
     {% endfor %}
   </nav>
 </aside>
 {% endblock %}
 {% block content %}
 <div class="toolbar">
-  <div class="page-title" style="margin:0">缺陷标注 — {{ cur_brand or '（未选牌号）' }}
-    {% if cs_online %}<span style="font-size:12px;font-weight:400;color:#52c41a;margin-left:10px">● CubeStudio 已连接</span>
-    {% else %}<span style="font-size:12px;font-weight:400;color:#ff4d4f;margin-left:10px">● CubeStudio 离线</span>{% endif %}
+  <div class="page-title" style="margin:0">缂洪櫡鏍囨敞 鈥?{{ cur_brand or '锛堟湭閫夌墝鍙凤級' }}
+    {% if cs_online %}<span style="font-size:12px;font-weight:400;color:#52c41a;margin-left:10px">鈼?CubeStudio 宸茶繛鎺?/span>
+    {% else %}<span style="font-size:12px;font-weight:400;color:#ff4d4f;margin-left:10px">鈼?CubeStudio 绂荤嚎</span>{% endif %}
   </div>
 </div>
 
 
-<div class="card tbl-card"><div class="card-body" style="padding:0">
-<table class="table">
-  <thead><tr><th>相机面</th><th>单元标识</th><th>缺陷分类</th><th>样本数量</th><th>建模单元</th><th>已绑定模型</th><th>操作</th></tr></thead>
-  <tbody>
-  {% for u in units %}
-  <tr>
-    <td><b>{{ u.face_name }}</b></td>
-    <td><code style="font-size:11.5px">{{ u.unit_key }}</code></td>
-    <td>
-      {% if u.class_list %}
-        {% for c in u.class_list %}<span class="tag">{{ c.class_name }}</span>{% endfor %}
-      {% else %}<span style="color:#ff4d4f;font-size:12.5px">未设置</span>{% endif %}
-      <a class="btn-link" href="javascript:;" style="margin-left:6px"
-         onclick="openClassEdit({{ u.face_id }},'{{ u.face_name }}','{{ u.class_ids }}')">编辑</a>
-    </td>
-    <td>
-      <a class="btn-link" href="javascript:;" onclick="openHistory({{ u.face_id }},'{{ u.face_name }}')">
-        {{ u.sample_count }} 张</a>
-      {% if u.sample_proc %}<span style="color:#faad14;font-size:12px" title="有上传处理中">● 处理中</span>{% endif %}
-    </td>
-    <td>{% if u.exists %}<span class="tag">已建</span>{% else %}<span class="tag tag-gray">未建</span>{% endif %}</td>
-    <td>{% if u.model_version %}<span style="color:#52c41a">{{ u.model_version }}</span>{% else %}<span style="color:var(--text-secondary)">未绑定</span>{% endif %}</td>
-    <td style="white-space:nowrap">
-      <a class="btn-link" href="javascript:;" onclick="openUpload({{ u.face_id }},'{{ u.face_name }}','{{ u.class_name }}')">上传样本</a>
-      <a class="btn-link" href="{{ url_for('label_workflow', unit_key=u.unit_key) }}">进入工作流</a>
-      {% if not u.exists %}
-      <form method="post" action="{{ url_for('label_unit_create') }}" style="display:inline">
-        <input type="hidden" name="brand" value="{{ cur_brand }}">
-        <input type="hidden" name="face_id" value="{{ u.face_id }}">
-        <button class="btn-link" type="submit">建模型</button>
-      </form>
-      {% endif %}
-    </td>
-  </tr>
-  {% else %}
-  <tr><td colspan="7" class="empty">未配置相机面，请到「基础配置 → 图像分类」维护</td></tr>
-  {% endfor %}
-  </tbody>
-</table>
-{% if pg %}<div class="pager" data-page="{{ pg.page }}" data-pages="{{ pg.pages }}" data-total="{{ pg.total }}"></div>{% endif %}
-</div></div>
-
-<div class="modal-mask" id="upModal">
-  <div class="modal" style="width:560px;max-width:94vw">
-    <div class="modal-head"><span>上传样本图片</span><span class="close" onclick="closeModal('upModal')">×</span></div>
-    <div class="modal-body">
-      <div style="font-size:13px;margin-bottom:12px">
-        项目 <b>{{ g_cur_det_name or '—' }}</b> · 牌号 <b>{{ cur_brand or '—' }}</b> · 相机面 <b id="up_face">—</b>
-        · 缺陷分类 <b id="up_class_name" style="color:var(--primary)">—</b>
-      </div>
-      <div id="up_drop" onclick="document.getElementById('up_files').click()">
-        <div class="up-drop-icon">⬆</div>
-        <div class="up-drop-main">点击或拖拽图片到此处上传</div>
-        <div class="up-drop-sub">支持 JPG、PNG、BMP 等常见图片格式，可批量上传</div>
-      </div>
-      <input type="file" id="up_files" multiple accept="image/*" style="display:none">
-      <div id="up_preview" style="margin-top:8px;font-size:12.5px;color:var(--text-secondary)"></div>
-      <div id="up_status" style="margin-top:12px;font-size:13px"></div>
-    </div>
-    <div class="modal-foot">
-      <button class="btn" onclick="closeModal('upModal')">关闭</button>
-      <button class="btn btn-primary" id="up_btn" onclick="doUpload()">上传</button>
-    </div>
-  </div>
-</div>
-<style>
-  #up_drop{border:2px dashed var(--split,#d9d9d9);border-radius:10px;padding:28px 16px;text-align:center;
-    cursor:pointer;background:#fafafa;transition:all .15s}
-  #up_drop:hover,#up_drop.drag{border-color:var(--primary,#00923f);background:var(--primary-bg,#e8f5ee)}
-  #up_drop .up-drop-icon{font-size:30px;color:var(--primary,#00923f);line-height:1}
-  #up_drop .up-drop-main{font-size:14px;font-weight:600;margin-top:8px}
-  #up_drop .up-drop-sub{font-size:12px;color:var(--text-secondary);margin-top:5px}
-</style>
+{% set empty_hint = '未配置相机面，请到「基础配置 → 图像分类」维护' if cur_brand else '请先在左侧选择牌号' %}
 <script>
-var upFace = {id:0, name:''};
-function openUpload(faceId, faceName, className){
-  {% if not cur_brand %}alert('请先在左侧选择牌号'); return;{% endif %}
-  if(!className){ alert('请先为该相机面设置缺陷分类（点行内「缺陷分类」的编辑）'); return; }
-  upFace = {id: faceId, name: faceName};
-  document.getElementById('up_face').textContent = faceName;
-  document.getElementById('up_class_name').textContent = className;
-  document.getElementById('up_files').value = '';
-  selectedFiles = [];
-  document.getElementById('up_preview').textContent = '';
-  document.getElementById('up_status').textContent = '';
-  document.getElementById('up_btn').disabled = false;
-  openModal('upModal');
-}
-var selectedFiles = [];
-function setFiles(list){
-  selectedFiles = Array.prototype.filter.call(list, function(f){ return f.type.indexOf('image')===0 || /\.(jpe?g|png|bmp)$/i.test(f.name); });
-  document.getElementById('up_preview').textContent = selectedFiles.length ? ('已选 ' + selectedFiles.length + ' 张图片') : '';
-}
-document.getElementById('up_files').addEventListener('change', function(){ setFiles(this.files); });
-(function(){
-  var drop = document.getElementById('up_drop');
-  ['dragenter','dragover'].forEach(function(ev){ drop.addEventListener(ev, function(e){ e.preventDefault(); drop.classList.add('drag'); }); });
-  ['dragleave','drop'].forEach(function(ev){ drop.addEventListener(ev, function(e){ e.preventDefault(); drop.classList.remove('drag'); }); });
-  drop.addEventListener('drop', function(e){ setFiles(e.dataTransfer.files); });
-})();
-function doUpload(){
-  var files = selectedFiles;
-  var st = document.getElementById('up_status');
-  if(!files.length){ st.textContent = '请先选择图片'; st.style.color='#ff4d4f'; return; }
-  document.getElementById('up_btn').disabled = true;
-  var fd = new FormData();
-  fd.append('project', '{{ g_cur_det_name }}');
-  fd.append('brand', '{{ cur_brand }}');
-  fd.append('face_id', upFace.id);   // 缺陷分类由后端按该单元的绑定取，不从前端传
-  for(var i=0;i<files.length;i++){ fd.append('files', files[i]); }
-  st.textContent = '上传中…'; st.style.color = 'var(--text-secondary)';
-  fetch('{{ url_for("label_sample_upload") }}', {method:'POST', body: fd})
-    .then(function(r){ return r.json(); })
-    .then(function(d){
-      if(!d.ok){ st.textContent = '失败：' + d.msg; st.style.color='#ff4d4f'; document.getElementById('up_btn').disabled=false; return; }
-      // 存到 MinIO 就算成功；后续处理状态在「样本数量」历史小窗里看
-      st.innerHTML = '<span style="color:#52c41a">✓ 已上传 ' + d.count + ' 张</span>';
-      setTimeout(function(){ location.reload(); }, 900);
-    })
-    .catch(function(e){ st.textContent = '请求失败：' + e; st.style.color='#ff4d4f'; document.getElementById('up_btn').disabled=false; });
-}
-
-// ---- 缺陷分类绑定（建模单元级，可多选）----
-var clsFace = 0;
-function openClassEdit(faceId, faceName, curClassIds){
-  clsFace = faceId;
-  document.getElementById('cls_face').textContent = faceName;
-  var picked = curClassIds ? curClassIds.split(',') : [];
-  var cbs = document.querySelectorAll('#cls_list input[type=checkbox]');
-  for(var i=0;i<cbs.length;i++){ cbs[i].checked = picked.indexOf(cbs[i].value) >= 0; }
-  document.getElementById('cls_status').textContent = '';
-  openModal('clsModal');
-}
-function clsCheckAll(on){
-  var cbs = document.querySelectorAll('#cls_list input[type=checkbox]');
-  for(var i=0;i<cbs.length;i++){ cbs[i].checked = typeof on==='boolean' ? on : !cbs[i].checked; }
-}
-function saveClass(){
-  var cbs = document.querySelectorAll('#cls_list input[type=checkbox]:checked');
-  var ids = Array.prototype.map.call(cbs, function(cb){ return cb.value; }).join(',');
-  var st = document.getElementById('cls_status');
-  var fd = new FormData();
-  fd.append('brand', '{{ cur_brand }}');
-  fd.append('face_id', clsFace);
-  fd.append('class_ids', ids);
-  st.textContent = '保存中…'; st.style.color = 'var(--text-secondary)';
-  fetch('{{ url_for("label_unit_class") }}', {method:'POST', body: fd})
-    .then(function(r){ return r.json(); })
-    .then(function(d){
-      if(!d.ok){ st.textContent = '失败：' + d.msg; st.style.color='#ff4d4f'; return; }
-      st.innerHTML = '<span style="color:#52c41a">✓ 已保存</span>';
-      setTimeout(function(){ location.reload(); }, 600);
-    })
-    .catch(function(e){ st.textContent = '请求失败：' + e; st.style.color='#ff4d4f'; });
-}
-
-// ---- 样本上传历史小窗 ----
-var histTimer = null, histFace = 0;
-function openHistory(faceId, faceName){
-  histFace = faceId;
-  document.getElementById('hist_face').textContent = faceName;
-  document.getElementById('hist_body').innerHTML = '<tr><td colspan="6" class="hist-empty">加载中…</td></tr>';
-  openModal('histModal');
-  loadHistory();
-  clearInterval(histTimer);
-  histTimer = setInterval(loadHistory, 5000);   // 有处理中时自动刷新
-}
-function closeHistory(){ clearInterval(histTimer); closeModal('histModal'); }
-function loadHistory(){
-  fetch('{{ url_for("api_label_sample_history") }}?face_id=' + histFace + '&brand=' + encodeURIComponent('{{ cur_brand }}'))
-    .then(function(r){ return r.json(); })
-    .then(function(d){
-      document.getElementById('hist_total').textContent = d.total || 0;
-      var b = document.getElementById('hist_body');
-      if(!d.rows.length){ b.innerHTML = '<tr><td colspan="6" class="hist-empty">暂无上传记录</td></tr>'; clearInterval(histTimer); return; }
-      b.innerHTML = d.rows.map(function(r){
-        var badge = r.status==='done' ? '<span class="tag">上传成功</span>'
-          : (r.status==='error' ? '<span class="tag" style="background:#fff1f0;color:#cf1322">失败</span>'
-          : '<span class="tag tag-orange">处理中</span>');
-        return '<tr><td class="td-time">' + r.time + '</td><td class="td-cls" title="' + (r.class_name||'') + '">' + (r.class_name||'—') + '</td>'
-          + '<td class="td-num">' + r.count + '</td><td class="td-st">' + badge
-          + '</td><td class="td-time">' + (r.reply_time||'—') + '</td>'
-          + '<td class="td-by">' + (r.by||'') + '</td></tr>';
-      }).join('');
-      if(!d.proc) clearInterval(histTimer);   // 没有处理中就停止刷新
-    }).catch(function(){});
-}
+window.__INIT__ = {
+  curBrand: '{{ cur_brand }}',
+  detName: '{{ g_cur_det_name }}',
+  csOnline: {{ 'true' if cs_online else 'false' }},
+  units: {{ units | tojson | safe }},
+  classes: {{ classes | tojson | safe }},
+  uploadUrl: '{{ url_for("label_sample_upload") }}',
+  historyUrl: '{{ url_for("api_label_sample_history") }}',
+  classUrl: '{{ url_for("label_unit_class") }}',
+  page: {% if pg %}{ page: {{ pg.page }}, pages: {{ pg.pages }}, total: {{ pg.total }}, size: {{ pg.size }} }{% else %}null{% endif %},
+};
 </script>
 
-<div class="modal-mask" id="histModal">
-  <div class="modal" style="width:960px;max-width:97vw">
-    <div class="modal-head"><span>上传记录 — <b id="hist_face">—</b>（累计 <span id="hist_total">0</span> 张）</span>
-      <span class="close" onclick="closeHistory()">×</span></div>
-    <div class="modal-body" style="padding:16px">
-      <style scoped>
-        #histModal .hist-tbl { width:100%; table-layout:fixed; border-collapse:collapse; font-size:13px }
-        #histModal .hist-tbl th { background:#fafafa; border-bottom:2px solid var(--border,#e8e8e8); padding:8px 10px;
-          text-align:left; font-weight:600; color:var(--text); white-space:nowrap }
-        #histModal .hist-tbl td { padding:8px 10px; border-bottom:1px solid var(--border,#f0f0f0);
-          white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
-        #histModal .hist-tbl tr:hover td { background:#fafafa }
-        #histModal .td-time { width:150px }
-        #histModal .td-cls { width:180px }
-        #histModal .td-num { width:60px }
-        #histModal .td-st { width:90px }
-        #histModal .td-by { width:70px }
-        #histModal .hist-empty { text-align:center; padding:28px 10px; color:var(--text-secondary,#999); font-size:13px }
-      </style>
-      <table class="hist-tbl">
-        <thead><tr><th class="td-time">上传时间</th><th class="td-cls">缺陷分类</th><th class="td-num">数量</th><th class="td-st">状态</th><th class="td-time">回执时间</th><th class="td-by">上传人</th></tr></thead>
-        <tbody id="hist_body"></tbody>
-      </table>
+<div id="label-app" v-cloak style="margin-bottom:12px">
+  <a-card :body-style="{padding:0}">
+    <a-table :data-source="units" :columns="columns" row-key="face_id"
+             :pagination="false" :scroll="{x:1100}" size="small">
+      <template #bodyCell="{column,record}">
+        <template v-if="column.key==='face'"><b>{$ record.face_name $}</b></template>
+        <template v-else-if="column.key==='unit_key'">
+          <code style="font-size:11.5px">{$ record.unit_key $}</code></template>
+        <template v-else-if="column.key==='class'">
+          <template v-for="c in (record.class_list||[])" :key="c.class_id">
+            <a-tag>{$ c.class_name $}</a-tag>
+          </template>
+          <template v-if="!(record.class_list||[]).length">
+            <span style="color:#ff4d4f;font-size:12.5px">鏈缃?/span>
+          </template>
+          <a @click="openClassEdit(record)" style="margin-left:4px">缂栬緫</a>
+        </template>
+        <template v-else-if="column.key==='samples'">
+          <a @click="openHistory(record)">{$ record.sample_count $} 寮?/a>
+          <span v-if="record.sample_proc" style="color:#faad14;font-size:12px">鈼?澶勭悊涓?/span>
+        </template>
+        <template v-else-if="column.key==='unit'">
+          <a-tag v-if="record.exists" color="#00923f">宸插缓</a-tag>
+          <a-tag v-else>鏈缓</a-tag>
+        </template>
+        <template v-else-if="column.key==='model'">
+          <span v-if="record.model_version" style="color:#52c41a">{$ record.model_version $}</span>
+          <span v-else style="color:var(--text-secondary)">鏈粦瀹?/span>
+        </template>
+        <template v-else-if="column.key==='action'">
+          <a-space>
+            <a @click="openUpload(record)">涓婁紶鏍锋湰</a>
+            <a :href="workflowUrl(record.unit_key)">杩涘叆宸ヤ綔娴?/a>
+            <form v-if="!record.exists" method="post" action="{{ url_for('label_unit_create') }}" style="display:inline">
+              <input type="hidden" name="brand" value="{{ cur_brand }}">
+              <input type="hidden" name="face_id" :value="record.face_id">
+              <a-button type="link" html-type="submit" size="small">寤烘ā鍨?/a-button>
+            </form>
+          </a-space>
+        </template>
+      </template>
+      <template #emptyText>
+        <div style="padding:28px;color:var(--text-secondary,#999);text-align:center;font-size:13px">
+          {{ empty_hint }}</div>
+      </template>
+    </a-table>
+  </a-card>
+  {% if pg %}<div class="pager" data-page="{{ pg.page }}" data-pages="{{ pg.pages }}" data-total="{{ pg.total }}"></div>{% endif %}
+
+  <!-- 涓婁紶鏍锋湰 Modal -->
+  <a-modal v-model:visible="upVisible" title="涓婁紶鏍锋湰鍥剧墖"
+           @ok="doUpload" :confirm-loading="uploading" ok-text="涓婁紶" @cancel="resetUp">
+    <div style="font-size:13px;margin-bottom:14px">
+      项目 <b>{$ _detName $}</b> ·
+      牌号 <b>{$ _brand $}</b> ·
+      相机面 <b>{$ upFace.faceName $}</b> ·
+      缺陷分类 <b style="color:var(--primary)">{$ upFace.className $}</b>
     </div>
-    <div class="modal-foot"><button class="btn" onclick="closeHistory()">关闭</button></div>
-  </div>
+    <div class="up-dragger" :class="{'drag-over': dragOver}"
+         @click="$refs.fileInput.click()" @dragover.prevent="dragOver=true"
+         @dragleave.prevent="dragOver=false" @drop.prevent="onDrop">
+      <p class="up-drag-icon">猬?/p>
+      <p class="up-drag-main">鐐瑰嚮鎴栨嫋鎷藉浘鐗囧埌姝ゅ涓婁紶</p>
+      <p class="up-drag-sub">鏀寔 JPG銆丳NG銆丅MP 绛夊父瑙佸浘鐗囨牸寮忥紝鍙壒閲忎笂浼?/p>
+    </div>
+    <input type="file" ref="fileInput" multiple accept="image/*" @change="onFileSelect" style="display:none">
+    <div v-if="upFiles.length" style="margin-top:8px;font-size:12.5px;color:var(--text-secondary)">
+      宸查€?{$ upFiles.length $} 寮犲浘鐗?/div>
+    <div v-if="upMsg" style="margin-top:10px;font-size:13px;color:{$ upMsgColor $}">{$ upMsg $}</div>
+  </a-modal>
+
+  <!-- 涓婁紶鍘嗗彶 Modal -->
+  <a-modal v-model:visible="histVisible" :title="'涓婁紶璁板綍 鈥?' + histFaceName + '锛堢疮璁?' + histTotal + ' 寮狅級'"
+           width="960px" :footer="null" @cancel="closeHistory">
+    <a-table :data-source="histRows" :columns="histCols" row-key="row_id"
+             :pagination="false" :scroll="{x:800}" size="small">
+      <template #bodyCell="{column,record}">
+        <template v-if="column.key==='status'">
+          <a-tag v-if="record.status==='done'" color="green">涓婁紶鎴愬姛</a-tag>
+          <a-tag v-else-if="record.status==='error'" color="red">澶辫触</a-tag>
+          <a-tag v-else color="orange">澶勭悊涓?/a-tag>
+        </template>
+      </template>
+    </a-table>
+  </a-modal>
+
+  <!-- 璁剧疆缂洪櫡鍒嗙被 Modal -->
+  <a-modal v-model:visible="clsVisible" :title="'璁剧疆缂洪櫡鍒嗙被 鈥?' + clsFaceName"
+           @ok="saveClass" :confirm-loading="clsSaving" ok-text="淇濆瓨" @cancel="clsChecked=[]">
+    <div style="font-size:12.5px;color:var(--text-secondary);margin-bottom:10px">
+      璇ュ缓妯″崟鍏冨彲缁戝畾澶氫釜缂洪櫡鍒嗙被锛屾墍鏈夋牱鏈笂浼犳椂涓€骞跺彂閫佺粰 CubeStudio銆?    </div>
+    <template v-if="classes.length">
+      <div style="margin-bottom:8px">
+        <span style="font-size:13px;font-weight:600">缂洪櫡鍒嗙被锛堝彲澶氶€夛級</span>
+        <a @click="clsChecked=classes.map(c=>c.id)" style="margin-left:12px">鍏ㄩ€?/a>
+        <a @click="clsChecked=[]" style="margin-left:8px">娓呯┖</a>
+      </div>
+      <div style="max-height:260px;overflow-y:auto;border:1px solid #d9d9d9;border-radius:6px;padding:6px 12px">
+        <a-checkbox-group v-model:value="clsChecked" :options="clsOpts" />
+      </div>
+      <div style="font-size:11.5px;color:var(--text-secondary);margin-top:4px">涓嶅嬀閫変换浣曢」 = 娓呯┖缁戝畾</div>
+    </template>
+    <div v-else style="color:#ff4d4f;padding:8px 10px;background:#fff1f0;border-radius:6px;font-size:12.5px">
+      褰撳墠妫€娴嬮」鐩繕娌℃湁缂洪櫡鍒嗙被锛岃鍏堝埌銆屽熀纭€閰嶇疆 鈫?缂洪櫡鍒嗙被銆嶇淮鎶ゃ€?    </div>
+  </a-modal>
 </div>
 
-<div class="modal-mask" id="clsModal">
-  <div class="modal" style="width:460px;max-width:94vw">
-    <div class="modal-head"><span>设置缺陷分类 — <b id="cls_face">—</b></span>
-      <span class="close" onclick="closeModal('clsModal')">×</span></div>
-    <div class="modal-body">
-      <div style="font-size:12.5px;color:var(--text-secondary);margin-bottom:10px">
-        该建模单元可绑定多个缺陷分类（多选），所有样本上传时一并发送给 CubeStudio。
-      </div>
-      {% if classes %}
-      <div style="margin-bottom:6px">
-        <span style="font-size:13px;font-weight:600">缺陷分类（可多选）</span>
-        <a class="btn-link" href="javascript:;" onclick="clsCheckAll(true)" style="margin-left:12px">全选</a>
-        <a class="btn-link" href="javascript:;" onclick="clsCheckAll(false)" style="margin-left:8px">反选</a>
-      </div>
-      <div id="cls_list" style="max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:6px 10px">
-        {% for c in classes %}
-        <label style="display:block;padding:4px 0;font-size:13px;cursor:pointer">
-          <input type="checkbox" value="{{ c.id }}" style="margin-right:6px">{{ c.name }}
-        </label>
-        {% endfor %}
-      </div>
-      <div style="font-size:11.5px;color:var(--text-secondary);margin-top:4px">不勾选任何项 = 清空绑定</div>
-      {% else %}
-      <div style="font-size:12.5px;color:#ff4d4f;padding:8px 10px;background:#fff1f0;border-radius:6px">
-        当前检测项目还没有缺陷分类，请先到「基础配置 → 缺陷分类」维护。
-      </div>
-      {% endif %}
-      <div id="cls_status" style="margin-top:12px;font-size:13px"></div>
-    </div>
-    <div class="modal-foot">
-      <button class="btn" onclick="closeModal('clsModal')">取消</button>
-      <button class="btn btn-primary" onclick="saveClass()">保存</button>
-    </div>
-  </div>
-</div>
+<style>
+[v-cloak]{display:none}
+.up-dragger{border:2px dashed #d9d9d9;border-radius:10px;padding:28px 16px;text-align:center;
+  cursor:pointer;background:#fafafa;transition:all .15s}
+.up-dragger:hover,.up-dragger.drag-over{border-color:var(--primary,#00923f);background:var(--primary-bg,#e8f5ee)}
+.up-dragger .up-drag-icon{font-size:30px;color:var(--primary,#00923f);line-height:1}
+.up-dragger .up-drag-main{font-size:14px;font-weight:600;margin-top:8px}
+.up-dragger .up-drag-sub{font-size:12px;color:rgba(0,0,0,0.45);margin-top:5px}
+#label-app .ant-card-body{padding:0}
+</style>
+
+<script src="{{ url_for('static', filename='lib/vue.global.prod.js') }}"></script>
+<script src="{{ url_for('static', filename='lib/dayjs.min.js') }}"></script>
+<script src="{{ url_for('static', filename='lib/dayjs_plugin_advancedFormat.js') }}"></script>
+<script src="{{ url_for('static', filename='lib/dayjs_plugin_customParseFormat.js') }}"></script>
+<script src="{{ url_for('static', filename='lib/dayjs_plugin_localeData.js') }}"></script>
+<script src="{{ url_for('static', filename='lib/dayjs_plugin_quarterOfYear.js') }}"></script>
+<script src="{{ url_for('static', filename='lib/dayjs_plugin_weekOfYear.js') }}"></script>
+<script src="{{ url_for('static', filename='lib/dayjs_plugin_weekYear.js') }}"></script>
+<script src="{{ url_for('static', filename='lib/dayjs_plugin_weekday.js') }}"></script>
+<script src="{{ url_for('static', filename='lib/antd.min.js') }}"></script>
 <script>
-// 有上传处理中时自动刷新页面，直到「处理中」消失
 (function(){
-  var procEls = document.querySelectorAll('[title="有上传处理中"]');
-  if(procEls.length){
-    setTimeout(function(){ location.reload(); }, 5000);
-  }
+  if(typeof Vue==='undefined') return;
+  var init = window.__INIT__ || {};
+  var app = Vue.createApp({
+    data: function(){
+      return {
+        units: init.units || [],
+        classes: init.classes || [],
+        // upload
+        upVisible: false,
+        uploading: false,
+        upFace: {id:0, faceName:'', className:''},
+        upFiles: [],
+        upMsg: '',
+        upMsgColor: 'var(--text-secondary)',
+        _detName: init.detName || '—',
+        _brand: init.curBrand || '—',
+        dragOver: false,
+        // history
+        histVisible: false,
+        histRows: [],
+        histTotal: 0,
+        histFaceName: '',
+        histTimer: null,
+        histCols: [
+          {title:'涓婁紶鏃堕棿',key:'time',width:150},
+          {title:'缂洪櫡鍒嗙被',key:'class_name',width:180,ellipsis:true},
+          {title:'鏁伴噺',key:'count',width:60},
+          {title:'鐘舵€?,key:'status',width:90},
+          {title:'鍥炴墽鏃堕棿',key:'reply_time',width:150},
+          {title:'涓婁紶浜?,key:'by',width:70},
+        ],
+        // class edit
+        clsVisible: false,
+        clsSaving: false,
+        clsFaceId: 0,
+        clsFaceName: '',
+        clsChecked: [],
+      };
+    },
+    computed: {
+      columns: function(){
+        return [
+          {title:'鐩告満闈?,key:'face',width:80},
+          {title:'鍗曞厓鏍囪瘑',key:'unit_key',width:200,ellipsis:true},
+          {title:'缂洪櫡鍒嗙被',key:'class',width:200},
+          {title:'鏍锋湰鏁伴噺',key:'samples',width:110},
+          {title:'寤烘ā鍗曞厓',key:'unit',width:80},
+          {title:'宸茬粦瀹氭ā鍨?,key:'model',width:120},
+          {title:'鎿嶄綔',key:'action',width:230},
+        ];
+      },
+      clsOpts: function(){
+        return this.classes.map(function(c){ return {label:c.name, value:c.id}; });
+      },
+    },
+    methods: {
+      openUpload: function(r){
+        if(!init.curBrand){ antd.message.warning('璇峰厛鍦ㄥ乏渚ч€夋嫨鐗屽彿'); return; }
+        if(!r.class_name){ antd.message.warning('璇峰厛涓鸿鐩告満闈㈣缃己闄峰垎绫?); return; }
+        this.upFace = {id:r.face_id, faceName:r.face_name, className:r.class_name};
+        this.upFiles = [];
+        this.upMsg = '';
+        this.upVisible = true;
+      },
+      onFileSelect: function(e){ this.processFiles(e.target.files); e.target.value=''; },
+      onDrop: function(e){ this.dragOver=false; this.processFiles(e.dataTransfer.files); },
+      processFiles: function(list){
+        var self=this;
+        Array.from(list).forEach(function(f){
+          if(/\.(jpe?g|png|bmp)$/i.test(f.name)){ self.upFiles.push(f); }
+        });
+      },
+      doUpload: function(){
+        var self=this;
+        if(!self.upFiles.length){ antd.message.warning('璇峰厛閫夋嫨鍥剧墖'); return; }
+        self.uploading = true;
+        var fd = new FormData();
+        fd.append('project', init.detName);
+        fd.append('brand', init.curBrand);
+        fd.append('face_id', self.upFace.id);
+        self.upFiles.forEach(function(f){ fd.append('files', f); });
+        fetch(init.uploadUrl, {method:'POST', body:fd})
+          .then(function(r){ return r.json(); })
+          .then(function(d){
+            self.uploading = false;
+            if(!d.ok){
+              antd.message.error(d.msg);
+              return;
+            }
+            antd.message.success('宸蹭笂浼?' + d.count + ' 寮?);
+            setTimeout(function(){ location.reload(); }, 900);
+          })
+          .catch(function(e){
+            self.uploading = false;
+            antd.message.error('璇锋眰澶辫触锛? + e);
+          });
+      },
+      resetUp: function(){ this.upFiles=[]; this.upMsg=''; },
+      openHistory: function(r){
+        var self=this;
+        self.histFaceName = r.face_name;
+        self.histVisible = true;
+        self.histRows = [{count:'', status:'', row_id:0}]; // placeholder
+        self.histTotal = 0;
+        self.loadHistory();
+        if(self.histTimer) clearInterval(self.histTimer);
+        self.histTimer = setInterval(function(){ self.loadHistory(); }, 5000);
+      },
+      closeHistory: function(){
+        if(this.histTimer){ clearInterval(this.histTimer); this.histTimer=null; }
+        this.histVisible = false;
+      },
+      loadHistory: function(){
+        var self=this;
+        fetch(init.historyUrl + '?face_id=' + self.upFace.id + '&brand=' + encodeURIComponent(init.curBrand))
+          .then(function(r){ return r.json(); })
+          .then(function(d){
+            self.histTotal = d.total || 0;
+            self.histRows = (d.rows || []).map(function(r,i){ r.row_id=i; return r; });
+            if(!d.proc && self.histTimer){ clearInterval(self.histTimer); self.histTimer=null; }
+          })
+          .catch(function(){});
+      },
+      openClassEdit: function(r){
+        this.clsFaceId = r.face_id;
+        this.clsFaceName = r.face_name;
+        this.clsChecked = (r.class_ids || '').split(',').filter(function(x){ return x; }).map(Number);
+        this.clsVisible = true;
+      },
+      saveClass: function(){
+        var self=this;
+        self.clsSaving = true;
+        var fd = new FormData();
+        fd.append('brand', init.curBrand);
+        fd.append('face_id', self.clsFaceId);
+        fd.append('class_ids', self.clsChecked.join(','));
+        fetch(init.classUrl, {method:'POST', body:fd})
+          .then(function(r){ return r.json(); })
+          .then(function(d){
+            self.clsSaving = false;
+            if(!d.ok){ antd.message.error(d.msg); return; }
+            antd.message.success('宸蹭繚瀛?);
+            setTimeout(function(){ location.reload(); }, 600);
+          })
+          .catch(function(e){ self.clsSaving=false; antd.message.error('璇锋眰澶辫触锛? + e); });
+      },
+      workflowUrl: function(unitKey){
+        return '{{ url_for("label_workflow") }}?unit_key=' + unitKey;
+      },
+    },
+    mounted: function(){
+      // 鏈夊鐞嗕腑鏃惰嚜鍔ㄥ埛鏂伴〉闈?      var self=this;
+      if(self.units.some(function(u){ return u.sample_proc; })){
+        setTimeout(function(){ location.reload(); }, 5000);
+      }
+    },
+    beforeUnmount: function(){
+      if(this.histTimer) clearInterval(this.histTimer);
+    },
+  });
+  app.config.compilerOptions.delimiters = ['{$', '$}'];
+  app.use(window.antd);
+  app.mount('#label-app');
 })();
 </script>
 {% endblock %}
+
