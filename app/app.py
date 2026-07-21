@@ -37,6 +37,11 @@ CFG_DEFAULTS = {
     "cs_url": os.environ.get("CS_URL", ""),                 # CubeStudio（预留）
     "cs_token": os.environ.get("CS_TOKEN", ""),
     "workflow_url": os.environ.get("WORKFLOW_URL", "http://10.10.52.127/frontend/visionWorkflow/embed/1?embed=1"),
+    "mq_host": os.environ.get("MQ_HOST", "10.10.96.65"),
+    "mq_port": os.environ.get("MQ_PORT", "5672"),
+    "mq_user": os.environ.get("MQ_USER", "admin"),
+    "mq_pass": os.environ.get("MQ_PASS", "Hlxd@123456"),
+    "sample_bucket": os.environ.get("SAMPLE_BUCKET", "defect-samples"),
 }
 CFG_LABELS = [
     ("ls_url", "Label Studio 地址", "浏览器与平台都要能访问，故必须用 IP 不能用 127.0.0.1"),
@@ -47,6 +52,11 @@ CFG_LABELS = [
     ("cs_url", "CubeStudio 地址", "预留，本机资源不足未部署"),
     ("cs_token", "CubeStudio Token", "预留"),
     ("workflow_url", "视觉工作流地址", "真实标注工作流界面，缺陷标注页「进入工作流」内嵌它（浏览器需能访问）"),
+    ("mq_host", "RabbitMQ 地址", "样本上传消息队列，如 10.10.96.65"),
+    ("mq_port", "RabbitMQ 端口", "AMQP 端口，默认 5672"),
+    ("mq_user", "RabbitMQ 账号", ""),
+    ("mq_pass", "RabbitMQ 密码", ""),
+    ("sample_bucket", "样本桶", "批量上传样本的 MinIO 桶名，不存在自动新建"),
 ]
 
 _cfg_cache = {"t": 0.0, "d": {}}
@@ -370,6 +380,23 @@ def init_db():
             msg VARCHAR(255) DEFAULT '' COMMENT '最新消息',
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'
         ) DEFAULT CHARSET=utf8mb4 COMMENT='实时目录分析任务(进度)'""",
+        """CREATE TABLE IF NOT EXISTS sample_uploads(
+            id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+            msg_id VARCHAR(64) NOT NULL COMMENT '消息ID(与MQ回执关联)',
+            project VARCHAR(64) COMMENT '检测项目',
+            brand VARCHAR(64) COMMENT '牌号',
+            face VARCHAR(64) COMMENT '相机面',
+            face_code VARCHAR(32) COMMENT '相机面编码',
+            bucket VARCHAR(64) COMMENT 'MinIO桶',
+            path VARCHAR(512) COMMENT 'MinIO目录前缀',
+            img_count INT DEFAULT 0 COMMENT '图片数',
+            status VARCHAR(16) DEFAULT 'processing' COMMENT 'processing/done/error',
+            reply_msg VARCHAR(255) DEFAULT '' COMMENT '算法侧回执消息',
+            created_by VARCHAR(64) DEFAULT '' COMMENT '上传人',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '上传时间',
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+            UNIQUE KEY uq_msg (msg_id)
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='样本上传记录(MQ交互状态)'""",
         """CREATE TABLE IF NOT EXISTS analysis_logs(
             id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
             unit_id INT NOT NULL COMMENT '建模单元(model_units.id)',
@@ -1834,6 +1861,145 @@ def label_workflow():
     return render_template("label_workflow.html", wf_src=url, active="label")
 
 
+# ---------------------------------------------------------------- 样本上传 + RabbitMQ
+MQ_EXCHANGE = "defect.sample"
+MQ_RK_REQ = "sample.upload"
+MQ_RK_REPLY = "sample.upload.reply"
+
+
+def _mq_conn():
+    import pika
+    cred = pika.PlainCredentials(get_cfg("mq_user"), get_cfg("mq_pass"))
+    return pika.BlockingConnection(pika.ConnectionParameters(
+        get_cfg("mq_host"), int(get_cfg("mq_port") or 5672), "/", cred,
+        heartbeat=30, blocked_connection_timeout=10))
+
+
+def mq_publish_upload(payload):
+    """发上传请求到 sample.upload。返回 (ok, err)。"""
+    import pika
+    try:
+        conn = _mq_conn()
+        ch = conn.channel()
+        ch.exchange_declare(exchange=MQ_EXCHANGE, exchange_type="direct", durable=True)
+        ch.basic_publish(exchange=MQ_EXCHANGE, routing_key=MQ_RK_REQ,
+                         body=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                         properties=pika.BasicProperties(delivery_mode=2))
+        conn.close()
+        return True, ""
+    except Exception as e:
+        app.logger.warning("发送 MQ 上传请求失败：%s", e)
+        return False, str(e)[:150]
+
+
+def _mq_reply_consumer():
+    """后台常驻：消费 sample.upload.reply，按 msg_id 更新上传状态为 done/error。"""
+    import pika
+    while True:
+        try:
+            conn = _mq_conn()
+            ch = conn.channel()
+            ch.exchange_declare(exchange=MQ_EXCHANGE, exchange_type="direct", durable=True)
+            ch.queue_declare(queue=MQ_RK_REPLY, durable=True)
+            ch.queue_bind(exchange=MQ_EXCHANGE, queue=MQ_RK_REPLY, routing_key=MQ_RK_REPLY)
+
+            def on_reply(chan, method, props, body):
+                try:
+                    d = json.loads(body.decode("utf-8"))
+                    mid = d.get("msg_id", "")
+                    st = "done" if d.get("status") == "ok" else "error"
+                    dbc = _DB(_connect())
+                    dbc.execute("UPDATE sample_uploads SET status=?,reply_msg=? WHERE msg_id=?",
+                                (st, str(d.get("message", ""))[:255], mid))
+                    dbc.commit()
+                    dbc.close()
+                    app.logger.info("样本上传回执 %s → %s", mid, st)
+                except Exception as e:
+                    app.logger.warning("处理 MQ 回执失败：%s", e)
+                chan.basic_ack(delivery_tag=method.delivery_tag)
+
+            ch.basic_consume(queue=MQ_RK_REPLY, on_message_callback=on_reply)
+            app.logger.info("MQ 回执消费者已启动")
+            ch.start_consuming()
+        except Exception as e:
+            app.logger.warning("MQ 回执消费者断线，5秒后重连：%s", e)
+            time.sleep(5)
+
+
+@app.route("/label/sample/upload", methods=["POST"])
+@login_required
+def label_sample_upload():
+    """批量上传样本：存 MinIO(项目/牌号/相机面/) → 记录 → 发 MQ 请求。返回 msg_id。"""
+    db = get_db()
+    project = request.form.get("project", "").strip()
+    brand = request.form.get("brand", "").strip()
+    face_id = request.form.get("face_id", type=int)
+    files = request.files.getlist("files")
+    if not (project and brand and face_id and files):
+        return jsonify({"ok": False, "msg": "缺少项目/牌号/相机面或未选图片"}), 400
+    face = db.execute("SELECT * FROM camera_faces WHERE id=?", (face_id,)).fetchone()
+    if not face:
+        return jsonify({"ok": False, "msg": "相机面不存在"}), 400
+    scfg = db.execute("SELECT * FROM storage_config WHERE server_addr<>'' LIMIT 1").fetchone()
+    if not scfg:
+        return jsonify({"ok": False, "msg": "未配置对象存储数据源"}), 400
+    bucket = get_cfg("sample_bucket")
+    # 路径：项目/牌号/相机面编码/
+    prefix = "%s/%s/%s/" % (project, brand, face["face_code"] or face["face_name"])
+    try:
+        s3, _ = get_s3(scfg)
+        try:
+            s3.head_bucket(Bucket=bucket)
+        except Exception:
+            s3.create_bucket(Bucket=bucket)   # 样本桶不存在自动新建
+        import time as _t
+        keys = []
+        base = int(_t.time() * 1000)
+        for i, fp in enumerate(files):
+            ext = os.path.splitext(fp.filename)[1].lower() or ".jpg"
+            key = prefix + "%d%s" % (base + i, ext)
+            s3.upload_fileobj(fp.stream, bucket, key)
+            keys.append(key)
+    except Exception as e:
+        return jsonify({"ok": False, "msg": "上传 MinIO 失败：%s" % str(e)[:140]}), 500
+
+    import uuid
+    msg_id = "u-%s-%s" % (datetime.now().strftime("%Y%m%d"), uuid.uuid4().hex[:8])
+    it = db.execute("SELECT code FROM detect_items WHERE short_name=? OR name=?", (project, project)).fetchone()
+    payload = {"msg_id": msg_id, "project": project, "project_code": it["code"] if it else "",
+               "brand": brand, "face": face["face_name"], "face_code": face["face_code"],
+               "bucket": bucket, "path": prefix, "count": len(keys), "images": keys,
+               "minio": {"endpoint": "http://" + scfg["server_addr"],
+                         "access_key": scfg["username"], "secret_key": scfg["password"]},
+               "ts": int(datetime.now().timestamp())}
+    db.execute("INSERT INTO sample_uploads(msg_id,project,brand,face,face_code,bucket,path,"
+               "img_count,status,created_by) VALUES(?,?,?,?,?,?,?,?,?,?)",
+               (msg_id, project, brand, face["face_name"], face["face_code"], bucket, prefix,
+                len(keys), "processing", session.get("username", "")))
+    db.commit()
+    ok, err = mq_publish_upload(payload)
+    if not ok:
+        db.execute("UPDATE sample_uploads SET status='error',reply_msg=? WHERE msg_id=?",
+                   ("MQ发送失败：" + err, msg_id))
+        db.commit()
+        return jsonify({"ok": False, "msg": "已上传但消息发送失败：%s" % err, "msg_id": msg_id})
+    return jsonify({"ok": True, "msg_id": msg_id, "count": len(keys)})
+
+
+@app.route("/api/label/sample/status")
+@login_required
+def api_label_sample_status():
+    """轮询上传状态（processing/done/error）。"""
+    ids = request.args.get("ids", "")
+    mids = [x for x in ids.split(",") if x.strip()]
+    if not mids:
+        return jsonify({})
+    ph = ",".join(["?"] * len(mids))
+    rows = get_db().execute("SELECT msg_id,status,reply_msg FROM sample_uploads WHERE msg_id IN (%s)" % ph,
+                            mids).fetchall()
+    return jsonify({r["msg_id"]: {"status": r["status"], "reply": r["reply_msg"]} for r in rows})
+
+
 @app.route("/api/label/unit/<int:unit_id>/stats")
 @login_required
 def api_label_unit_stats(unit_id):
@@ -2546,6 +2712,13 @@ def api_analysis(tab):
 
 # ----------------------------------------------------------------
 init_db()
+
+# 启动 MQ 回执消费者（守护线程，随进程存活）
+try:
+    import threading
+    threading.Thread(target=_mq_reply_consumer, daemon=True).start()
+except Exception as _e:
+    app.logger.warning("MQ 回执消费者未能启动：%s", _e)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "9573")), debug=False)
