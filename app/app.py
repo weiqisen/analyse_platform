@@ -2479,7 +2479,7 @@ def model():
     # 机台→数据源映射（选机台自动确定数据源和桶，不给用户额外选择）
     lines_source = {}
     for l in db.execute("SELECT pl.*, sc.server_addr, sc.in_bucket, "
-                         "tc.sys_addr, tc.ng_dir "
+                         "tc.sys_addr AS ftp_addr, tc.ng_dir "
                          "FROM prod_lines pl "
                          "LEFT JOIN storage_config sc ON sc.line_id=pl.id "
                          "LEFT JOIN terminal_config tc ON tc.line_id=pl.id "
@@ -2487,15 +2487,18 @@ def model():
         if l["server_addr"]:
             lines_source[l["id"]] = {"line_id": l["id"], "code": l["code"], "name": l["name"],
                                      "workshop": l["workshop"], "type": "minio",
+                                     "addr": l["server_addr"],
                                      "bucket": l["in_bucket"] or "defect-raw",
                                      "path_alias": l.get("path_alias") or l["code"].strip()}
-        elif l["sys_addr"]:
+        elif l["ftp_addr"]:
             lines_source[l["id"]] = {"line_id": l["id"], "code": l["code"], "name": l["name"],
                                      "workshop": l["workshop"], "type": "ftp",
+                                     "addr": l["ftp_addr"],
                                      "path_alias": l.get("path_alias") or l["code"].strip()}
         else:
             lines_source[l["id"]] = {"line_id": l["id"], "code": l["code"], "name": l["name"],
                                      "workshop": l["workshop"], "type": "",
+                                     "addr": "",
                                      "path_alias": l.get("path_alias") or l["code"].strip()}
     # 车间（含路径别名），供级联选择
     workshops_list = [dict(w) for w in db.execute(

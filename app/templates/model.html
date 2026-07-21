@@ -133,18 +133,18 @@
           <div class="form-item" style="flex:1;min-width:150px">
             <label>检测项目 <span style="color:#ff4d4f">*</span></label>
             <select class="select input" id="rt_det" onchange="rtBuildPath()">
-              <option value="">—</option>
               {% for d in det_items %}
-              <option value="{{ d.code }}">{{ d.code }} {{ d.short_name or d.name }}</option>
+              <option value="{{ d.code }}" {{ 'selected' if cur_det==d.id }}>{{ d.code }} {{ d.short_name or d.name }}</option>
               {% endfor %}
             </select>
           </div>
         </div>
 
         <div style="margin:6px 0 14px;padding:10px 14px;background:#fafafa;border:1px solid #e8e8e8;border-radius:6px;font-size:13px">
-          <span id="rt_path_text" style="color:var(--text);font-family:monospace;font-weight:600">尚未选择</span>
-          <span style="color:#999">/日期/班组/班次/相机面/文件</span>
-          <div id="rt_source_info" style="font-size:12px;color:#999;margin-top:4px;display:none"></div>
+          <div><span id="rt_path_text" style="color:var(--text);font-family:monospace;font-weight:600">尚未选择</span>
+          <span style="color:#999">/日期/班组/班次/相机面/文件</span></div>
+          <div id="rt_source_info" style="font-size:12px;color:#666;margin-top:6px;display:none;
+               padding:6px 10px;background:#fff;border-radius:4px"></div>
         </div>
 
         <div style="margin-top:4px">
@@ -250,13 +250,19 @@ function rtApplyLine(lineCode, lineId){
   var bucket = lineSrc.bucket || '';
   document.getElementById('rt_bucket').value = bucket;
   document.getElementById('rt_bucket_input').value = bucket;
-  // 显示数据源信息
+  // 显示完整数据源信息
   var info = document.getElementById('rt_source_info');
   info.style.display = 'block';
   if(lineSrc.type === 'minio'){
-    info.innerHTML = '数据源：对象存储 · ' + '桶 <b>' + (bucket || '?') + '</b>';
+    var addr = lineSrc.addr || '?';
+    info.innerHTML = '<b>数据源</b> ' + lineSrc.code + ' · ' + lineSrc.name
+      + '<br>类型 对象存储 · 地址 ' + addr + ' · 桶 <b>' + (bucket || '?') + '</b>';
+  } else if(lineSrc.type === 'ftp'){
+    var addr = lineSrc.addr || '?';
+    info.innerHTML = '<b>数据源</b> ' + lineSrc.code + ' · ' + lineSrc.name
+      + '<br>类型 FTP 工控机 · 地址 ' + addr;
   } else {
-    info.innerHTML = '数据源：FTP 工控机（无需桶）';
+    info.style.display = 'none';
   }
 }
 function rtToggleBucket(){
