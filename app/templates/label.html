@@ -23,7 +23,7 @@
 
 <div class="card tbl-card"><div class="card-body" style="padding:0">
 <table class="table">
-  <thead><tr><th>相机面</th><th>unit_key</th><th>缺陷分类</th><th>样本数量</th><th>建模单元</th><th>标注进度</th><th>已绑定模型</th><th>操作</th></tr></thead>
+  <thead><tr><th>相机面</th><th>unit_key</th><th>缺陷分类</th><th>样本数量</th><th>建模单元</th><th>已绑定模型</th><th>操作</th></tr></thead>
   <tbody>
   {% for u in units %}
   <tr>
@@ -40,7 +40,6 @@
       {% if u.sample_proc %}<span style="color:#faad14;font-size:12px" title="有上传处理中">● 处理中</span>{% endif %}
     </td>
     <td>{% if u.exists %}<span class="tag">已建</span>{% else %}<span class="tag tag-gray">未建</span>{% endif %}</td>
-    <td>{% if u.exists %}{{ u.annotated }} / {{ u.total }}{% else %}—{% endif %}</td>
     <td>{% if u.model_version %}<span style="color:#52c41a">{{ u.model_version }}</span>{% else %}<span style="color:var(--text-secondary)">未绑定</span>{% endif %}</td>
     <td style="white-space:nowrap">
       <a class="btn-link" href="javascript:;" onclick="openUpload({{ u.face_id }},'{{ u.face_name }}','{{ u.class_name }}')">上传样本</a>
@@ -55,7 +54,7 @@
     </td>
   </tr>
   {% else %}
-  <tr><td colspan="8" class="empty">未配置相机面，请到「基础配置 → 图像分类」维护</td></tr>
+  <tr><td colspan="7" class="empty">未配置相机面，请到「基础配置 → 图像分类」维护</td></tr>
   {% endfor %}
   </tbody>
 </table>
