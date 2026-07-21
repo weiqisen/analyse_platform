@@ -1944,8 +1944,16 @@ def label_sample_upload():
     if not scfg:
         return jsonify({"ok": False, "msg": "未配置对象存储数据源"}), 400
     bucket = get_cfg("sample_bucket")
-    # 路径：项目/牌号/相机面编码/
-    prefix = "%s/%s/%s/" % (project, brand, face["face_code"] or face["face_name"])
+    # MinIO 路径用编码（避免中文/中文括号）：项目编码/牌号编码/相机面编码/
+    # 三个编码在基础数据里可维护：detect_items.code、brands.code、camera_faces.face_code
+    it = db.execute("SELECT code FROM detect_items WHERE short_name=? OR name=?", (project, project)).fetchone()
+    br = db.execute("SELECT code FROM brands WHERE spec=?", (brand,)).fetchone()
+    proj_code = (it["code"] if it and it["code"] else "") or project
+    brand_code = (br["code"] if br and br["code"] else "") or brand
+    face_code = face["face_code"] or face["face_name"]
+    missing = [n for n, c, raw in [("检测项目", it and it["code"], project),
+               ("牌号", br and br["code"], brand), ("相机面", face["face_code"], face["face_name"])] if not c]
+    prefix = "%s/%s/%s/" % (proj_code, brand_code, face_code)
     try:
         s3, _ = get_s3(scfg)
         try:
@@ -1965,9 +1973,9 @@ def label_sample_upload():
 
     import uuid
     msg_id = "u-%s-%s" % (datetime.now().strftime("%Y%m%d"), uuid.uuid4().hex[:8])
-    it = db.execute("SELECT code FROM detect_items WHERE short_name=? OR name=?", (project, project)).fetchone()
-    payload = {"msg_id": msg_id, "project": project, "project_code": it["code"] if it else "",
-               "brand": brand, "face": face["face_name"], "face_code": face["face_code"],
+    payload = {"msg_id": msg_id, "project": project, "project_code": proj_code,
+               "brand": brand, "brand_code": brand_code,
+               "face": face["face_name"], "face_code": face_code,
                "bucket": bucket, "path": prefix, "count": len(keys), "images": keys,
                "minio": {"endpoint": "http://" + scfg["server_addr"],
                          "access_key": scfg["username"], "secret_key": scfg["password"]},
@@ -1983,7 +1991,8 @@ def label_sample_upload():
                    ("MQ发送失败：" + err, msg_id))
         db.commit()
         return jsonify({"ok": False, "msg": "已上传但消息发送失败：%s" % err, "msg_id": msg_id})
-    return jsonify({"ok": True, "msg_id": msg_id, "count": len(keys)})
+    warn = ("（%s 未设编码，路径暂用名称，建议到基础数据补编码）" % "、".join(missing)) if missing else ""
+    return jsonify({"ok": True, "msg_id": msg_id, "count": len(keys), "path": bucket + "/" + prefix, "warn": warn})
 
 
 @app.route("/api/label/sample/status")
