@@ -29,7 +29,7 @@
   {% elif tab == 'brands' %}
     <tr><th>序号</th><th>产品代码</th><th>产品规格</th><th>状态</th><th>操作</th></tr>
   {% elif tab == 'workshops' %}
-    <tr><th>序号</th><th>车间名称</th><th>状态</th><th>操作</th></tr>
+    <tr><th>序号</th><th>车间名称</th><th>路径别名</th><th>状态</th><th>操作</th></tr>
   {% elif tab == 'areas' %}
     <tr><th>序号</th><th>区域名称</th><th>所属车间</th><th>状态</th><th>操作</th></tr>
   {% elif tab == 'defects' %}
@@ -54,7 +54,7 @@
     {% elif tab == 'brands' %}
       <td>{{ r.code }}</td><td>{{ r.spec }}</td>
     {% elif tab == 'workshops' %}
-      <td>{{ r.name }}</td>
+      <td>{{ r.name }}</td><td><code>{{ r.path_alias or '—' }}</code></td>
     {% elif tab == 'areas' %}
       <td>{{ r.name }}</td><td>{{ r.workshop }}</td>
     {% elif tab == 'defects' %}
@@ -115,6 +115,10 @@
         <div class="form-item"><label><span class="req">*</span>产品规格</label><input class="input" name="spec" id="c_spec" required></div>
         {% elif tab == 'workshops' %}
         <div class="form-item"><label><span class="req">*</span>车间名称</label><input class="input" name="name" id="c_name" required></div>
+        <div class="form-item"><label>MinIO 路径别名</label>
+          <input class="input" name="path_alias" id="c_path_alias" placeholder="如 jb1">
+          <div style="font-size:11.5px;color:var(--text-secondary);margin-top:3px">用于构造实时目录路径前缀。不填则用车间名称。</div>
+        </div>
         {% elif tab == 'areas' %}
         <div class="form-item"><label><span class="req">*</span>区域名称</label><input class="input" name="name" id="c_name" required></div>
         <div class="form-item"><label>所属车间</label>
@@ -196,7 +200,7 @@ function fillSources(selected){
 function editRow(r){
   r = r || {};
   document.getElementById('rowModalTitle').textContent = (r.id ? '修改' : '新增') + '{{ tabname }}';
-  ['id','code','name','short_name','workshop','area','spec','machine','sched_date','shift','brand'].forEach(function(k){
+  ['id','code','name','short_name','workshop','area','spec','machine','sched_date','shift','brand','path_alias'].forEach(function(k){
     var el = document.getElementById('c_' + k);
     if (el) el.value = r[k] || '';
   });

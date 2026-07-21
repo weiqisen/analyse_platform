@@ -262,6 +262,7 @@ def migrate_db(db):
         ("sample_uploads", "cs_project_id", "VARCHAR(64) DEFAULT '' COMMENT 'CubeStudio项目ID(回执回填)'"),
         ("sample_uploads", "class_id", "INT DEFAULT 0 COMMENT '缺陷分类ID(label_classes.id), 上传必选'"),
         ("sample_uploads", "class_name", "VARCHAR(512) DEFAULT '' COMMENT '缺陷分类名称(可多个, / 分隔)'"),
+        ("workshops", "path_alias", "VARCHAR(32) DEFAULT '' COMMENT 'MinIO路径别名, 如 jb1'"),
     ]
     added = set()
     for table, col, ddl in adds:
@@ -586,6 +587,7 @@ def init_db():
         """CREATE TABLE IF NOT EXISTS workshops(
             id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
             name VARCHAR(64) NOT NULL COMMENT '车间名称',
+            path_alias VARCHAR(32) DEFAULT '' COMMENT 'MinIO路径别名, 如 jb1',
             status INT DEFAULT 1 COMMENT '状态: 1启用 0停用'
         ) DEFAULT CHARSET=utf8mb4 COMMENT='车间字典表'""",
         """CREATE TABLE IF NOT EXISTS areas(
@@ -1002,9 +1004,11 @@ def config_save(tab):
             db.execute("INSERT INTO brands(code,spec) VALUES(?,?)", (f["code"], f["spec"]))
     elif tab == "workshops":
         if rid:
-            db.execute("UPDATE workshops SET name=? WHERE id=?", (f["name"], rid))
+            db.execute("UPDATE workshops SET name=?,path_alias=? WHERE id=?",
+                       (f["name"], f.get("path_alias", "").strip(), rid))
         else:
-            db.execute("INSERT INTO workshops(name) VALUES(?)", (f["name"],))
+            db.execute("INSERT INTO workshops(name,path_alias) VALUES(?,?)",
+                       (f["name"], f.get("path_alias", "").strip()))
     elif tab == "areas":
         if rid:
             db.execute("UPDATE areas SET name=?,workshop=? WHERE id=?", (f["name"], f.get("workshop", ""), rid))
@@ -2469,36 +2473,33 @@ def model():
                      "rt_type": u.get("rt_type", ""), "rt_line_id": u.get("rt_line_id", 0),
                      "rt_bucket": u.get("rt_bucket", ""), "rt_path": u.get("rt_path", ""),
                      "job": dict(job) if job else None})
-    # 已配置的数据源（供实时目录选择复用凭据）：minio 用 storage_config，ftp 用 terminal_config
-    sources = []
-    for l in db.execute("SELECT * FROM prod_lines WHERE status=1 ORDER BY id").fetchall():
-        sc = db.execute("SELECT * FROM storage_config WHERE line_id=?", (l["id"],)).fetchone()
-        tc = db.execute("SELECT * FROM terminal_config WHERE line_id=?", (l["id"],)).fetchone()
-        if sc and sc["server_addr"]:
-            sources.append({"line_id": l["id"], "line": l["name"], "type": "minio",
-                            "addr": sc["server_addr"], "bucket": sc["in_bucket"]})
-        elif tc and tc["sys_addr"]:
-            sources.append({"line_id": l["id"], "line": l["name"], "type": "ftp",
-                            "addr": tc["sys_addr"], "dir": tc["ng_dir"]})
-    # 车间+机台：供路径规则引擎级联选择
-    workshops_list = [dict(w) for w in db.execute("SELECT * FROM workshops WHERE status=1 ORDER BY id").fetchall()]
-    lines_list = [dict(l) for l in db.execute("SELECT * FROM prod_lines WHERE status=1 ORDER BY workshop, name").fetchall()]
-    # 列出 MinIO 现有桶（供桶名下拉）
-    buckets = []
-    try:
-        scfg0 = db.execute("SELECT DISTINCT sc.* FROM storage_config sc "
-                           "JOIN prod_lines l ON l.id=sc.line_id WHERE l.status=1 "
-                           "AND sc.server_addr<>'' LIMIT 1").fetchone()
-        if scfg0:
-            s3, _ = get_s3(scfg0)
-            buckets = sorted([b["Name"] for b in s3.list_buckets().get("Buckets", [])])
-    except Exception:
-        pass
+    # 机台→数据源映射（选机台自动确定数据源和桶，不给用户额外选择）
+    lines_source = {}
+    for l in db.execute("SELECT pl.*, sc.server_addr, sc.in_bucket, "
+                         "tc.sys_addr, tc.ng_dir "
+                         "FROM prod_lines pl "
+                         "LEFT JOIN storage_config sc ON sc.line_id=pl.id "
+                         "LEFT JOIN terminal_config tc ON tc.line_id=pl.id "
+                         "WHERE pl.status=1 ORDER BY pl.workshop, pl.name").fetchall():
+        if l["server_addr"]:
+            lines_source[l["id"]] = {"line_id": l["id"], "code": l["code"], "name": l["name"],
+                                     "workshop": l["workshop"], "type": "minio",
+                                     "bucket": l["in_bucket"] or "defect-raw"}
+        elif l["sys_addr"]:
+            lines_source[l["id"]] = {"line_id": l["id"], "code": l["code"], "name": l["name"],
+                                     "workshop": l["workshop"], "type": "ftp"}
+        else:
+            lines_source[l["id"]] = {"line_id": l["id"], "code": l["code"], "name": l["name"],
+                                     "workshop": l["workshop"], "type": ""}
+    # 车间（含路径别名），供级联选择
+    workshops_list = [dict(w) for w in db.execute(
+        "SELECT * FROM workshops WHERE status=1 ORDER BY id").fetchall()]
     return render_template("model.html", det_items=det_items, cur_det=cur_det,
                            brands=brands, cur_brand=cur_brand,
-                           rows=rows, pg=pg, cs_online=cs_online, sources=sources,
-                           workshops_list=workshops_list, lines_list=lines_list,
-                           buckets=buckets, active="model")
+                           rows=rows, pg=pg, cs_online=cs_online,
+                           workshops_list=workshops_list,
+                           lines_source=json.dumps(lines_source, ensure_ascii=False),
+                           active="model")
 
 
 @app.route("/model/bind", methods=["POST"])
