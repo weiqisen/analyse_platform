@@ -1,6 +1,6 @@
 # 样本上传 · RabbitMQ 消息契约
 
-**文档版本：v1**（2026-07-21，含 unit_key 稳定标识 + 缺陷分类字段）
+**文档版本：v1**（2026-07-21，含 unit_key 稳定标识 + 缺陷分类多选数组）
 
 平台（缺陷标注页批量上传样本）与CubeStudio服务之间，通过 RabbitMQ 交换样本上传信息。
 
@@ -42,8 +42,8 @@ routing key `sample.upload`，JSON：
   "brand_code": "3302101",              // 牌号编码(用于路径)
   "face": "正面",                       // 相机面标准名(中文)
   "face_code": "front",                 // 相机面编码(用于路径)
-  "class_id": 12,                       // 【缺陷分类】平台维护的缺陷类别ID(label_classes.id)，上传前必选
-  "class_name": "侧面翘边",              // 【缺陷分类】缺陷类别名称，本批图片全属该类别
+  "class_ids": [12, 15],               // 【缺陷分类】平台维护的缺陷类别ID数组(可多选，label_classes.id)
+  "class_names": ["侧面翘边", "商标歪斜"], // 【缺陷分类】缺陷类别名称数组，与 class_ids 一一对应
   "bucket": "defect-samples",           // MinIO 桶名
   "path": "XB/3302101/front/",          // MinIO 目录前缀=项目编码/牌号编码/相机面编码/
   "count": 12,                          // 本次上传图片数
@@ -72,7 +72,7 @@ routing key `sample.upload.reply`，JSON：
 }
 ```
 
-> **缺陷分类**：`class_id/class_name` 是平台侧维护的缺陷类别（每个检测项目一套），上传前必须选择，**本批所有图片同属该类别**。CubeStudio 可据此给样本打标签。
+> **缺陷分类**：`class_ids/class_names` 是平台侧维护的缺陷类别（每个建模单元可绑多个，上传前在行编辑弹窗多选），**本批所有图片同属这些类别**。CubeStudio 可据此给样本打标签。
 
 ## 交互时序
 1. 用户在缺陷标注页**选择缺陷分类**、批量选图 → 平台上传到 MinIO `bucket/path` 下

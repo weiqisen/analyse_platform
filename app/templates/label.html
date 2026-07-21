@@ -30,9 +30,11 @@
     <td><b>{{ u.face_name }}</b></td>
     <td><code style="font-size:11.5px">{{ u.unit_key }}</code></td>
     <td>
-      {% if u.class_name %}<span class="tag">{{ u.class_name }}</span>{% else %}<span style="color:#ff4d4f;font-size:12.5px">未设置</span>{% endif %}
+      {% if u.class_list %}
+        {% for c in u.class_list %}<span class="tag">{{ c.class_name }}</span>{% endfor %}
+      {% else %}<span style="color:#ff4d4f;font-size:12.5px">未设置</span>{% endif %}
       <a class="btn-link" href="javascript:;" style="margin-left:6px"
-         onclick="openClassEdit({{ u.face_id }},'{{ u.face_name }}',{{ u.class_id }})">编辑</a>
+         onclick="openClassEdit({{ u.face_id }},'{{ u.face_name }}','{{ u.class_ids }}')">编辑</a>
     </td>
     <td>
       <a class="btn-link" href="javascript:;" onclick="openHistory({{ u.face_id }},'{{ u.face_name }}')">
@@ -141,25 +143,26 @@ function doUpload(){
     .catch(function(e){ st.textContent = '请求失败：' + e; st.style.color='#ff4d4f'; document.getElementById('up_btn').disabled=false; });
 }
 
-// ---- 缺陷分类绑定（建模单元级，一单元一分类）----
+// ---- 缺陷分类绑定（建模单元级，可多选）----
 var clsFace = 0;
-function openClassEdit(faceId, faceName, curClassId){
+function openClassEdit(faceId, faceName, curClassIds){
   clsFace = faceId;
   document.getElementById('cls_face').textContent = faceName;
-  var sel = document.getElementById('cls_sel');
-  if(sel){ sel.value = curClassId ? String(curClassId) : ''; }
+  var picked = curClassIds ? curClassIds.split(',') : [];
+  var cbs = document.querySelectorAll('#cls_list input[type=checkbox]');
+  for(var i=0;i<cbs.length;i++){ cbs[i].checked = picked.indexOf(cbs[i].value) >= 0; }
   document.getElementById('cls_status').textContent = '';
   openModal('clsModal');
 }
 function saveClass(){
-  var sel = document.getElementById('cls_sel');
+  var cbs = document.querySelectorAll('#cls_list input[type=checkbox]:checked');
+  var ids = Array.prototype.map.call(cbs, function(cb){ return cb.value; }).join(',');
   var st = document.getElementById('cls_status');
-  if(!sel){ st.textContent = '当前检测项目还没有缺陷分类，请先到「基础配置 → 缺陷分类」维护'; st.style.color='#ff4d4f'; return; }
-  if(!sel.value){ st.textContent = '请选择缺陷分类'; st.style.color='#ff4d4f'; return; }
   var fd = new FormData();
   fd.append('brand', '{{ cur_brand }}');
   fd.append('face_id', clsFace);
-  fd.append('class_id', sel.value);
+  fd.append('class_ids', ids);
+  st.textContent = '保存中…'; st.style.color = 'var(--text-secondary)';
   fetch('{{ url_for("label_unit_class") }}', {method:'POST', body: fd})
     .then(function(r){ return r.json(); })
     .then(function(d){
@@ -222,14 +225,18 @@ function loadHistory(){
       <span class="close" onclick="closeModal('clsModal')">×</span></div>
     <div class="modal-body">
       <div style="font-size:12.5px;color:var(--text-secondary);margin-bottom:10px">
-        该「牌号 × 相机面」建模单元绑定一个缺陷分类，此单元的所有样本上传都用它，并随消息发给 CubeStudio。
+        该建模单元可绑定多个缺陷分类（多选），所有样本上传时一并发送给 CubeStudio。
       </div>
       {% if classes %}
-      <label style="font-size:13px;display:block;margin-bottom:5px">缺陷分类 <span style="color:#ff4d4f">*</span></label>
-      <select id="cls_sel" class="input" style="width:100%">
-        <option value="">请选择缺陷分类…</option>
-        {% for c in classes %}<option value="{{ c.id }}">{{ c.name }}</option>{% endfor %}
-      </select>
+      <label style="font-size:13px;display:block;margin-bottom:5px">缺陷分类（可多选）</label>
+      <div id="cls_list" style="max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:6px 10px">
+        {% for c in classes %}
+        <label style="display:block;padding:4px 0;font-size:13px;cursor:pointer">
+          <input type="checkbox" value="{{ c.id }}" style="margin-right:6px">{{ c.name }}
+        </label>
+        {% endfor %}
+      </div>
+      <div style="font-size:11.5px;color:var(--text-secondary);margin-top:4px">不勾选任何项 = 清空绑定</div>
       {% else %}
       <div style="font-size:12.5px;color:#ff4d4f;padding:8px 10px;background:#fff1f0;border-radius:6px">
         当前检测项目还没有缺陷分类，请先到「基础配置 → 缺陷分类」维护。
@@ -239,7 +246,7 @@ function loadHistory(){
     </div>
     <div class="modal-foot">
       <button class="btn" onclick="closeModal('clsModal')">取消</button>
-      {% if classes %}<button class="btn btn-primary" onclick="saveClass()">保存</button>{% endif %}
+      <button class="btn btn-primary" onclick="saveClass()">保存</button>
     </div>
   </div>
 </div>
