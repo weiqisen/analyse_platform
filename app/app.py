@@ -820,7 +820,7 @@ def users_delete(uid):
 # 按业务层次排序：组织架构 → 检测配置 → 生产 → 系统
 CONFIG_TABS = [("workshops", "车间"), ("areas", "区域"), ("lines", "机组/产线"),
                ("items", "检测项目"), ("faces", "图像分类"), ("defects", "缺陷分类"),
-               ("brands", "牌号/品规"), ("schedule", "机台排程"), ("integration", "系统集成")]
+               ("brands", "牌号/品规"), ("schedule", "机台排程")]
 
 
 @app.route("/config/<tab>")
@@ -830,12 +830,8 @@ def config(tab):
         abort(404)
     db = get_db()
     if tab == "integration":
-        rows = [{"key": k, "label": lab, "hint": hint, "value": get_cfg(k),
-                 "from_db": k in _cfg_cache["d"] and bool(_cfg_cache["d"][k])}
-                for k, lab, hint in CFG_LABELS]
-        return render_template("config_integration.html", tab=tab, tabs=CONFIG_TABS,
-                               rows=rows, active="config",
-                               default_webhook=url_for("label_webhook", _external=True))
+        # 系统集成页面已不再使用，直接回退到默认页签
+        return redirect(url_for("config", tab="workshops"))
     if tab == "faces":
         # 图像分类(相机面)按检测项目配置：下拉选检测项目，只显示该项目的相机面
         det_items = [dict(r) for r in db.execute(
