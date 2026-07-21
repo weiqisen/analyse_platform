@@ -40,6 +40,8 @@ routing key `sample.upload`，JSON：
   "brand_code": "3302101",              // 牌号编码(用于路径)
   "face": "正面",                       // 相机面标准名(中文)
   "face_code": "front",                 // 相机面编码(用于路径)
+  "class_id": 12,                       // 【缺陷分类】平台维护的缺陷类别ID(label_classes.id)，上传前必选
+  "class_name": "侧面翘边",              // 【缺陷分类】缺陷类别名称，本批图片全属该类别
   "bucket": "defect-samples",           // MinIO 桶名
   "path": "XB/3302101/front/",          // MinIO 目录前缀=项目编码/牌号编码/相机面编码/
   "count": 12,                          // 本次上传图片数
@@ -68,8 +70,10 @@ routing key `sample.upload.reply`，JSON：
 }
 ```
 
+> **缺陷分类**：`class_id/class_name` 是平台侧维护的缺陷类别（每个检测项目一套），上传前必须选择，**本批所有图片同属该类别**。CubeStudio 可据此给样本打标签。
+
 ## 交互时序
-1. 用户在缺陷标注页批量选图 → 平台上传到 MinIO `bucket/path` 下
+1. 用户在缺陷标注页**选择缺陷分类**、批量选图 → 平台上传到 MinIO `bucket/path` 下
 2. 平台发**上传请求**到 `sample.upload`，界面显示「处理中」
 3. CubeStudio 按 `unit_key`（或平台已带的 `cs_project_id`）**找到或新建**唯一项目，把 `images` 追加进去；完成后发**回执**到 `sample.upload.reply`，带回 `project_id`
 4. 平台消费回执，按 `msg_id` 匹配 → 界面显示「上传成功」（或失败），并把 `project_id` 回填到该建模单元

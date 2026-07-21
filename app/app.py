@@ -260,6 +260,8 @@ def migrate_db(db):
         ("sample_uploads", "unit_key", "VARCHAR(160) DEFAULT '' COMMENT '建模单元稳定标识=项目编码_牌号编码_相机面编码(大写)'"),
         ("sample_uploads", "unit_id", "INT DEFAULT 0 COMMENT '建模单元(model_units.id), 0=尚未建单元'"),
         ("sample_uploads", "cs_project_id", "VARCHAR(64) DEFAULT '' COMMENT 'CubeStudio项目ID(回执回填)'"),
+        ("sample_uploads", "class_id", "INT DEFAULT 0 COMMENT '缺陷分类ID(label_classes.id), 上传必选'"),
+        ("sample_uploads", "class_name", "VARCHAR(64) DEFAULT '' COMMENT '缺陷分类名称, 随MQ消息发给CubeStudio'"),
     ]
     added = set()
     for table, col, ddl in adds:
@@ -462,6 +464,8 @@ def init_db():
             unit_key VARCHAR(160) DEFAULT '' COMMENT '建模单元稳定标识=项目编码_牌号编码_相机面编码(大写,如XB_3302101_FRONT), CubeStudio按此upsert项目',
             unit_id INT DEFAULT 0 COMMENT '建模单元(model_units.id), 0=尚未建单元',
             cs_project_id VARCHAR(64) DEFAULT '' COMMENT 'CubeStudio项目ID(回执回填)',
+            class_id INT DEFAULT 0 COMMENT '缺陷分类ID(label_classes.id), 上传必选',
+            class_name VARCHAR(64) DEFAULT '' COMMENT '缺陷分类名称, 随MQ消息发给CubeStudio',
             status VARCHAR(16) DEFAULT 'processing' COMMENT 'processing/done/error',
             reply_msg VARCHAR(255) DEFAULT '' COMMENT '算法侧回执消息',
             created_by VARCHAR(64) DEFAULT '' COMMENT '上传人',
@@ -1847,9 +1851,14 @@ def label():
             "sample_count": s["count"], "sample_proc": s["proc"],
         })
     units, pg = paginate_list(units, request.args.get("page"))
+    # 缺陷分类：样本上传前必选，随 MQ 消息发给 CubeStudio。按当前检测项目取启用项。
+    classes = [dict(c) for c in db.execute(
+        "SELECT id, name FROM label_classes WHERE item_id=? AND status=1 ORDER BY id",
+        (cur_det,)).fetchall()]
     return render_template("label.html", det_items=det_items, cur_det=cur_det,
                            brands=brands, cur_brand=cur_brand,
-                           units=units, pg=pg, cs_online=cs_online, active="label")
+                           units=units, pg=pg, cs_online=cs_online,
+                           classes=classes, active="label")
 
 
 @app.route("/label/unit/create", methods=["POST"])
@@ -2023,12 +2032,19 @@ def label_sample_upload():
     project = request.form.get("project", "").strip()
     brand = request.form.get("brand", "").strip()
     face_id = request.form.get("face_id", type=int)
+    class_id = request.form.get("class_id", type=int)
     files = request.files.getlist("files")
     if not (project and brand and face_id and files):
         return jsonify({"ok": False, "msg": "缺少项目/牌号/相机面或未选图片"}), 400
     face = db.execute("SELECT * FROM camera_faces WHERE id=?", (face_id,)).fetchone()
     if not face:
         return jsonify({"ok": False, "msg": "相机面不存在"}), 400
+    # 缺陷分类必选：以库为准（不信任前端 class_name），随消息发给 CubeStudio
+    cls = db.execute("SELECT id,name FROM label_classes WHERE id=? AND status=1", (class_id,)).fetchone() \
+        if class_id else None
+    if not cls:
+        return jsonify({"ok": False, "msg": "请先选择缺陷分类"}), 400
+    class_name = cls["name"]
     scfg = db.execute("SELECT * FROM storage_config WHERE server_addr<>'' LIMIT 1").fetchone()
     if not scfg:
         return jsonify({"ok": False, "msg": "未配置对象存储数据源"}), 400
@@ -2061,8 +2077,8 @@ def label_sample_upload():
         app.logger.error("样本上传 MinIO 失败 project=%s brand=%s face=%s bucket=%s prefix=%s：%s",
                          project, brand, face["face_name"], bucket, prefix, e)
         return jsonify({"ok": False, "msg": "上传 MinIO 失败：%s" % str(e)[:140]}), 500
-    app.logger.info("样本已上传 MinIO project=%s brand=%s face=%s count=%d path=%s/%s by=%s",
-                    project, brand, face["face_name"], len(keys), bucket, prefix,
+    app.logger.info("样本已上传 MinIO project=%s brand=%s face=%s class=%s count=%d path=%s/%s by=%s",
+                    project, brand, face["face_name"], class_name, len(keys), bucket, prefix,
                     session.get("username", ""))
 
     import uuid
@@ -2079,15 +2095,16 @@ def label_sample_upload():
                "project": project, "project_code": proj_code,
                "brand": brand, "brand_code": brand_code,
                "face": face["face_name"], "face_code": face_code,
+               "class_id": cls["id"], "class_name": class_name,
                "bucket": bucket, "path": prefix, "count": len(keys), "images": keys,
                "minio": {"endpoint": "http://" + scfg["server_addr"],
                          "access_key": scfg["username"], "secret_key": scfg["password"]},
                "ts": int(datetime.now().timestamp())}
     db.execute("INSERT INTO sample_uploads(msg_id,unit_key,unit_id,cs_project_id,project,brand,face,"
-               "face_code,bucket,path,img_count,status,created_by) "
-               "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+               "face_code,class_id,class_name,bucket,path,img_count,status,created_by) "
+               "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                (msg_id, unit_key, unit_id, cs_pid, project, brand, face["face_name"],
-                face["face_code"], bucket, prefix, len(keys), "processing",
+                face["face_code"], cls["id"], class_name, bucket, prefix, len(keys), "processing",
                 session.get("username", "")))
     db.commit()
     ok, err = mq_publish_upload(payload)
@@ -2129,14 +2146,15 @@ def api_label_sample_history():
     it = db.execute("SELECT short_name,name FROM detect_items WHERE id=(SELECT item_id FROM camera_faces WHERE id=?)",
                     (face_id,)).fetchone()
     proj = (it["short_name"] or it["name"]) if it else ""
-    rows = db.execute("SELECT img_count,status,reply_msg,created_at,updated_at,created_by FROM sample_uploads "
-                      "WHERE project=? AND brand=? AND face=? ORDER BY id DESC LIMIT 100",
+    rows = db.execute("SELECT img_count,status,reply_msg,class_name,created_at,updated_at,created_by "
+                      "FROM sample_uploads WHERE project=? AND brand=? AND face=? ORDER BY id DESC LIMIT 100",
                       (proj, brand, face["face_name"])).fetchall()
     total = sum(r["img_count"] for r in rows)
     proc = sum(1 for r in rows if r["status"] == "processing")
     fmt = lambda t: t.strftime("%Y-%m-%d %H:%M:%S") if t else ""
     return jsonify({"total": total, "proc": proc, "rows": [
         {"count": r["img_count"], "status": r["status"], "reply": r["reply_msg"] or "",
+         "class_name": r["class_name"] or "",
          "time": fmt(r["created_at"]),
          "reply_time": fmt(r["updated_at"]) if r["status"] != "processing" else "",
          "by": r["created_by"] or ""} for r in rows]})
