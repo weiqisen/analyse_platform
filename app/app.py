@@ -257,7 +257,7 @@ def migrate_db(db):
         ("analysis_jobs", "enabled", "INT DEFAULT 0 COMMENT '工作状态开关: 1开启 0关闭'"),
         # 样本上传：msg_id 只做消息关联，项目归属改用稳定的 unit_key（CubeStudio 按此 upsert，
         # 避免同一建模单元多次上传被建成多个项目）。
-        ("sample_uploads", "unit_key", "VARCHAR(160) DEFAULT '' COMMENT '建模单元稳定标识=项目编码/牌号编码/相机面编码'"),
+        ("sample_uploads", "unit_key", "VARCHAR(160) DEFAULT '' COMMENT '建模单元稳定标识=项目编码_牌号编码_相机面编码(大写)'"),
         ("sample_uploads", "unit_id", "INT DEFAULT 0 COMMENT '建模单元(model_units.id), 0=尚未建单元'"),
         ("sample_uploads", "cs_project_id", "VARCHAR(64) DEFAULT '' COMMENT 'CubeStudio项目ID(回执回填)'"),
     ]
@@ -459,7 +459,7 @@ def init_db():
             bucket VARCHAR(64) COMMENT 'MinIO桶',
             path VARCHAR(512) COMMENT 'MinIO目录前缀',
             img_count INT DEFAULT 0 COMMENT '图片数',
-            unit_key VARCHAR(160) DEFAULT '' COMMENT '建模单元稳定标识=项目编码/牌号编码/相机面编码, CubeStudio按此upsert项目',
+            unit_key VARCHAR(160) DEFAULT '' COMMENT '建模单元稳定标识=项目编码_牌号编码_相机面编码(大写,如XB_3302101_FRONT), CubeStudio按此upsert项目',
             unit_id INT DEFAULT 0 COMMENT '建模单元(model_units.id), 0=尚未建单元',
             cs_project_id VARCHAR(64) DEFAULT '' COMMENT 'CubeStudio项目ID(回执回填)',
             status VARCHAR(16) DEFAULT 'processing' COMMENT 'processing/done/error',
@@ -1773,16 +1773,21 @@ def unit_det_id(db, u):
     return r["item_id"] if r else 0
 
 
+def mk_unit_key(proj_code, brand_code, face_code):
+    """建模单元稳定标识：项目编码_牌号编码_相机面编码，统一大写，如 XB_3302101_FRONT。
+    与 MinIO 目录前缀(斜杠分隔)是两码事——这里是给 CubeStudio 当项目 key 的逻辑标识。"""
+    return ("%s_%s_%s" % (proj_code, brand_code, face_code)).upper()
+
+
 def unit_key_of(db, brand, face):
-    """建模单元(牌号×相机面)的稳定标识 = 项目编码/牌号编码/相机面编码（= MinIO 前缀去尾斜杠）。
-    标注(REST)与样本上传(MQ)两条链路都用它做 CubeStudio 项目 key，保证同一单元只对应一个项目。
-    face 需含 item_id、face_code、face_name（camera_faces 行）。缺编码时回落名称，尽量保持稳定。"""
+    """由 (牌号, 相机面行) 解析出 unit_key。标注(REST)与样本上传(MQ)两条链路都用它，
+    保证同一单元在 CubeStudio 只对应一个项目。face 需含 item_id、face_code、face_name。"""
     it = db.execute("SELECT code FROM detect_items WHERE id=?", (face["item_id"],)).fetchone()
     br = db.execute("SELECT code FROM brands WHERE spec=?", (brand,)).fetchone()
     pc = (it["code"] if it and it["code"] else "") or "NA"
     bc = (br["code"] if br and br["code"] else "") or brand
     fc = face["face_code"] or face["face_name"]
-    return "%s/%s/%s" % (pc, bc, fc)
+    return mk_unit_key(pc, bc, fc)
 
 
 def detect_item_ctx(db):
@@ -2062,9 +2067,9 @@ def label_sample_upload():
 
     import uuid
     msg_id = "u-%s-%s" % (datetime.now().strftime("%Y%m%d"), uuid.uuid4().hex[:8])
-    # unit_key = 稳定的建模单元标识（= MinIO 前缀去尾斜杠）。CubeStudio 按此 upsert 项目，
-    # 同一单元多次上传只对应一个项目；msg_id 仅做本次请求/回执关联。
-    unit_key = prefix.rstrip("/")
+    # unit_key = 稳定的建模单元标识（项目编码_牌号编码_相机面编码，大写，如 XB_3302101_FRONT）。
+    # CubeStudio 按此 upsert 项目，同一单元多次上传只对应一个项目；msg_id 仅做本次请求/回执关联。
+    unit_key = mk_unit_key(proj_code, brand_code, face_code)
     # 若该单元此前已因标注建过 CubeStudio 项目，带上其 id，让两条链路指向同一项目
     munit = db.execute("SELECT id,cs_project_id FROM model_units WHERE brand=? AND face_id=?",
                        (brand, face_id)).fetchone()
