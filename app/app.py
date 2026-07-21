@@ -467,21 +467,6 @@ def init_db():
             annotated INT DEFAULT 0 COMMENT '是否已标注: 1是 0否',
             UNIQUE KEY uq_brand_key (brand, src_key(300))
         ) DEFAULT CHARSET=utf8mb4 COMMENT='标注图片表'""",
-        """CREATE TABLE IF NOT EXISTS annotations(
-            id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
-            image_id INT NOT NULL COMMENT '关联label_images.id',
-            class_id INT COMMENT '缺陷分类ID(label_classes.id)',
-            class_name VARCHAR(64) COMMENT '缺陷分类名称',
-            shape VARCHAR(16) DEFAULT 'rect' COMMENT '形状: rect矩形 / polygon多边形',
-            bbox_x DOUBLE DEFAULT 0 COMMENT '外接框左上x(像素)',
-            bbox_y DOUBLE DEFAULT 0 COMMENT '外接框左上y(像素)',
-            bbox_w DOUBLE DEFAULT 0 COMMENT '外接框宽(像素)',
-            bbox_h DOUBLE DEFAULT 0 COMMENT '外接框高(像素)',
-            points TEXT COMMENT '多边形顶点[[x,y],...] JSON(像素)',
-            created_by VARCHAR(64) DEFAULT '' COMMENT '标注人',
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '标注时间',
-            KEY idx_image (image_id)
-        ) DEFAULT CHARSET=utf8mb4 COMMENT='标注框表'""",
         """CREATE TABLE IF NOT EXISTS workshops(
             id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
             name VARCHAR(64) NOT NULL COMMENT '车间名称',
@@ -2018,14 +2003,16 @@ def api_label_sample_history():
     it = db.execute("SELECT short_name,name FROM detect_items WHERE id=(SELECT item_id FROM camera_faces WHERE id=?)",
                     (face_id,)).fetchone()
     proj = (it["short_name"] or it["name"]) if it else ""
-    rows = db.execute("SELECT img_count,status,reply_msg,created_at,created_by FROM sample_uploads "
+    rows = db.execute("SELECT img_count,status,reply_msg,created_at,updated_at,created_by FROM sample_uploads "
                       "WHERE project=? AND brand=? AND face=? ORDER BY id DESC LIMIT 100",
                       (proj, brand, face["face_name"])).fetchall()
     total = sum(r["img_count"] for r in rows)
     proc = sum(1 for r in rows if r["status"] == "processing")
+    fmt = lambda t: t.strftime("%Y-%m-%d %H:%M:%S") if t else ""
     return jsonify({"total": total, "proc": proc, "rows": [
         {"count": r["img_count"], "status": r["status"], "reply": r["reply_msg"] or "",
-         "time": r["created_at"].strftime("%m-%d %H:%M") if r["created_at"] else "",
+         "time": fmt(r["created_at"]),
+         "reply_time": fmt(r["updated_at"]) if r["status"] != "processing" else "",
          "by": r["created_by"] or ""} for r in rows]})
 
 
@@ -2108,26 +2095,6 @@ def label_webhook():
                                          ls_task_counts(pid))
     except Exception as e:
         app.logger.warning("Label Studio webhook 处理失败：%s", e)
-    return jsonify({"ok": True})
-
-
-@app.route("/label/save/<int:image_id>", methods=["POST"])
-@login_required
-def label_save(image_id):
-    db = get_db()
-    data = request.get_json(force=True) or {}
-    items = data.get("annos", [])
-    db.execute("UPDATE label_images SET width=?,height=?,annotated=? WHERE id=?",
-               (int(data.get("width", 0)), int(data.get("height", 0)), 1 if items else 0, image_id))
-    db.execute("DELETE FROM annotations WHERE image_id=?", (image_id,))
-    for a in items:
-        bx = a.get("bbox", [0, 0, 0, 0])
-        db.execute("INSERT INTO annotations(image_id,class_id,class_name,shape,"
-                   "bbox_x,bbox_y,bbox_w,bbox_h,points,created_by) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                   (image_id, a.get("class_id"), a.get("class_name", ""), a.get("shape", "rect"),
-                    bx[0], bx[1], bx[2], bx[3], json.dumps(a.get("points", [])),
-                    session.get("username", "")))
-    db.commit()
     return jsonify({"ok": True})
 
 

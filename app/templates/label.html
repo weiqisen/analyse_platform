@@ -144,7 +144,7 @@ var histTimer = null, histFace = 0;
 function openHistory(faceId, faceName){
   histFace = faceId;
   document.getElementById('hist_face').textContent = faceName;
-  document.getElementById('hist_body').innerHTML = '<tr><td colspan="4" class="empty">加载中…</td></tr>';
+  document.getElementById('hist_body').innerHTML = '<tr><td colspan="5" class="empty">加载中…</td></tr>';
   openModal('histModal');
   loadHistory();
   clearInterval(histTimer);
@@ -157,14 +157,15 @@ function loadHistory(){
     .then(function(d){
       document.getElementById('hist_total').textContent = d.total || 0;
       var b = document.getElementById('hist_body');
-      if(!d.rows.length){ b.innerHTML = '<tr><td colspan="4" class="empty">暂无上传记录</td></tr>'; clearInterval(histTimer); return; }
+      if(!d.rows.length){ b.innerHTML = '<tr><td colspan="5" class="empty">暂无上传记录</td></tr>'; clearInterval(histTimer); return; }
       b.innerHTML = d.rows.map(function(r){
         var badge = r.status==='done' ? '<span class="tag">上传成功</span>'
           : (r.status==='error' ? '<span class="tag" style="background:#fff1f0;color:#cf1322">失败</span>'
           : '<span class="tag tag-orange">处理中</span>');
         return '<tr><td>' + r.time + '</td><td>' + r.count + ' 张</td><td>' + badge
           + (r.reply ? ' <span style="color:var(--text-secondary);font-size:12px">' + r.reply + '</span>' : '')
-          + '</td><td style="color:var(--text-secondary)">' + (r.by||'') + '</td></tr>';
+          + '</td><td style="color:var(--text-secondary)">' + (r.reply_time||'—') + '</td>'
+          + '<td style="color:var(--text-secondary)">' + (r.by||'') + '</td></tr>';
       }).join('');
       if(!d.proc) clearInterval(histTimer);   // 没有处理中就停止刷新
     }).catch(function(){});
@@ -177,7 +178,7 @@ function loadHistory(){
       <span class="close" onclick="closeHistory()">×</span></div>
     <div class="modal-body" style="padding:0">
       <table class="table">
-        <thead><tr><th>时间</th><th>数量</th><th>状态</th><th>上传人</th></tr></thead>
+        <thead><tr><th>上传时间</th><th>数量</th><th>状态</th><th>回执时间</th><th>上传人</th></tr></thead>
         <tbody id="hist_body"></tbody>
       </table>
     </div>
