@@ -178,7 +178,7 @@ var histTimer = null, histFace = 0;
 function openHistory(faceId, faceName){
   histFace = faceId;
   document.getElementById('hist_face').textContent = faceName;
-  document.getElementById('hist_body').innerHTML = '<tr><td colspan="6" class="empty">加载中…</td></tr>';
+  document.getElementById('hist_body').innerHTML = '<tr><td colspan="6" class="hist-empty">加载中…</td></tr>';
   openModal('histModal');
   loadHistory();
   clearInterval(histTimer);
@@ -191,14 +191,15 @@ function loadHistory(){
     .then(function(d){
       document.getElementById('hist_total').textContent = d.total || 0;
       var b = document.getElementById('hist_body');
-      if(!d.rows.length){ b.innerHTML = '<tr><td colspan="6" class="empty">暂无上传记录</td></tr>'; clearInterval(histTimer); return; }
+      if(!d.rows.length){ b.innerHTML = '<tr><td colspan="6" class="hist-empty">暂无上传记录</td></tr>'; clearInterval(histTimer); return; }
       b.innerHTML = d.rows.map(function(r){
         var badge = r.status==='done' ? '<span class="tag">上传成功</span>'
           : (r.status==='error' ? '<span class="tag" style="background:#fff1f0;color:#cf1322">失败</span>'
           : '<span class="tag tag-orange">处理中</span>');
-        return '<tr><td>' + r.time + '</td><td>' + (r.class_name||'—') + '</td><td>' + r.count + ' 张</td><td>' + badge
-          + '</td><td style="color:var(--text-secondary)">' + (r.reply_time||'—') + '</td>'
-          + '<td style="color:var(--text-secondary)">' + (r.by||'') + '</td></tr>';
+        return '<tr><td class="td-time">' + r.time + '</td><td class="td-cls" title="' + (r.class_name||'') + '">' + (r.class_name||'—') + '</td>'
+          + '<td class="td-num">' + r.count + '</td><td class="td-st">' + badge
+          + '</td><td class="td-time">' + (r.reply_time||'—') + '</td>'
+          + '<td class="td-by">' + (r.by||'') + '</td></tr>';
       }).join('');
       if(!d.proc) clearInterval(histTimer);   // 没有处理中就停止刷新
     }).catch(function(){});
@@ -206,12 +207,26 @@ function loadHistory(){
 </script>
 
 <div class="modal-mask" id="histModal">
-  <div class="modal" style="width:860px;max-width:96vw">
+  <div class="modal" style="width:960px;max-width:97vw">
     <div class="modal-head"><span>上传记录 — <b id="hist_face">—</b>（累计 <span id="hist_total">0</span> 张）</span>
       <span class="close" onclick="closeHistory()">×</span></div>
-    <div class="modal-body" style="padding:0">
-      <table class="table">
-        <thead><tr><th>上传时间</th><th>缺陷分类</th><th>数量</th><th>状态</th><th>回执时间</th><th>上传人</th></tr></thead>
+    <div class="modal-body" style="padding:16px">
+      <style scoped>
+        #histModal .hist-tbl { width:100%; table-layout:fixed; border-collapse:collapse; font-size:13px }
+        #histModal .hist-tbl th { background:#fafafa; border-bottom:2px solid var(--border,#e8e8e8); padding:8px 10px;
+          text-align:left; font-weight:600; color:var(--text); white-space:nowrap }
+        #histModal .hist-tbl td { padding:8px 10px; border-bottom:1px solid var(--border,#f0f0f0);
+          white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+        #histModal .hist-tbl tr:hover td { background:#fafafa }
+        #histModal .td-time { width:150px }
+        #histModal .td-cls { width:180px }
+        #histModal .td-num { width:60px }
+        #histModal .td-st { width:90px }
+        #histModal .td-by { width:70px }
+        #histModal .hist-empty { text-align:center; padding:28px 10px; color:var(--text-secondary,#999); font-size:13px }
+      </style>
+      <table class="hist-tbl">
+        <thead><tr><th class="td-time">上传时间</th><th class="td-cls">缺陷分类</th><th class="td-num">数量</th><th class="td-st">状态</th><th class="td-time">回执时间</th><th class="td-by">上传人</th></tr></thead>
         <tbody id="hist_body"></tbody>
       </table>
     </div>
