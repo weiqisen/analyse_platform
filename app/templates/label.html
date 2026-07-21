@@ -154,6 +154,10 @@ function openClassEdit(faceId, faceName, curClassIds){
   document.getElementById('cls_status').textContent = '';
   openModal('clsModal');
 }
+function clsCheckAll(on){
+  var cbs = document.querySelectorAll('#cls_list input[type=checkbox]');
+  for(var i=0;i<cbs.length;i++){ cbs[i].checked = typeof on==='boolean' ? on : !cbs[i].checked; }
+}
 function saveClass(){
   var cbs = document.querySelectorAll('#cls_list input[type=checkbox]:checked');
   var ids = Array.prototype.map.call(cbs, function(cb){ return cb.value; }).join(',');
@@ -243,7 +247,11 @@ function loadHistory(){
         该建模单元可绑定多个缺陷分类（多选），所有样本上传时一并发送给 CubeStudio。
       </div>
       {% if classes %}
-      <label style="font-size:13px;display:block;margin-bottom:5px">缺陷分类（可多选）</label>
+      <div style="margin-bottom:6px">
+        <span style="font-size:13px;font-weight:600">缺陷分类（可多选）</span>
+        <a class="btn-link" href="javascript:;" onclick="clsCheckAll(true)" style="margin-left:12px">全选</a>
+        <a class="btn-link" href="javascript:;" onclick="clsCheckAll(false)" style="margin-left:8px">反选</a>
+      </div>
       <div id="cls_list" style="max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:6px 10px">
         {% for c in classes %}
         <label style="display:block;padding:4px 0;font-size:13px;cursor:pointer">
