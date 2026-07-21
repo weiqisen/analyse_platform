@@ -18,11 +18,8 @@
     {% if cs_online %}<span style="font-size:12px;font-weight:400;color:#52c41a;margin-left:10px">● CubeStudio 已连接</span>
     {% else %}<span style="font-size:12px;font-weight:400;color:#ff4d4f;margin-left:10px">● CubeStudio 离线</span>{% endif %}
   </div>
-  <a class="btn btn-primary" href="{{ url_for('label_workflow') }}">进入工作流 →</a>
 </div>
-<div style="font-size:12.5px;color:var(--text-secondary);margin-bottom:12px">
-  以「牌号 × 相机面」为单位建立模型。「开始标注」进入 CubeStudio（mock 演示）；「进入工作流」进入真实视觉标注工作流界面。
-</div>
+
 
 <div class="card tbl-card"><div class="card-body" style="padding:0">
 <table class="table">
@@ -46,15 +43,12 @@
     <td>{% if u.model_version %}<span style="color:#52c41a">{{ u.model_version }}</span>{% else %}<span style="color:var(--text-secondary)">未绑定</span>{% endif %}</td>
     <td style="white-space:nowrap">
       <a class="btn-link" href="javascript:;" onclick="openUpload({{ u.face_id }},'{{ u.face_name }}','{{ u.class_name }}')">上传样本</a>
-      {% if not cs_online %}
-      <span style="color:var(--text-secondary);font-size:12.5px">CubeStudio 离线</span>
-      {% elif u.exists %}
-      <a class="btn-link" href="{{ url_for('label_anno', unit_id=u.unit_id) }}">开始标注</a>
-      {% else %}
+      <a class="btn-link" href="{{ url_for('label_workflow', unit_key=u.unit_key) }}">进入工作流</a>
+      {% if not u.exists %}
       <form method="post" action="{{ url_for('label_unit_create') }}" style="display:inline">
         <input type="hidden" name="brand" value="{{ cur_brand }}">
         <input type="hidden" name="face_id" value="{{ u.face_id }}">
-        <button class="btn-link" type="submit">建模型并标注</button>
+        <button class="btn-link" type="submit">建模型</button>
       </form>
       {% endif %}
     </td>

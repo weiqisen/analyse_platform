@@ -39,7 +39,7 @@ CFG_DEFAULTS = {
     "ls_webhook_url": os.environ.get("LS_WEBHOOK_URL", ""),  # 本平台回调地址，注册进 LS
     "cs_url": os.environ.get("CS_URL", ""),                 # CubeStudio（预留）
     "cs_token": os.environ.get("CS_TOKEN", ""),
-    "workflow_url": os.environ.get("WORKFLOW_URL", "http://10.10.52.127/frontend/visionWorkflow/embed/1?embed=1"),
+    "workflow_url": os.environ.get("WORKFLOW_URL", "http://10.10.52.127"),
     "mq_host": os.environ.get("MQ_HOST", "10.10.96.65"),
     "mq_port": os.environ.get("MQ_PORT", "5672"),
     "mq_user": os.environ.get("MQ_USER", "admin"),
@@ -53,7 +53,7 @@ CFG_LABELS = [
     ("ls_webhook_url", "标注回调地址(Webhook)", "留空则用本机地址推算；LS 标注后回写进度到此"),
     ("cs_url", "CubeStudio 地址", "预留，本机资源不足未部署"),
     ("cs_token", "CubeStudio Token", "预留"),
-    ("workflow_url", "视觉工作流地址", "真实标注工作流界面，缺陷标注页「进入工作流」内嵌它（浏览器需能访问）"),
+    ("workflow_url", "视觉工作流地址", "工作流平台基地址(仅IP:端口)。进入工作流时拼 /frontend/visionWorkflow/embed/{unit_key}?embed=1"),
     ("mq_host", "RabbitMQ 地址", "样本上传消息队列，如 10.10.96.65"),
     ("mq_port", "RabbitMQ 端口", "AMQP 端口，默认 5672"),
     ("mq_user", "RabbitMQ 账号", ""),
@@ -1867,6 +1867,7 @@ def label():
             "model_version": u["model_version"] if u else "",
             "sample_count": s["count"], "sample_proc": s["proc"],
             "class_id": cb.get("class_id") or 0, "class_name": cb.get("class_name") or "",
+            "unit_key": unit_key_of(db, cur_brand, dict(f)),
         })
     units, pg = paginate_list(units, request.args.get("page"))
     # 缺陷分类候选：按当前检测项目取启用项，供行编辑弹窗选择（绑定到建模单元）。
@@ -1987,11 +1988,13 @@ def label_anno(unit_id):
 @app.route("/label/workflow")
 @login_required
 def label_workflow():
-    """内嵌真实视觉标注工作流界面（保留平台导航）。地址取自集成配置 workflow_url。"""
-    url = get_cfg("workflow_url")
-    if not url:
+    """内嵌视觉标注工作流，按建模单元 unit_key 携带参数。"""
+    unit_key = request.args.get("unit_key", "").strip()
+    base = get_cfg("workflow_url").rstrip("/")
+    if not base:
         flash("未配置视觉工作流地址（基础配置 → 系统集成）", "error")
         return redirect(url_for("label"))
+    url = "%s/frontend/visionWorkflow/embed/%s?embed=1" % (base, unit_key)
     return render_template("label_workflow.html", wf_src=url, active="label")
 
 
