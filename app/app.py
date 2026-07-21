@@ -2480,9 +2480,25 @@ def model():
         elif tc and tc["sys_addr"]:
             sources.append({"line_id": l["id"], "line": l["name"], "type": "ftp",
                             "addr": tc["sys_addr"], "dir": tc["ng_dir"]})
+    # 车间+机台：供路径规则引擎级联选择
+    workshops_list = [dict(w) for w in db.execute("SELECT * FROM workshops WHERE status=1 ORDER BY id").fetchall()]
+    lines_list = [dict(l) for l in db.execute("SELECT * FROM prod_lines WHERE status=1 ORDER BY workshop, name").fetchall()]
+    # 列出 MinIO 现有桶（供桶名下拉）
+    buckets = []
+    try:
+        scfg0 = db.execute("SELECT DISTINCT sc.* FROM storage_config sc "
+                           "JOIN prod_lines l ON l.id=sc.line_id WHERE l.status=1 "
+                           "AND sc.server_addr<>'' LIMIT 1").fetchone()
+        if scfg0:
+            s3, _ = get_s3(scfg0)
+            buckets = sorted([b["Name"] for b in s3.list_buckets().get("Buckets", [])])
+    except Exception:
+        pass
     return render_template("model.html", det_items=det_items, cur_det=cur_det,
                            brands=brands, cur_brand=cur_brand,
-                           rows=rows, pg=pg, cs_online=cs_online, sources=sources, active="model")
+                           rows=rows, pg=pg, cs_online=cs_online, sources=sources,
+                           workshops_list=workshops_list, lines_list=lines_list,
+                           buckets=buckets, active="model")
 
 
 @app.route("/model/bind", methods=["POST"])

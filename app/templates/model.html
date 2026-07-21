@@ -103,35 +103,72 @@
 </div></div>
 
 <div class="modal-mask" id="rtModal">
-  <div class="modal" style="width:560px;max-width:94vw">
+  <div class="modal" style="width:640px;max-width:94vw">
     <div class="modal-head"><span id="rtTitle">配置实时图像目录</span><span class="close" onclick="closeModal('rtModal')">×</span></div>
     <form method="post" action="{{ url_for('model_rtdir_save') }}" id="rtForm">
       <input type="hidden" name="unit_id" id="rt_unit_id">
+      <input type="hidden" name="rt_path" id="rt_path">
+      <input type="hidden" name="rt_type" id="rt_type_hidden" value="minio">
       <div class="modal-body">
         <div style="font-size:12.5px;color:var(--text-secondary);margin-bottom:14px">
-          绑定该相机面持续采集图片的目录。后续 job 服务定时从此目录读新图，送绑定的推理模型判定。
+          定义模型持续抓取新图的目录。<b>路径规则</b>：车间 / 机台 / 检测项目 三级级联，生成前缀
+          <code>车间代码/机台代码/检测项目代码/</code>。系统自动在下级查找新图。
         </div>
-        <div class="form-item"><label>类型</label>
-          <div class="form-inline">
-            <label class="mode-radio"><input type="radio" name="rt_type" value="minio" onchange="rtToggle()"><span class="rdot"></span><span>MinIO 对象存储</span></label>
-            <label class="mode-radio" style="margin-left:18px"><input type="radio" name="rt_type" value="ftp" onchange="rtToggle()"><span class="rdot"></span><span>FTP / 工控机</span></label>
+
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <div class="form-item" style="flex:1;min-width:130px">
+            <label>车间 <span style="color:#ff4d4f">*</span></label>
+            <select class="select input" id="rt_workshop" onchange="rtBuildPath()">
+              <option value="">—</option>
+              {% for w in workshops_list %}
+              <option value="{{ w.name }}" data-code="{{ w.name }}">{{ w.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="form-item" style="flex:1;min-width:130px">
+            <label>机台 <span style="color:#ff4d4f">*</span></label>
+            <select class="select input" id="rt_line" onchange="rtBuildPath()">
+              <option value="">先选车间</option>
+            </select>
+          </div>
+          <div class="form-item" style="flex:1;min-width:130px">
+            <label>检测项目 <span style="color:#ff4d4f">*</span></label>
+            <select class="select input" id="rt_det" onchange="rtBuildPath()">
+              <option value="">—</option>
+              {% for d in det_items %}
+              <option value="{{ d.code }}">{{ d.code }} {{ d.short_name or d.name }}</option>
+              {% endfor %}
+            </select>
           </div>
         </div>
-        <div class="form-item"><label>数据源（复用已配置的采集凭据）</label>
+
+        <div style="margin:6px 0 14px;padding:10px 14px;background:#fafafa;border:1px solid #e8e8e8;border-radius:6px;font-size:13px">
+          <span id="rt_path_text" style="color:var(--text);font-family:monospace;font-weight:600">尚未选择</span>
+          <span style="color:#999">/日期/班组/班次/相机面/文件</span>
+        </div>
+
+        <div class="form-item" id="rt_bucket_box">
+          <label>MinIO 桶 <span style="color:#ff4d4f">*</span></label>
+          <select class="select input" name="rt_bucket" id="rt_bucket">
+            <option value="">请选择桶</option>
+            {% for b in buckets %}
+            <option value="{{ b }}">{{ b }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="form-item"><label>数据源（复用采集凭据，可选）</label>
           <select class="select input" name="rt_line_id" id="rt_line_id" onchange="rtPickSource()">
-            <option value="">请选择数据源</option>
+            <option value="">自动匹配</option>
             {% for s in sources %}
             <option value="{{ s.line_id }}" data-type="{{ s.type }}" data-bucket="{{ s.bucket or '' }}" data-dir="{{ s.dir or '' }}">
               {{ s.line }} · {{ '对象存储' if s.type=='minio' else '工控机' }} · {{ s.addr }}</option>
             {% endfor %}
           </select>
         </div>
-        <div class="form-item" id="rt_bucket_box"><label>桶名</label>
-          <input class="input" name="rt_bucket" id="rt_bucket" placeholder="如 defect-images"></div>
-        <div class="form-item"><label>目录路径</label>
-          <input class="input" name="rt_path" id="rt_path" placeholder="如 jb1/a01/XB/.../is7600C_D 或留空=根目录"></div>
+
         <div style="margin-top:8px">
-          <button class="btn btn-sm" type="button" onclick="rtTest()">测试有效性</button>
+          <button class="btn btn-sm" type="button" onclick="rtTest()">测试目录可读</button>
           <span class="test-msg" id="rt_msg" style="font-size:12.5px;margin-left:10px"></span>
         </div>
       </div>
@@ -143,38 +180,81 @@
   </div>
 </div>
 
-<style>
-  .mode-radio{position:relative;padding-left:22px;cursor:pointer;user-select:none}
-  .mode-radio>input{position:absolute;opacity:0;width:0;height:0}
-  .mode-radio .rdot{position:absolute;left:0;top:50%;margin-top:-7px;width:14px;height:14px;border-radius:50%;border:1.5px solid var(--border);background:#fff}
-  .mode-radio>input:checked + .rdot{border-color:var(--primary);background:var(--primary);box-shadow:inset 0 0 0 2.5px #fff}
-  .mode-radio>input:checked ~ *{color:var(--primary);font-weight:600}
-</style>
 <script>
+/* 预构建车间→机台映射（来自后端 lines_list） */
+var wsLines = {};
+{% for w in workshops_list %}
+  wsLines['{{ w.name }}'] = [];
+{% endfor %}
+{% for l in lines_list %}
+  var k = '{{ l.workshop }}';
+  if(!wsLines[k]) wsLines[k] = [];
+  wsLines[k].push({code:'{{ l.code }}',name:'{{ l.name }}'});
+{% endfor %}
+
 function openRt(r){
   document.getElementById('rt_unit_id').value = r.unit_id;
   document.getElementById('rt_msg').textContent = '';
-  var type = r.rt_type || 'minio';
-  document.querySelectorAll('#rtForm input[name=rt_type]').forEach(function(x){ x.checked = (x.value===type); });
+  var t = r.rt_type || 'minio';
+  document.getElementById('rt_type_hidden').value = t;
   document.getElementById('rt_line_id').value = r.rt_line_id || '';
   document.getElementById('rt_bucket').value = r.rt_bucket || '';
-  document.getElementById('rt_path').value = r.rt_path || '';
-  rtToggle();
+  // 解析已有 rt_path：车间/机台/检测项目
+  var p = (r.rt_path || '').split('/');
+  var wsSel = document.getElementById('rt_workshop');
+  wsSel.value = p[0] || '';
+  rtRebuildLines();
+  var lineSel = document.getElementById('rt_line');
+  lineSel.value = p[1] || '';
+  var detSel = document.getElementById('rt_det');
+  detSel.value = p[2] || '';
+  rtBuildPreview();
+  if(!document.getElementById('rt_bucket').value) rtPickSource();
   openModal('rtModal');
 }
-function rtToggle(){
-  var isMinio = (document.querySelector('#rtForm input[name=rt_type]:checked')||{}).value === 'minio';
-  document.getElementById('rt_bucket_box').style.display = isMinio ? '' : 'none';
+function rtRebuildLines(){
+  var ws = document.getElementById('rt_workshop').value;
+  var sel = document.getElementById('rt_line');
+  sel.innerHTML = '<option value="">' + (ws ? '选择机台' : '先选车间') + '</option>';
+  if(!ws) return;
+  var list = wsLines[ws] || [];
+  for(var i=0;i<list.length;i++){
+    var o = document.createElement('option');
+    o.value = list[i].code; o.textContent = list[i].code + ' · ' + list[i].name;
+    sel.appendChild(o);
+  }
+}
+function rtBuildPath(){
+  rtRebuildLines();
+  rtBuildPreview();
+}
+function rtBuildPreview(){
+  var ws = document.getElementById('rt_workshop').value;
+  var line = document.getElementById('rt_line').value;
+  var det = document.getElementById('rt_det').value;
+  var parts = [ws, line, det].filter(function(x){ return x; });
+  document.getElementById('rt_path_text').textContent = parts.length ? parts.join('/') + '/' : '尚未选择';
+  document.getElementById('rt_path').value = parts.join('/');
 }
 function rtPickSource(){
   var opt = document.getElementById('rt_line_id').selectedOptions[0];
   if(!opt || !opt.value) return;
-  // 按数据源类型自动选类型、回填桶名
-  var t = opt.dataset.type;
-  document.querySelectorAll('#rtForm input[name=rt_type]').forEach(function(x){ x.checked = (x.value===t); });
-  if(t==='minio' && !document.getElementById('rt_bucket').value) document.getElementById('rt_bucket').value = opt.dataset.bucket||'';
-  rtToggle();
+  // 自动匹配类型、回填桶名
+  var b = opt.dataset.bucket || '';
+  var sel = document.getElementById('rt_bucket');
+  if(!sel.value && sel.querySelector('option[value="'+b+'"]')) sel.value = b;
 }
+function rtTest(){
+  var msg = document.getElementById('rt_msg');
+  msg.textContent = '测试中…'; msg.style.color = 'var(--text-secondary)';
+  rtBuildPreview();
+  var fd = new FormData(document.getElementById('rtForm'));
+  fetch('{{ url_for("model_rtdir_test") }}', {method:'POST', body: fd})
+    .then(function(r){ return r.json(); })
+    .then(function(d){ msg.textContent = d.msg; msg.style.color = d.ok ? '#52c41a' : '#ff4d4f'; })
+    .catch(function(e){ msg.textContent = '请求失败'; msg.style.color = '#ff4d4f'; });
+}
+</script>
 function rtTest(){
   var msg = document.getElementById('rt_msg');
   msg.textContent = '测试中…'; msg.style.color = 'var(--text-secondary)';
