@@ -26,7 +26,6 @@
 <form method="post" action="{{ url_for('config_integration_save') }}" id="cfgForm">
 
   {% set groups = [('Label Studio（标注引擎）', ['ls_url','ls_token','ls_user','ls_webhook_url'], 'ls'),
-                   ('算法推理服务', ['infer_url'], 'infer'),
                    ('CubeStudio（训练调度，预留）', ['cs_url','cs_token'], 'cs')] %}
   {% for gname, gkeys, gtest in groups %}
   <div class="cfg-group">
@@ -60,7 +59,6 @@
     <b style="color:var(--text)">说明</b><br>
     · 标「已配置」的取自本页保存的值；标「默认值」的来自启动环境变量，改这里即可覆盖，不用登服务器。<br>
     · Label Studio 地址会被浏览器直接访问（标注页内嵌 iframe），<b>必须填 IP，不能填 127.0.0.1</b>。<br>
-    · 推理服务留空时，分析页会用内置模拟判定 —— 仅供演示，<b>不可用于生产统计</b>。<br>
     · 各检测项目对应的 Label Studio 项目、数据源目录，在「检测项目」页签里按项目单独配置。
   </div>
 </div></div>

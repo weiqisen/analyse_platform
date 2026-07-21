@@ -29,7 +29,6 @@ WS_PASS = os.environ.get("WS_PASS", "hlxd@123")
 # 外部系统集成参数的兜底默认值。运行期一律走 get_cfg()：优先读 integration_config 表
 # （集成配置页可改、即时生效），表里没配才回落到这里的环境变量。
 CFG_DEFAULTS = {
-    "infer_url": os.environ.get("INFER_URL", ""),          # 算法推理服务，为空则用内置模拟
     "ls_url": os.environ.get("LS_URL", "http://127.0.0.1:8080"),
     "ls_token": os.environ.get("LS_TOKEN", "cigarette-label-studio-token-2026"),
     "ls_user": os.environ.get("LS_USER", "admin@cigarette.local"),
@@ -48,7 +47,6 @@ CFG_LABELS = [
     ("ls_token", "Label Studio API Token", "LS 1.23+ 需在组织设置里开启 legacy token 才可用"),
     ("ls_user", "Label Studio 登录账号", "仅用于标注页提示，不参与鉴权"),
     ("ls_webhook_url", "标注回调地址(Webhook)", "留空则用本机地址推算；LS 标注后回写进度到此"),
-    ("infer_url", "推理服务地址", "留空则用内置模拟判定（仅演示，不可用于生产统计）"),
     ("cs_url", "CubeStudio 地址", "预留，本机资源不足未部署"),
     ("cs_token", "CubeStudio Token", "预留"),
     ("workflow_url", "视觉工作流地址", "真实标注工作流界面，缺陷标注页「进入工作流」内嵌它（浏览器需能访问）"),
@@ -859,18 +857,6 @@ def config_integration_test(what):
             if "401" in str(e):
                 hint = "（Token 无效，或 LS 1.23+ 未开启 legacy token）"
             return jsonify({"ok": False, "msg": "连接失败：%s%s" % (str(e)[:100], hint)})
-    if what == "infer":
-        url = request.form.get("infer_url", "").strip()
-        if not url:
-            return jsonify({"ok": False, "msg": "未填写地址；留空将使用内置模拟判定"})
-        try:
-            health = url.rsplit("/", 1)[0] + "/health"
-            with urllib.request.urlopen(health, timeout=8) as r:
-                d = json.loads(r.read().decode())
-            return jsonify({"ok": True, "msg": "连接成功，底库 %s 张 / %s 类"
-                            % (d.get("gallery", "?"), d.get("classes", "?"))})
-        except Exception as e:
-            return jsonify({"ok": False, "msg": "连接失败：%s" % str(e)[:110]})
     if what == "cs":
         url = request.form.get("cs_url", "").strip()
         if not url:
@@ -1754,10 +1740,19 @@ def label():
         "SELECT * FROM camera_faces WHERE status=1 AND item_id=? ORDER BY sort_order, id",
         (cur_det,)).fetchall()]
     cs_online = cs_ok()
+    # 各相机面的样本上传统计（总张数、是否有处理中）
+    cur_row = next((i for i in det_items if i["id"] == cur_det), None)
+    proj_name = (cur_row["short_name"] or cur_row["name"]) if cur_row else ""
+    samp = {}
+    for r in db.execute("SELECT face, COALESCE(SUM(img_count),0) cnt, "
+                        "SUM(status='processing') proc FROM sample_uploads "
+                        "WHERE project=? AND brand=? GROUP BY face", (proj_name, cur_brand)).fetchall():
+        samp[r["face"]] = {"count": int(r["cnt"] or 0), "proc": int(r["proc"] or 0)}
     units = []
     for f in faces:
         u = db.execute("SELECT * FROM model_units WHERE brand=? AND face_id=?",
                        (cur_brand, f["id"])).fetchone()
+        s = samp.get(f["face_name"], {"count": 0, "proc": 0})
         units.append({
             "face_id": f["id"], "face_name": f["face_name"], "face_code": f["face_code"],
             "raw_name": f["raw_name"],
@@ -1765,6 +1760,7 @@ def label():
             "cs_project_id": u["cs_project_id"] if u else "",
             "annotated": u["annotated"] if u else 0, "total": u["total"] if u else 0,
             "model_version": u["model_version"] if u else "",
+            "sample_count": s["count"], "sample_proc": s["proc"],
         })
     units, pg = paginate_list(units, request.args.get("page"))
     return render_template("label.html", det_items=det_items, cur_det=cur_det,
@@ -2007,6 +2003,30 @@ def api_label_sample_status():
     rows = get_db().execute("SELECT msg_id,status,reply_msg FROM sample_uploads WHERE msg_id IN (%s)" % ph,
                             mids).fetchall()
     return jsonify({r["msg_id"]: {"status": r["status"], "reply": r["reply_msg"]} for r in rows})
+
+
+@app.route("/api/label/sample/history")
+@login_required
+def api_label_sample_history():
+    """某(项目×牌号×相机面)的历次上传：数量、时间、状态，供小窗展示与自动刷新。"""
+    face_id = request.args.get("face_id", type=int)
+    brand = request.args.get("brand", "")
+    db = get_db()
+    face = db.execute("SELECT face_name FROM camera_faces WHERE id=?", (face_id,)).fetchone()
+    if not face:
+        return jsonify({"rows": []})
+    it = db.execute("SELECT short_name,name FROM detect_items WHERE id=(SELECT item_id FROM camera_faces WHERE id=?)",
+                    (face_id,)).fetchone()
+    proj = (it["short_name"] or it["name"]) if it else ""
+    rows = db.execute("SELECT img_count,status,reply_msg,created_at,created_by FROM sample_uploads "
+                      "WHERE project=? AND brand=? AND face=? ORDER BY id DESC LIMIT 100",
+                      (proj, brand, face["face_name"])).fetchall()
+    total = sum(r["img_count"] for r in rows)
+    proc = sum(1 for r in rows if r["status"] == "processing")
+    return jsonify({"total": total, "proc": proc, "rows": [
+        {"count": r["img_count"], "status": r["status"], "reply": r["reply_msg"] or "",
+         "time": r["created_at"].strftime("%m-%d %H:%M") if r["created_at"] else "",
+         "by": r["created_by"] or ""} for r in rows]})
 
 
 @app.route("/api/label/unit/<int:unit_id>/stats")

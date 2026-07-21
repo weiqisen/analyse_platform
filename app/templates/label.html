@@ -26,11 +26,16 @@
 
 <div class="card tbl-card"><div class="card-body" style="padding:0">
 <table class="table">
-  <thead><tr><th>相机面</th><th>建模单元</th><th>标注进度</th><th>已绑定模型</th><th>操作</th></tr></thead>
+  <thead><tr><th>相机面</th><th>样本数量</th><th>建模单元</th><th>标注进度</th><th>已绑定模型</th><th>操作</th></tr></thead>
   <tbody>
   {% for u in units %}
   <tr>
     <td><b>{{ u.face_name }}</b></td>
+    <td>
+      <a class="btn-link" href="javascript:;" onclick="openHistory({{ u.face_id }},'{{ u.face_name }}')">
+        {{ u.sample_count }} 张</a>
+      {% if u.sample_proc %}<span style="color:#faad14;font-size:12px" title="有上传处理中">● 处理中</span>{% endif %}
+    </td>
     <td>{% if u.exists %}<span class="tag">已建</span>{% else %}<span class="tag tag-gray">未建</span>{% endif %}</td>
     <td>{% if u.exists %}{{ u.annotated }} / {{ u.total }}{% else %}—{% endif %}</td>
     <td>{% if u.model_version %}<span style="color:#52c41a">{{ u.model_version }}</span>{% else %}<span style="color:var(--text-secondary)">未绑定</span>{% endif %}</td>
@@ -50,7 +55,7 @@
     </td>
   </tr>
   {% else %}
-  <tr><td colspan="5" class="empty">未配置相机面，请到「基础配置 → 图像分类」维护</td></tr>
+  <tr><td colspan="6" class="empty">未配置相机面，请到「基础配置 → 图像分类」维护</td></tr>
   {% endfor %}
   </tbody>
 </table>
@@ -127,33 +132,56 @@ function doUpload(){
     .then(function(r){ return r.json(); })
     .then(function(d){
       if(!d.ok){ st.textContent = '失败：' + d.msg; st.style.color='#ff4d4f'; document.getElementById('up_btn').disabled=false; return; }
-      var pathInfo = d.path ? ('<div style="font-size:11.5px;color:var(--text-secondary);margin-top:3px">路径 <code>' + d.path + '</code>' + (d.warn||'') + '</div>') : '';
-      st.innerHTML = '<span style="color:#faad14">● 已上传 ' + d.count + ' 张，处理中…（等待算法侧回执）</span>' + pathInfo;
-      pollStatus(d.msg_id, st);
+      // 存到 MinIO 就算成功；后续处理状态在「样本数量」历史小窗里看
+      st.innerHTML = '<span style="color:#52c41a">✓ 已上传 ' + d.count + ' 张</span>';
+      setTimeout(function(){ location.reload(); }, 900);
     })
     .catch(function(e){ st.textContent = '请求失败：' + e; st.style.color='#ff4d4f'; document.getElementById('up_btn').disabled=false; });
 }
-function pollStatus(mid, st){
-  var tries = 0;
-  var t = setInterval(function(){
-    tries++;
-    fetch('{{ url_for("api_label_sample_status") }}?ids=' + mid)
-      .then(function(r){ return r.json(); })
-      .then(function(d){
-        var s = d[mid];
-        if(!s) return;
-        if(s.status === 'done'){
-          clearInterval(t);
-          st.innerHTML = '<span style="color:#52c41a">✓ 上传成功' + (s.reply ? '（' + s.reply + '）' : '') + '</span>';
-          document.getElementById('up_btn').disabled = false;
-        } else if(s.status === 'error'){
-          clearInterval(t);
-          st.innerHTML = '<span style="color:#ff4d4f">✗ 处理失败：' + (s.reply||'') + '</span>';
-          document.getElementById('up_btn').disabled = false;
-        }
-      }).catch(function(){});
-    if(tries > 120) clearInterval(t);   // 最多轮询 10 分钟
-  }, 5000);
+
+// ---- 样本上传历史小窗 ----
+var histTimer = null, histFace = 0;
+function openHistory(faceId, faceName){
+  histFace = faceId;
+  document.getElementById('hist_face').textContent = faceName;
+  document.getElementById('hist_body').innerHTML = '<tr><td colspan="4" class="empty">加载中…</td></tr>';
+  openModal('histModal');
+  loadHistory();
+  clearInterval(histTimer);
+  histTimer = setInterval(loadHistory, 5000);   // 有处理中时自动刷新
+}
+function closeHistory(){ clearInterval(histTimer); closeModal('histModal'); }
+function loadHistory(){
+  fetch('{{ url_for("api_label_sample_history") }}?face_id=' + histFace + '&brand=' + encodeURIComponent('{{ cur_brand }}'))
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      document.getElementById('hist_total').textContent = d.total || 0;
+      var b = document.getElementById('hist_body');
+      if(!d.rows.length){ b.innerHTML = '<tr><td colspan="4" class="empty">暂无上传记录</td></tr>'; clearInterval(histTimer); return; }
+      b.innerHTML = d.rows.map(function(r){
+        var badge = r.status==='done' ? '<span class="tag">上传成功</span>'
+          : (r.status==='error' ? '<span class="tag" style="background:#fff1f0;color:#cf1322">失败</span>'
+          : '<span class="tag tag-orange">处理中</span>');
+        return '<tr><td>' + r.time + '</td><td>' + r.count + ' 张</td><td>' + badge
+          + (r.reply ? ' <span style="color:var(--text-secondary);font-size:12px">' + r.reply + '</span>' : '')
+          + '</td><td style="color:var(--text-secondary)">' + (r.by||'') + '</td></tr>';
+      }).join('');
+      if(!d.proc) clearInterval(histTimer);   // 没有处理中就停止刷新
+    }).catch(function(){});
 }
 </script>
+
+<div class="modal-mask" id="histModal">
+  <div class="modal" style="width:600px;max-width:94vw">
+    <div class="modal-head"><span>上传记录 — <b id="hist_face">—</b>（累计 <span id="hist_total">0</span> 张）</span>
+      <span class="close" onclick="closeHistory()">×</span></div>
+    <div class="modal-body" style="padding:0">
+      <table class="table">
+        <thead><tr><th>时间</th><th>数量</th><th>状态</th><th>上传人</th></tr></thead>
+        <tbody id="hist_body"></tbody>
+      </table>
+    </div>
+    <div class="modal-foot"><button class="btn" onclick="closeHistory()">关闭</button></div>
+  </div>
+</div>
 {% endblock %}
