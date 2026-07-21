@@ -35,11 +35,10 @@
 </style>
 
 <div class="toolbar">
-  <div class="page-title" style="margin:0">数据源</div>
+  <div class="page-title" style="margin:0">数据源
+    <span class="hint-icon" title="数据源独立管理，多条产线可共用一个。通常一个区域的机型统一写到一个 MinIO；个别机型单独走 FTP。">?</span>
+  </div>
   <button class="btn btn-primary" onclick="openDs()">+ 新增数据源</button>
-</div>
-<div style="font-size:12.5px;color:var(--text-secondary);margin-bottom:10px">
-  数据源独立管理，多条产线可共用一个。通常一个区域的机型统一写到一个 MinIO；个别机型单独走 FTP。
 </div>
 <div class="card tbl-card"><div class="card-body" style="padding:0">
 <table class="table">
