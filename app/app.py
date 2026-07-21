@@ -255,6 +255,11 @@ def migrate_db(db):
         # 退化为由数据源派生的按产线缓存（rebuild_line_cfg 重建），现有读代码不用改。
         ("prod_lines", "source_id", "INT DEFAULT 0 COMMENT '引用的数据源(data_sources.id)'"),
         ("analysis_jobs", "enabled", "INT DEFAULT 0 COMMENT '工作状态开关: 1开启 0关闭'"),
+        # 样本上传：msg_id 只做消息关联，项目归属改用稳定的 unit_key（CubeStudio 按此 upsert，
+        # 避免同一建模单元多次上传被建成多个项目）。
+        ("sample_uploads", "unit_key", "VARCHAR(160) DEFAULT '' COMMENT '建模单元稳定标识=项目编码/牌号编码/相机面编码'"),
+        ("sample_uploads", "unit_id", "INT DEFAULT 0 COMMENT '建模单元(model_units.id), 0=尚未建单元'"),
+        ("sample_uploads", "cs_project_id", "VARCHAR(64) DEFAULT '' COMMENT 'CubeStudio项目ID(回执回填)'"),
     ]
     added = set()
     for table, col, ddl in adds:
@@ -454,6 +459,9 @@ def init_db():
             bucket VARCHAR(64) COMMENT 'MinIO桶',
             path VARCHAR(512) COMMENT 'MinIO目录前缀',
             img_count INT DEFAULT 0 COMMENT '图片数',
+            unit_key VARCHAR(160) DEFAULT '' COMMENT '建模单元稳定标识=项目编码/牌号编码/相机面编码, CubeStudio按此upsert项目',
+            unit_id INT DEFAULT 0 COMMENT '建模单元(model_units.id), 0=尚未建单元',
+            cs_project_id VARCHAR(64) DEFAULT '' COMMENT 'CubeStudio项目ID(回执回填)',
             status VARCHAR(16) DEFAULT 'processing' COMMENT 'processing/done/error',
             reply_msg VARCHAR(255) DEFAULT '' COMMENT '算法侧回执消息',
             created_by VARCHAR(64) DEFAULT '' COMMENT '上传人',
@@ -1486,6 +1494,7 @@ def cs_ensure_project(unit, brand, face):
     if unit["cs_project_id"]:
         return unit["cs_project_id"], unit["cs_project_url"]
     r = _cs_req("POST", "/api/projects", {
+        "unit_key": unit_key_of(get_db(), brand, face),   # 与样本上传同一稳定标识，CubeStudio 按此 upsert
         "brand": brand, "face_code": face["face_code"], "face_name": face["face_name"],
         "title": "%s · %s" % (brand, face["face_name"])})
     pid, url = r.get("project_id", ""), r.get("embed_url", "")
@@ -1764,6 +1773,18 @@ def unit_det_id(db, u):
     return r["item_id"] if r else 0
 
 
+def unit_key_of(db, brand, face):
+    """建模单元(牌号×相机面)的稳定标识 = 项目编码/牌号编码/相机面编码（= MinIO 前缀去尾斜杠）。
+    标注(REST)与样本上传(MQ)两条链路都用它做 CubeStudio 项目 key，保证同一单元只对应一个项目。
+    face 需含 item_id、face_code、face_name（camera_faces 行）。缺编码时回落名称，尽量保持稳定。"""
+    it = db.execute("SELECT code FROM detect_items WHERE id=?", (face["item_id"],)).fetchone()
+    br = db.execute("SELECT code FROM brands WHERE spec=?", (brand,)).fetchone()
+    pc = (it["code"] if it and it["code"] else "") or "NA"
+    bc = (br["code"] if br and br["code"] else "") or brand
+    fc = face["face_code"] or face["face_name"]
+    return "%s/%s/%s" % (pc, bc, fc)
+
+
 def detect_item_ctx(db):
     """检测项目=全局工作上下文（业界通用的工作区/项目切换器模式）：顶部下拉切换，
     存 session 跨页保持。返回 (det_items列表, 当前det_id)。检测项目由相机面 item_id 隐含。"""
@@ -1962,12 +1983,21 @@ def _mq_reply_consumer():
                     d = json.loads(body.decode("utf-8"))
                     mid = d.get("msg_id", "")
                     st = "done" if d.get("status") == "ok" else "error"
+                    pid = str(d.get("project_id", "") or "")   # CubeStudio 首建项目时回带
                     dbc = _DB(_connect())
                     dbc.execute("UPDATE sample_uploads SET status=?,reply_msg=? WHERE msg_id=?",
                                 (st, str(d.get("message", ""))[:255], mid))
+                    if pid:
+                        # 回填项目ID：记录本行 + 该建模单元（仅在其还没绑过项目时），统一两条链路
+                        dbc.execute("UPDATE sample_uploads SET cs_project_id=? WHERE msg_id=?", (pid, mid))
+                        row = dbc.execute("SELECT unit_id FROM sample_uploads WHERE msg_id=?", (mid,)).fetchone()
+                        if row and row["unit_id"]:
+                            dbc.execute("UPDATE model_units SET cs_project_id=? "
+                                        "WHERE id=? AND (cs_project_id='' OR cs_project_id IS NULL)",
+                                        (pid, row["unit_id"]))
                     dbc.commit()
                     dbc.close()
-                    app.logger.info("样本上传回执 %s → %s", mid, st)
+                    app.logger.info("样本上传回执 %s → %s%s", mid, st, (" cs_project=%s" % pid) if pid else "")
                 except Exception as e:
                     app.logger.warning("处理 MQ 回执失败：%s", e)
                 chan.basic_ack(delivery_tag=method.delivery_tag)
@@ -2032,17 +2062,28 @@ def label_sample_upload():
 
     import uuid
     msg_id = "u-%s-%s" % (datetime.now().strftime("%Y%m%d"), uuid.uuid4().hex[:8])
-    payload = {"msg_id": msg_id, "project": project, "project_code": proj_code,
+    # unit_key = 稳定的建模单元标识（= MinIO 前缀去尾斜杠）。CubeStudio 按此 upsert 项目，
+    # 同一单元多次上传只对应一个项目；msg_id 仅做本次请求/回执关联。
+    unit_key = prefix.rstrip("/")
+    # 若该单元此前已因标注建过 CubeStudio 项目，带上其 id，让两条链路指向同一项目
+    munit = db.execute("SELECT id,cs_project_id FROM model_units WHERE brand=? AND face_id=?",
+                       (brand, face_id)).fetchone()
+    unit_id = munit["id"] if munit else 0
+    cs_pid = (munit["cs_project_id"] if munit else "") or ""
+    payload = {"msg_id": msg_id, "unit_key": unit_key, "cs_project_id": cs_pid,
+               "project": project, "project_code": proj_code,
                "brand": brand, "brand_code": brand_code,
                "face": face["face_name"], "face_code": face_code,
                "bucket": bucket, "path": prefix, "count": len(keys), "images": keys,
                "minio": {"endpoint": "http://" + scfg["server_addr"],
                          "access_key": scfg["username"], "secret_key": scfg["password"]},
                "ts": int(datetime.now().timestamp())}
-    db.execute("INSERT INTO sample_uploads(msg_id,project,brand,face,face_code,bucket,path,"
-               "img_count,status,created_by) VALUES(?,?,?,?,?,?,?,?,?,?)",
-               (msg_id, project, brand, face["face_name"], face["face_code"], bucket, prefix,
-                len(keys), "processing", session.get("username", "")))
+    db.execute("INSERT INTO sample_uploads(msg_id,unit_key,unit_id,cs_project_id,project,brand,face,"
+               "face_code,bucket,path,img_count,status,created_by) "
+               "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+               (msg_id, unit_key, unit_id, cs_pid, project, brand, face["face_name"],
+                face["face_code"], bucket, prefix, len(keys), "processing",
+                session.get("username", "")))
     db.commit()
     ok, err = mq_publish_upload(payload)
     if not ok:
