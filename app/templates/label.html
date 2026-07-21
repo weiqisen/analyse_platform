@@ -206,7 +206,7 @@ function loadHistory(){
 </script>
 
 <div class="modal-mask" id="histModal">
-  <div class="modal" style="width:600px;max-width:94vw">
+  <div class="modal" style="width:860px;max-width:96vw">
     <div class="modal-head"><span>上传记录 — <b id="hist_face">—</b>（累计 <span id="hist_total">0</span> 张）</span>
       <span class="close" onclick="closeHistory()">×</span></div>
     <div class="modal-body" style="padding:0">
@@ -250,4 +250,13 @@ function loadHistory(){
     </div>
   </div>
 </div>
+<script>
+// 有上传处理中时自动刷新页面，直到「处理中」消失
+(function(){
+  var procEls = document.querySelectorAll('[title="有上传处理中"]');
+  if(procEls.length){
+    setTimeout(function(){ location.reload(); }, 5000);
+  }
+})();
+</script>
 {% endblock %}
