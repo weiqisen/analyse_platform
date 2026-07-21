@@ -261,7 +261,7 @@ def migrate_db(db):
         ("sample_uploads", "unit_id", "INT DEFAULT 0 COMMENT '建模单元(model_units.id), 0=尚未建单元'"),
         ("sample_uploads", "cs_project_id", "VARCHAR(64) DEFAULT '' COMMENT 'CubeStudio项目ID(回执回填)'"),
         ("sample_uploads", "class_id", "INT DEFAULT 0 COMMENT '缺陷分类ID(label_classes.id), 上传必选'"),
-        ("sample_uploads", "class_name", "VARCHAR(64) DEFAULT '' COMMENT '缺陷分类名称, 随MQ消息发给CubeStudio'"),
+        ("sample_uploads", "class_name", "VARCHAR(512) DEFAULT '' COMMENT '缺陷分类名称(可多个, / 分隔)'"),
     ]
     added = set()
     for table, col, ddl in adds:
@@ -381,6 +381,16 @@ def migrate_db(db):
             except Exception:
                 pass  # 可能已经切过了，忽略
 
+    # sample_uploads.class_name 从 VARCHAR(64) 扩到 VARCHAR(512)，支持多分类拼接
+    if _has_column(db, "sample_uploads", "class_name"):
+        col = db.execute("SELECT character_maximum_length AS n FROM information_schema.columns "
+                         "WHERE table_schema=? AND table_name='sample_uploads' AND column_name='class_name'",
+                         (DB_NAME,)).fetchone()
+        if col and col["n"] and col["n"] < 512:
+            db.execute("ALTER TABLE sample_uploads MODIFY class_name VARCHAR(512) "
+                       "DEFAULT '' COMMENT '缺陷分类名称(可多个, / 分隔)'")
+            db.commit()
+
 
 def init_db():
     db = _DB(_connect())
@@ -480,7 +490,7 @@ def init_db():
             unit_id INT DEFAULT 0 COMMENT '建模单元(model_units.id), 0=尚未建单元',
             cs_project_id VARCHAR(64) DEFAULT '' COMMENT 'CubeStudio项目ID(回执回填)',
             class_id INT DEFAULT 0 COMMENT '缺陷分类ID(label_classes.id), 上传必选',
-            class_name VARCHAR(64) DEFAULT '' COMMENT '缺陷分类名称, 随MQ消息发给CubeStudio',
+            class_name VARCHAR(512) DEFAULT '' COMMENT '缺陷分类名称(可多个, / 分隔), 随MQ消息发给CubeStudio',
             status VARCHAR(16) DEFAULT 'processing' COMMENT 'processing/done/error',
             reply_msg VARCHAR(255) DEFAULT '' COMMENT '算法侧回执消息',
             created_by VARCHAR(64) DEFAULT '' COMMENT '上传人',
