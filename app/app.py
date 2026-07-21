@@ -473,6 +473,19 @@ def init_db():
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
             UNIQUE KEY uq_msg (msg_id)
         ) DEFAULT CHARSET=utf8mb4 COMMENT='样本上传记录(MQ交互状态)'""",
+        # 缺陷分类按建模单元(牌号×相机面=一个unit_key)绑定：一个单元一个分类，
+        # 该单元下所有样本上传都用它。上传前必须先在行编辑弹窗里设置。
+        """CREATE TABLE IF NOT EXISTS unit_sample_class(
+            id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+            brand VARCHAR(64) NOT NULL COMMENT '牌号/品规',
+            face_id INT NOT NULL COMMENT '相机面(camera_faces.id)',
+            unit_key VARCHAR(160) DEFAULT '' COMMENT '建模单元稳定标识(冗余，便于核对)',
+            class_id INT DEFAULT 0 COMMENT '缺陷分类ID(label_classes.id)',
+            class_name VARCHAR(64) DEFAULT '' COMMENT '缺陷分类名称',
+            updated_by VARCHAR(64) DEFAULT '' COMMENT '最后修改人',
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+            UNIQUE KEY uq_brand_face (brand, face_id)
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='建模单元的缺陷分类绑定(一单元一分类)'""",
         """CREATE TABLE IF NOT EXISTS analysis_logs(
             id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
             unit_id INT NOT NULL COMMENT '建模单元(model_units.id)',
@@ -1836,11 +1849,15 @@ def label():
                         "SUM(status='processing') proc FROM sample_uploads "
                         "WHERE project=? AND brand=? GROUP BY face", (proj_name, cur_brand)).fetchall():
         samp[r["face"]] = {"count": int(r["cnt"] or 0), "proc": int(r["proc"] or 0)}
+    # 各相机面(建模单元)绑定的缺陷分类
+    cbind = {r["face_id"]: dict(r) for r in db.execute(
+        "SELECT face_id,class_id,class_name FROM unit_sample_class WHERE brand=?", (cur_brand,)).fetchall()}
     units = []
     for f in faces:
         u = db.execute("SELECT * FROM model_units WHERE brand=? AND face_id=?",
                        (cur_brand, f["id"])).fetchone()
         s = samp.get(f["face_name"], {"count": 0, "proc": 0})
+        cb = cbind.get(f["id"], {})
         units.append({
             "face_id": f["id"], "face_name": f["face_name"], "face_code": f["face_code"],
             "raw_name": f["raw_name"],
@@ -1849,9 +1866,10 @@ def label():
             "annotated": u["annotated"] if u else 0, "total": u["total"] if u else 0,
             "model_version": u["model_version"] if u else "",
             "sample_count": s["count"], "sample_proc": s["proc"],
+            "class_id": cb.get("class_id") or 0, "class_name": cb.get("class_name") or "",
         })
     units, pg = paginate_list(units, request.args.get("page"))
-    # 缺陷分类：样本上传前必选，随 MQ 消息发给 CubeStudio。按当前检测项目取启用项。
+    # 缺陷分类候选：按当前检测项目取启用项，供行编辑弹窗选择（绑定到建模单元）。
     classes = [dict(c) for c in db.execute(
         "SELECT id, name FROM label_classes WHERE item_id=? AND status=1 ORDER BY id",
         (cur_det,)).fetchall()]
@@ -1884,6 +1902,33 @@ def label_unit_create():
     except Exception as e:
         flash("对接 CubeStudio 失败：%s" % str(e)[:120], "error")
     return redirect(url_for("label", det=face["item_id"], brand=brand))
+
+
+@app.route("/label/unit/class", methods=["POST"])
+@login_required
+def label_unit_class():
+    """为(牌号×相机面)建模单元绑定缺陷分类。一单元一分类，该单元样本上传都用它。"""
+    db = get_db()
+    brand = request.form.get("brand", "").strip()
+    face_id = request.form.get("face_id", type=int)
+    class_id = request.form.get("class_id", type=int)
+    face = db.execute("SELECT * FROM camera_faces WHERE id=?", (face_id,)).fetchone()
+    if not (brand and face):
+        return jsonify({"ok": False, "msg": "参数错误"}), 400
+    cls = db.execute("SELECT id,name FROM label_classes WHERE id=? AND status=1", (class_id,)).fetchone() \
+        if class_id else None
+    if not cls:
+        return jsonify({"ok": False, "msg": "请选择有效的缺陷分类"}), 400
+    unit_key = unit_key_of(db, brand, dict(face))
+    db.execute("INSERT INTO unit_sample_class(brand,face_id,unit_key,class_id,class_name,updated_by) "
+               "VALUES(?,?,?,?,?,?) ON DUPLICATE KEY UPDATE "
+               "class_id=VALUES(class_id),class_name=VALUES(class_name),"
+               "unit_key=VALUES(unit_key),updated_by=VALUES(updated_by)",
+               (brand, face_id, unit_key, cls["id"], cls["name"], session.get("username", "")))
+    db.commit()
+    app.logger.info("建模单元绑定缺陷分类 unit_key=%s class=%s by=%s",
+                    unit_key, cls["name"], session.get("username", ""))
+    return jsonify({"ok": True, "class_id": cls["id"], "class_name": cls["name"]})
 
 
 @app.route("/label/class/add", methods=["POST"])
@@ -2032,19 +2077,18 @@ def label_sample_upload():
     project = request.form.get("project", "").strip()
     brand = request.form.get("brand", "").strip()
     face_id = request.form.get("face_id", type=int)
-    class_id = request.form.get("class_id", type=int)
     files = request.files.getlist("files")
     if not (project and brand and face_id and files):
         return jsonify({"ok": False, "msg": "缺少项目/牌号/相机面或未选图片"}), 400
     face = db.execute("SELECT * FROM camera_faces WHERE id=?", (face_id,)).fetchone()
     if not face:
         return jsonify({"ok": False, "msg": "相机面不存在"}), 400
-    # 缺陷分类必选：以库为准（不信任前端 class_name），随消息发给 CubeStudio
-    cls = db.execute("SELECT id,name FROM label_classes WHERE id=? AND status=1", (class_id,)).fetchone() \
-        if class_id else None
-    if not cls:
-        return jsonify({"ok": False, "msg": "请先选择缺陷分类"}), 400
-    class_name = cls["name"]
+    # 缺陷分类取建模单元的绑定（在行编辑弹窗里设置）；未绑定不能上传
+    cb = db.execute("SELECT class_id,class_name FROM unit_sample_class WHERE brand=? AND face_id=?",
+                    (brand, face_id)).fetchone()
+    if not cb or not cb["class_id"]:
+        return jsonify({"ok": False, "msg": "请先为该相机面绑定缺陷分类（点行内「缺陷分类」编辑）"}), 400
+    class_id, class_name = cb["class_id"], cb["class_name"]
     scfg = db.execute("SELECT * FROM storage_config WHERE server_addr<>'' LIMIT 1").fetchone()
     if not scfg:
         return jsonify({"ok": False, "msg": "未配置对象存储数据源"}), 400
@@ -2095,7 +2139,7 @@ def label_sample_upload():
                "project": project, "project_code": proj_code,
                "brand": brand, "brand_code": brand_code,
                "face": face["face_name"], "face_code": face_code,
-               "class_id": cls["id"], "class_name": class_name,
+               "class_id": class_id, "class_name": class_name,
                "bucket": bucket, "path": prefix, "count": len(keys), "images": keys,
                "minio": {"endpoint": "http://" + scfg["server_addr"],
                          "access_key": scfg["username"], "secret_key": scfg["password"]},
@@ -2104,7 +2148,7 @@ def label_sample_upload():
                "face_code,class_id,class_name,bucket,path,img_count,status,created_by) "
                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                (msg_id, unit_key, unit_id, cs_pid, project, brand, face["face_name"],
-                face["face_code"], cls["id"], class_name, bucket, prefix, len(keys), "processing",
+                face["face_code"], class_id, class_name, bucket, prefix, len(keys), "processing",
                 session.get("username", "")))
     db.commit()
     ok, err = mq_publish_upload(payload)
