@@ -195,7 +195,6 @@ function loadHistory(){
           : (r.status==='error' ? '<span class="tag" style="background:#fff1f0;color:#cf1322">失败</span>'
           : '<span class="tag tag-orange">处理中</span>');
         return '<tr><td>' + r.time + '</td><td>' + (r.class_name||'—') + '</td><td>' + r.count + ' 张</td><td>' + badge
-          + (r.reply ? ' <span style="color:var(--text-secondary);font-size:12px">' + r.reply + '</span>' : '')
           + '</td><td style="color:var(--text-secondary)">' + (r.reply_time||'—') + '</td>'
           + '<td style="color:var(--text-secondary)">' + (r.by||'') + '</td></tr>';
       }).join('');

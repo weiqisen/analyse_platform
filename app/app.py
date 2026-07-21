@@ -1995,6 +1995,7 @@ def label_workflow():
         flash("未配置视觉工作流地址（基础配置 → 系统集成）", "error")
         return redirect(url_for("label"))
     url = "%s/frontend/visionWorkflow/embed/%s?embed=1" % (base, unit_key)
+    app.logger.info("进入工作流 unit_key=%s url=%s by=%s", unit_key, url, session.get("username", ""))
     return render_template("label_workflow.html", wf_src=url, active="label")
 
 
