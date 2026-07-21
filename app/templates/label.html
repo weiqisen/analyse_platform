@@ -35,6 +35,7 @@
     <td>{% if u.exists %}{{ u.annotated }} / {{ u.total }}{% else %}—{% endif %}</td>
     <td>{% if u.model_version %}<span style="color:#52c41a">{{ u.model_version }}</span>{% else %}<span style="color:var(--text-secondary)">未绑定</span>{% endif %}</td>
     <td style="white-space:nowrap">
+      <a class="btn-link" href="javascript:;" onclick="openUpload({{ u.face_id }},'{{ u.face_name }}')">上传样本</a>
       {% if not cs_online %}
       <span style="color:var(--text-secondary);font-size:12.5px">CubeStudio 离线</span>
       {% elif u.exists %}
@@ -55,4 +56,84 @@
 </table>
 {% if pg %}<div class="pager" data-page="{{ pg.page }}" data-pages="{{ pg.pages }}" data-total="{{ pg.total }}"></div>{% endif %}
 </div></div>
+
+<div class="modal-mask" id="upModal">
+  <div class="modal" style="width:560px;max-width:94vw">
+    <div class="modal-head"><span>上传样本图片</span><span class="close" onclick="closeModal('upModal')">×</span></div>
+    <div class="modal-body">
+      <div style="font-size:13px;margin-bottom:12px">
+        项目 <b>{{ g_cur_det_name or '—' }}</b> · 牌号 <b>{{ cur_brand or '—' }}</b> · 相机面 <b id="up_face">—</b>
+      </div>
+      <div style="font-size:12.5px;color:var(--text-secondary);margin-bottom:10px">
+        图片将上传到样本桶 <code>项目/牌号/相机面/</code> 目录，并把路径信息通过消息队列通知算法侧。
+      </div>
+      <input type="file" id="up_files" multiple accept="image/*" style="font-size:13px">
+      <div id="up_preview" style="margin-top:8px;font-size:12.5px;color:var(--text-secondary)"></div>
+      <div id="up_status" style="margin-top:12px;font-size:13px"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeModal('upModal')">关闭</button>
+      <button class="btn btn-primary" id="up_btn" onclick="doUpload()">上传</button>
+    </div>
+  </div>
+</div>
+<script>
+var upFace = {id:0, name:''};
+function openUpload(faceId, faceName){
+  upFace = {id: faceId, name: faceName};
+  document.getElementById('up_face').textContent = faceName;
+  document.getElementById('up_files').value = '';
+  document.getElementById('up_preview').textContent = '';
+  document.getElementById('up_status').textContent = '';
+  document.getElementById('up_btn').disabled = false;
+  {% if not cur_brand %}alert('请先在左侧选择牌号'); return;{% endif %}
+  openModal('upModal');
+}
+document.getElementById('up_files').addEventListener('change', function(){
+  var n = this.files.length;
+  document.getElementById('up_preview').textContent = n ? ('已选 ' + n + ' 张图片') : '';
+});
+function doUpload(){
+  var files = document.getElementById('up_files').files;
+  var st = document.getElementById('up_status');
+  if(!files.length){ st.textContent = '请先选择图片'; st.style.color='#ff4d4f'; return; }
+  document.getElementById('up_btn').disabled = true;
+  var fd = new FormData();
+  fd.append('project', '{{ g_cur_det_name }}');
+  fd.append('brand', '{{ cur_brand }}');
+  fd.append('face_id', upFace.id);
+  for(var i=0;i<files.length;i++){ fd.append('files', files[i]); }
+  st.textContent = '上传中…'; st.style.color = 'var(--text-secondary)';
+  fetch('{{ url_for("label_sample_upload") }}', {method:'POST', body: fd})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if(!d.ok){ st.textContent = '失败：' + d.msg; st.style.color='#ff4d4f'; document.getElementById('up_btn').disabled=false; return; }
+      st.innerHTML = '<span style="color:#faad14">● 已上传 ' + d.count + ' 张，处理中…（等待算法侧回执）</span>';
+      pollStatus(d.msg_id, st);
+    })
+    .catch(function(e){ st.textContent = '请求失败：' + e; st.style.color='#ff4d4f'; document.getElementById('up_btn').disabled=false; });
+}
+function pollStatus(mid, st){
+  var tries = 0;
+  var t = setInterval(function(){
+    tries++;
+    fetch('{{ url_for("api_label_sample_status") }}?ids=' + mid)
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        var s = d[mid];
+        if(!s) return;
+        if(s.status === 'done'){
+          clearInterval(t);
+          st.innerHTML = '<span style="color:#52c41a">✓ 上传成功' + (s.reply ? '（' + s.reply + '）' : '') + '</span>';
+          document.getElementById('up_btn').disabled = false;
+        } else if(s.status === 'error'){
+          clearInterval(t);
+          st.innerHTML = '<span style="color:#ff4d4f">✗ 处理失败：' + (s.reply||'') + '</span>';
+          document.getElementById('up_btn').disabled = false;
+        }
+      }).catch(function(){});
+    if(tries > 120) clearInterval(t);   // 最多轮询 10 分钟
+  }, 5000);
+}
+</script>
 {% endblock %}
