@@ -2016,10 +2016,12 @@ def mq_publish_upload(payload):
         conn = _mq_conn()
         ch = conn.channel()
         ch.exchange_declare(exchange=MQ_EXCHANGE, exchange_type="direct", durable=True)
+        body = json.dumps(payload, ensure_ascii=False)
         ch.basic_publish(exchange=MQ_EXCHANGE, routing_key=MQ_RK_REQ,
-                         body=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                         body=body.encode("utf-8"),
                          properties=pika.BasicProperties(delivery_mode=2))
         conn.close()
+        app.logger.info("MQ 发布 sample.upload body=%s", body)
         return True, ""
     except Exception as e:
         app.logger.warning("发送 MQ 上传请求失败：%s", e)
@@ -2038,8 +2040,10 @@ def _mq_reply_consumer():
             ch.queue_bind(exchange=MQ_EXCHANGE, queue=MQ_RK_REPLY, routing_key=MQ_RK_REPLY)
 
             def on_reply(chan, method, props, body):
+                raw = body.decode("utf-8")
+                app.logger.info("MQ 收到回执 sample.upload.reply body=%s", raw)
                 try:
-                    d = json.loads(body.decode("utf-8"))
+                    d = json.loads(raw)
                     mid = d.get("msg_id", "")
                     st = "done" if d.get("status") == "ok" else "error"
                     pid = str(d.get("project_id", "") or "")   # CubeStudio 首建项目时回带
@@ -2158,7 +2162,9 @@ def label_sample_upload():
                    ("MQ发送失败：" + err, msg_id))
         db.commit()
         return jsonify({"ok": False, "msg": "已上传但消息发送失败：%s" % err, "msg_id": msg_id})
-    app.logger.info("样本上传请求已发送 MQ msg_id=%s rk=%s count=%d", msg_id, MQ_RK_REQ, len(keys))
+    app.logger.info("样本上传请求已发送 MQ msg_id=%s rk=%s count=%d body=%s",
+                    msg_id, MQ_RK_REQ, len(keys),
+                    json.dumps(payload, ensure_ascii=False))
     warn = ("（%s 未设编码，路径暂用名称，建议到基础数据补编码）" % "、".join(missing)) if missing else ""
     return jsonify({"ok": True, "msg_id": msg_id, "count": len(keys), "path": bucket + "/" + prefix, "warn": warn})
 
