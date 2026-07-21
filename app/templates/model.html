@@ -192,7 +192,8 @@ function openRt(r){
   rtRebuildLines();
   var lineSel = document.getElementById('rt_line');
   for(var i=0;i<lineSel.options.length;i++){
-    if(lineSel.options[i].value === p[1]){ lineSel.value = p[1]; break; }
+    var opt = lineSel.options[i];
+    if(opt.value === p[1] || opt.getAttribute('data-alias') === p[1]){ lineSel.value = opt.value; break; }
   }
   var detSel = document.getElementById('rt_det');
   detSel.value = p[2] || '';
@@ -210,6 +211,7 @@ function rtRebuildLines(){
     if(l.workshop !== ws) continue;
     var o = document.createElement('option');
     o.value = l.code; o.dataset.lineId = id;
+    o.dataset.alias = l.path_alias || l.code;
     o.textContent = l.code + ' · ' + l.name;
     sel.appendChild(o);
   }
@@ -221,13 +223,14 @@ function rtBuildPath(){
   if(wsOpt) wsAlias = wsOpt.getAttribute('data-alias') || ws.value;
   var line = document.getElementById('rt_line');
   var lineOpt = line.options[line.selectedIndex];
-  var lineCode = line.value;
-  // 选机台 → 自动确定数据源和桶
+  var lineCode = line.value, lineAlias = lineCode;
+  // 选机台 → 自动确定数据源和桶，并用机台路径别名
   if(lineCode && lineOpt && lineOpt.dataset.lineId){
     rtApplyLine(lineCode, lineOpt.dataset.lineId);
+    lineAlias = lineOpt.getAttribute('data-alias') || lineCode;
   }
   var det = document.getElementById('rt_det').value;
-  var parts = [wsAlias, lineCode, det].filter(function(x){ return x; });
+  var parts = [wsAlias, lineAlias, det].filter(function(x){ return x; });
   document.getElementById('rt_path_text').textContent = parts.length ? parts.join('/') + '/' : '尚未选择';
   document.getElementById('rt_path').value = parts.join('/');
 }

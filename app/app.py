@@ -263,6 +263,7 @@ def migrate_db(db):
         ("sample_uploads", "class_id", "INT DEFAULT 0 COMMENT '缺陷分类ID(label_classes.id), 上传必选'"),
         ("sample_uploads", "class_name", "VARCHAR(512) DEFAULT '' COMMENT '缺陷分类名称(可多个, / 分隔)'"),
         ("workshops", "path_alias", "VARCHAR(32) DEFAULT '' COMMENT 'MinIO路径别名, 如 jb1'"),
+        ("prod_lines", "path_alias", "VARCHAR(32) DEFAULT '' COMMENT 'MinIO路径别名, 如 a01'"),
     ]
     added = set()
     for table, col, ddl in adds:
@@ -412,15 +413,15 @@ def init_db():
             short_name VARCHAR(64) DEFAULT '' COMMENT '简称',
             status INT DEFAULT 1 COMMENT '状态: 1启用 0停用'
         ) DEFAULT CHARSET=utf8mb4 COMMENT='检测项目表'""",
-        """CREATE TABLE IF NOT EXISTS prod_lines(
+                """CREATE TABLE IF NOT EXISTS prod_lines(
             id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
             code VARCHAR(64) NOT NULL COMMENT '产线编码',
             name VARCHAR(64) NOT NULL COMMENT '产线名称',
             workshop VARCHAR(64) DEFAULT '' COMMENT '所属车间',
             area VARCHAR(64) DEFAULT '' COMMENT '所属区域',
+            path_alias VARCHAR(32) DEFAULT '' COMMENT 'MinIO路径别名, 如 a01',
             status INT DEFAULT 1 COMMENT '状态: 1启用 0停用'
-        ) DEFAULT CHARSET=utf8mb4 COMMENT='机组/产线表'""",
-        """CREATE TABLE IF NOT EXISTS brands(
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='机组/产线表'""",        """CREATE TABLE IF NOT EXISTS brands(
             id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
             code VARCHAR(64) NOT NULL COMMENT '牌号编码',
             spec VARCHAR(128) NOT NULL COMMENT '品规/规格',
@@ -992,11 +993,13 @@ def config_save(tab):
                         f.get("src_prefix", "").strip().strip("/")))
     elif tab == "lines":
         if rid:
-            db.execute("UPDATE prod_lines SET code=?,name=?,workshop=?,area=? WHERE id=?",
-                       (f["code"], f["name"], f.get("workshop", ""), f.get("area", ""), rid))
+            db.execute("UPDATE prod_lines SET code=?,name=?,workshop=?,area=?,path_alias=? WHERE id=?",
+                       (f["code"], f["name"], f.get("workshop", ""), f.get("area", ""),
+                        f.get("path_alias", "").strip(), rid))
         else:
-            db.execute("INSERT INTO prod_lines(code,name,workshop,area) VALUES(?,?,?,?)",
-                       (f["code"], f["name"], f.get("workshop", ""), f.get("area", "")))
+            db.execute("INSERT INTO prod_lines(code,name,workshop,area,path_alias) VALUES(?,?,?,?,?)",
+                       (f["code"], f["name"], f.get("workshop", ""), f.get("area", ""),
+                        f.get("path_alias", "").strip()))
     elif tab == "brands":
         if rid:
             db.execute("UPDATE brands SET code=?,spec=? WHERE id=?", (f["code"], f["spec"], rid))
@@ -2484,13 +2487,16 @@ def model():
         if l["server_addr"]:
             lines_source[l["id"]] = {"line_id": l["id"], "code": l["code"], "name": l["name"],
                                      "workshop": l["workshop"], "type": "minio",
-                                     "bucket": l["in_bucket"] or "defect-raw"}
+                                     "bucket": l["in_bucket"] or "defect-raw",
+                                     "path_alias": l.get("path_alias") or l["code"].strip()}
         elif l["sys_addr"]:
             lines_source[l["id"]] = {"line_id": l["id"], "code": l["code"], "name": l["name"],
-                                     "workshop": l["workshop"], "type": "ftp"}
+                                     "workshop": l["workshop"], "type": "ftp",
+                                     "path_alias": l.get("path_alias") or l["code"].strip()}
         else:
             lines_source[l["id"]] = {"line_id": l["id"], "code": l["code"], "name": l["name"],
-                                     "workshop": l["workshop"], "type": ""}
+                                     "workshop": l["workshop"], "type": "",
+                                     "path_alias": l.get("path_alias") or l["code"].strip()}
     # 车间（含路径别名），供级联选择
     workshops_list = [dict(w) for w in db.execute(
         "SELECT * FROM workshops WHERE status=1 ORDER BY id").fetchall()]
