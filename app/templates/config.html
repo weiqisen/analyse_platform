@@ -60,7 +60,7 @@
     {% elif tab == 'defects' %}
       <td>{{ r.name }}</td>
     {% elif tab == 'schedule' %}
-      <td><code>{{ r.machine }}</code></td><td>{{ r.sched_date }}</td>
+      <td><code>{{ r.machine }}</code></td><td>{{ r.sched_date[:4] }}-{{ r.sched_date[4:6] }}-{{ r.sched_date[6:] }}</td>
       <td>{{ r.shift or '全天' }}</td><td>{{ r.brand }}</td>
     {% endif %}
     <td>{% if r.status %}<span class="tag">启用</span>{% else %}<span class="tag tag-gray">停用</span>{% endif %}</td>
