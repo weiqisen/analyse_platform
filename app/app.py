@@ -1,11 +1,15 @@
 # -*- coding: utf-8 -*-
 """缺陷图片分析平台 — Flask 后端"""
 import os
+import gzip
 import json
+import shutil
+import logging
 import hashlib
 import functools
 import random
 import time
+from logging.handlers import RotatingFileHandler
 from datetime import datetime, timedelta
 import pymysql
 from pymysql.cursors import DictCursor
@@ -77,6 +81,68 @@ def get_cfg(key, default=None):
 
 app = Flask(__name__)
 app.secret_key = "yancao-analyse-platform-secret-2026"
+
+
+# ---------------------------------------------------------------- 日志
+# 格式对齐统一日志平台（logback 风格）：时间(毫秒) [线程] 级别 logger - 消息
+# 三路输出：控制台(journald 采集)、全量滚动文件、ERROR 单独文件；历史文件 gzip。
+LOG_DIR = os.environ.get("LOG_DIR", os.path.join(BASE_DIR, "logs"))
+_LOG_FMT = "%(asctime)s.%(msecs)03d [%(threadName)s] %(levelname)s %(name)s - %(message)s"
+_LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
+_MAX_BYTES = 100 * 1024 * 1024   # 单文件 100M
+_BACKUPS = 50                    # ×100M ≈ 5G，对齐 totalSizeCap
+
+
+def _gzip_namer(name):
+    return name + ".gz"
+
+
+def _gzip_rotator(source, dest):
+    with open(source, "rb") as sf, gzip.open(dest, "wb") as df:
+        shutil.copyfileobj(sf, df)
+    os.remove(source)
+
+
+def _rolling_handler(path, level):
+    h = RotatingFileHandler(path, maxBytes=_MAX_BYTES, backupCount=_BACKUPS, encoding="utf-8")
+    h.setLevel(level)
+    h.setFormatter(logging.Formatter(_LOG_FMT, _LOG_DATEFMT))
+    h.namer = _gzip_namer
+    h.rotator = _gzip_rotator
+    return h
+
+
+def setup_logging():
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+    except Exception:
+        pass
+    fmt = logging.Formatter(_LOG_FMT, _LOG_DATEFMT)
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    # 重复初始化时先清掉旧 handler（reload/gunicorn 多 worker 场景）
+    for h in list(root.handlers):
+        root.removeHandler(h)
+    console = logging.StreamHandler()
+    console.setLevel(logging.INFO)
+    console.setFormatter(fmt)
+    root.addHandler(console)
+    try:
+        root.addHandler(_rolling_handler(os.path.join(LOG_DIR, "app.log"), logging.INFO))
+        root.addHandler(_rolling_handler(os.path.join(LOG_DIR, "error.log"), logging.ERROR))
+    except Exception as _e:
+        root.warning("文件日志初始化失败，仅控制台输出：%s", _e)
+    # Flask/werkzeug 交给 root 统一输出
+    app.logger.handlers = []
+    app.logger.propagate = True
+    app.logger.setLevel(logging.INFO)
+    logging.getLogger("werkzeug").setLevel(logging.WARNING)  # 屏蔽逐条请求行，保留告警
+    # 三方库 INFO 太吵（尤其 pika 每次连接刷十几行），压到 WARNING 只留关键业务日志
+    for _noisy in ("pika", "botocore", "boto3", "s3transfer", "urllib3", "paramiko"):
+        logging.getLogger(_noisy).setLevel(logging.WARNING)
+
+
+setup_logging()
 
 # 检测项目改由 detect_items 表驱动，见 inject_globals()
 
@@ -633,22 +699,27 @@ def login():
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
         row = get_db().execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+        ip = request.headers.get("X-Forwarded-For", request.remote_addr)
         if row and row["password"] == md5(password):
             if not row["status"]:
+                app.logger.warning("登录被拒：账号已停用 user=%s ip=%s", username, ip)
                 flash("账号已停用，请联系管理员", "error")
             else:
                 session["uid"] = row["id"]
                 session["username"] = row["username"]
                 session["realname"] = row["realname"] or row["username"]
                 session["role"] = row["role"]
+                app.logger.info("登录成功 user=%s role=%s ip=%s", username, row["role"], ip)
                 return redirect(request.args.get("next") or url_for("index"))
         else:
+            app.logger.warning("登录失败：用户名或密码错误 user=%s ip=%s", username, ip)
             flash("用户名或密码错误", "error")
     return render_template("login.html")
 
 
 @app.route("/logout")
 def logout():
+    app.logger.info("登出 user=%s", session.get("username", ""))
     session.clear()
     return redirect(url_for("login"))
 
@@ -818,6 +889,8 @@ def config_integration_save():
                    "ON DUPLICATE KEY UPDATE cfg_value=VALUES(cfg_value)", (key, val))
     db.commit()
     _cfg_cache["t"] = 0.0  # 立刻失效，不用等缓存过期
+    app.logger.info("集成配置已保存 keys=%s by=%s",
+                    ",".join(k for k, _, _ in CFG_LABELS), session.get("username", ""))
     flash("集成配置已保存，即时生效", "success")
     return redirect(url_for("config", tab="integration"))
 
@@ -1950,7 +2023,12 @@ def label_sample_upload():
             s3.upload_fileobj(fp.stream, bucket, key)
             keys.append(key)
     except Exception as e:
+        app.logger.error("样本上传 MinIO 失败 project=%s brand=%s face=%s bucket=%s prefix=%s：%s",
+                         project, brand, face["face_name"], bucket, prefix, e)
         return jsonify({"ok": False, "msg": "上传 MinIO 失败：%s" % str(e)[:140]}), 500
+    app.logger.info("样本已上传 MinIO project=%s brand=%s face=%s count=%d path=%s/%s by=%s",
+                    project, brand, face["face_name"], len(keys), bucket, prefix,
+                    session.get("username", ""))
 
     import uuid
     msg_id = "u-%s-%s" % (datetime.now().strftime("%Y%m%d"), uuid.uuid4().hex[:8])
@@ -1968,10 +2046,12 @@ def label_sample_upload():
     db.commit()
     ok, err = mq_publish_upload(payload)
     if not ok:
+        app.logger.error("样本上传 MQ 发送失败 msg_id=%s：%s", msg_id, err)
         db.execute("UPDATE sample_uploads SET status='error',reply_msg=? WHERE msg_id=?",
                    ("MQ发送失败：" + err, msg_id))
         db.commit()
         return jsonify({"ok": False, "msg": "已上传但消息发送失败：%s" % err, "msg_id": msg_id})
+    app.logger.info("样本上传请求已发送 MQ msg_id=%s rk=%s count=%d", msg_id, MQ_RK_REQ, len(keys))
     warn = ("（%s 未设编码，路径暂用名称，建议到基础数据补编码）" % "、".join(missing)) if missing else ""
     return jsonify({"ok": True, "msg_id": msg_id, "count": len(keys), "path": bucket + "/" + prefix, "warn": warn})
 
@@ -2188,9 +2268,13 @@ def label_export(item_id):
                     "从 Label Studio 导出 %d 张标注图 / %d 个标注框" % (
                         len(coco["images"]), len(coco["annotations"])), "测试"))
         db.commit()
+        app.logger.info("样本集已发布 project=%s version=%s images=%d boxes=%d dst=%s by=%s",
+                        name, version, len(coco["images"]), len(coco["annotations"]),
+                        dst + "/" + prefix, session.get("username", ""))
         flash("样本集 %s%s 已发布到 defect-datasets：%d 张图、%d 个标注框" % (
             name, version, len(coco["images"]), len(coco["annotations"])), "success")
     except Exception as e:
+        app.logger.error("样本集导出发布失败 project=%s：%s", name, e)
         flash("导出失败: %s" % str(e)[:120], "error")
     return redirect(url_for("label"))
 
@@ -2258,11 +2342,14 @@ def model_bind():
         r = _cs_req("POST", "/api/models/%s/deploy" % model_id)
         endpoint = (r or {}).get("inference_host_url", "")
     except Exception as e:
+        app.logger.error("模型部署失败 unit=%s model=%s：%s", unit_id, model_id, e)
         flash("部署模型失败：%s" % str(e)[:120], "error")
         return redirect(url_for("model", det=unit_det_id(db, u), brand=u["brand"]))
     db.execute("UPDATE model_units SET model_id=?,model_version=?,model_endpoint=? WHERE id=?",
                (model_id, version, endpoint, unit_id))
     db.commit()
+    app.logger.info("模型已绑定上线 unit=%s brand=%s model=%s version=%s endpoint=%s by=%s",
+                    unit_id, u["brand"], model_id, version, endpoint, session.get("username", ""))
     flash("已绑定模型 %s 并上线推理服务" % version, "success")
     return redirect(url_for("model", det=unit_det_id(db, u), brand=u["brand"]))
 
@@ -2278,8 +2365,12 @@ def model_train():
         abort(400)
     try:
         r = _cs_req("POST", "/api/projects/%s/train" % u["cs_project_id"])
-        flash("已触发训练（run: %s）" % (r or {}).get("run_id", ""), "success")
+        run_id = (r or {}).get("run_id", "")
+        app.logger.info("已触发训练 unit=%s brand=%s cs_project=%s run=%s by=%s",
+                        unit_id, u["brand"], u["cs_project_id"], run_id, session.get("username", ""))
+        flash("已触发训练（run: %s）" % run_id, "success")
     except Exception as e:
+        app.logger.error("触发训练失败 unit=%s cs_project=%s：%s", unit_id, u["cs_project_id"], e)
         flash("触发训练失败：%s" % str(e)[:120], "error")
     return redirect(url_for("model", det=unit_det_id(db, u), brand=u["brand"]))
 
@@ -2662,6 +2753,8 @@ def analysis_infer():
             break
         tok = r.get("NextContinuationToken")
     db.commit()
+    app.logger.info("批量推理完成 新增=%d 未排程=%d 未绑模型=%d 调用失败=%d by=%s",
+                    n, no_sched, no_model, skipped, session.get("username", ""))
     tip = "推理完成，新增 %d 条" % n
     if no_sched:
         tip += "；%d 张排程未排到牌号" % no_sched
@@ -2707,7 +2800,9 @@ def api_analysis(tab):
 
 
 # ----------------------------------------------------------------
+app.logger.info("平台启动中 db=%s:%s/%s log_dir=%s", DB_HOST, DB_PORT, DB_NAME, LOG_DIR)
 init_db()
+app.logger.info("数据库初始化完成")
 
 # 启动 MQ 回执消费者（守护线程，随进程存活）
 try:
@@ -2717,4 +2812,6 @@ except Exception as _e:
     app.logger.warning("MQ 回执消费者未能启动：%s", _e)
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "9573")), debug=False)
+    _port = int(os.environ.get("PORT", "9573"))
+    app.logger.info("HTTP 服务监听 0.0.0.0:%d", _port)
+    app.run(host="0.0.0.0", port=_port, debug=False)
