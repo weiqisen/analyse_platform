@@ -664,10 +664,15 @@ def init_db():
     db.commit()
     migrate_db(db)
     if db.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"] == 0:
+        # 生产环境用 ADMIN_PASSWORD 设初始管理员密码（仅空库首次建号时生效）；
+        # 不设则回落 admin123，仅供开发/演示，上线后务必改。
+        admin_pwd = os.environ.get("ADMIN_PASSWORD", "").strip() or "admin123"
         db.execute("INSERT INTO users(username,password,realname,role) VALUES(?,?,?,?)",
-                   ("admin", md5("admin123"), "管理员", "admin"))
-        db.execute("INSERT INTO users(username,password,realname,role) VALUES(?,?,?,?)",
-                   ("zhangsan", md5("123456"), "张三", "user"))
+                   ("admin", md5(admin_pwd), "管理员", "admin"))
+        if not os.environ.get("ADMIN_PASSWORD"):
+            # 只在用弱默认口令时才建演示账号，生产(设了 ADMIN_PASSWORD)不建
+            db.execute("INSERT INTO users(username,password,realname,role) VALUES(?,?,?,?)",
+                       ("zhangsan", md5("123456"), "张三", "user"))
         # 检测项目
         for i, (name, short) in enumerate([("烟支外观检测", "烟支外观"), ("五轮成像检测", "五轮成像"),
                                            ("小包CCD检测", "小包CCD"), ("散包检测", "散包检测"),

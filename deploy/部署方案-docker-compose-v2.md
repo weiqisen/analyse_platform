@@ -1,7 +1,9 @@
-# 缺陷图片分析平台 · docker-compose 部署方案 v1
+# 缺陷图片分析平台 · docker-compose 部署方案 v2
 
 **面向：现场新服务器（内网、离线）。**
-一句话流程：在有网机器把镜像和数据打包进 `deploy/` → 整包拷到新服务器 → 一条命令起服务。
+一句话流程：在有网机器把镜像和数据打包进 `deploy/` → 整包拷到新服务器 → 填强口令 → 一条命令起服务。
+
+> v2 相对 v1：强口令强制化（未设口令直接启动失败）、默认收敛对外端口、新增「生产环境安全」章节。
 
 ---
 
@@ -61,11 +63,14 @@ MYSQL_CONTAINER=mysql_container bash deploy/dump-db.sh
 ```bash
 cd deploy
 cp .env.example .env
-vim .env                     # 改 CS_URL / WORKFLOW_URL / 端口等
+vim .env                     # 填强口令(DB_PASSWORD/MQ_PASS/ADMIN_PASSWORD)+地址(CS_URL/WORKFLOW_URL)
 bash load-and-up.sh          # 导入镜像 + docker compose up -d
 ```
 
-访问 `http://<新服务器IP>:9573/`，默认 `admin / admin123`。
+- 强口令生成：`openssl rand -base64 24`。
+- **未填口令会直接启动失败**（compose 用 `${VAR:?}` 强校验），这是刻意的，防弱默认口令漏进生产。
+- 访问 `http://<新服务器IP>:9573/`。空库首次登录用 `admin` + 你设的 `ADMIN_PASSWORD`；
+  若用了 65 的数据 dump，则沿用原口令，**登录后立刻到「用户管理」改强口令**。
 
 ## 6. 起来之后
 
@@ -86,7 +91,28 @@ docker compose up -d                   # 起
 - 数据持久化在命名卷：`mysql-data` / `rabbitmq-data` / `app-logs`。`down` 不删卷，`down -v` 才删。
 - **只更新应用代码**：重跑 `save-images.sh` 生成新 `images/app.tar` → 新服务器 `docker load -i images/app.tar` → `docker compose up -d app`。数据库不动。
 
-## 8. 已知注意点
+## 8. 生产环境安全（强口令）
+
+**口令分两类：我方部署时自己设的（必须设强），和连外部系统必须对齐的（由对方定）。**
+
+| 口令 | 归属 | 要求 |
+|---|---|---|
+| `DB_PASSWORD` | 我方（容器内 MySQL root） | **设强**。`${DB_PASSWORD:?}`，不设则启动失败 |
+| `MQ_USER` / `MQ_PASS` | 我方（容器内 RabbitMQ） | **设强**，且**同步给 CubeStudio**（两边要一致，否则收不到推理通知） |
+| `ADMIN_PASSWORD` | 我方（平台管理员） | 空库首建时**设强**；迁数据时登录后在 UI 改 |
+| `WS_USER` / `WS_PASS` | 外部（现场工控机 SFTP） | 由工控机决定，不是我方能自定义的；没有工控机数据源可留空 |
+| MinIO AccessKey/SecretKey | 外部（现场 MinIO） | 在「采集配置 → 数据源」里配，用现场**单独创建的强密钥**，别用 minioadmin 默认 |
+
+**网络暴露收敛（已在 compose 里默认处理）：**
+- MySQL 端口**不对外发布**——app 走容器内网 `mysql:3306`，宿主/局域网不需要连库。确需外部工具时再放开 compose 里注释的 `ports`。
+- RabbitMQ 管理面板 15672 **只绑 `127.0.0.1`**，不暴露到局域网；要远程看改成 `15672:15672`。
+- AMQP 5672 必须发布（CubeStudio 要连）；平台 9573 必须发布（浏览器访问）。
+
+**其它：**
+- `.env` 含明文口令，已在 `.gitignore` 里，**不要提交、不要外发**。权限收紧：`chmod 600 .env`。
+- 首次上线后确认 65 dump 带来的 `admin` 口令已改、演示账号 `zhangsan` 若不需要则停用/删除。
+
+## 9. 已知注意点
 
 - **app 固定单 worker**（gunicorn `-w 1`）：模块加载时起了一个 MQ 消费者线程，多 worker 会重复消费。并发靠线程（`--threads 8`），内网够用。
 - **首次启动顺序**：app 用 `depends_on: service_healthy` 等 mysql/rabbitmq 就绪；mysql 只在**空库**时才导入 `mysql-init/*.sql`，已有数据卷不会重复导。
