@@ -1075,9 +1075,12 @@ def config(tab):
                                    "rt_full": line_rt_prefix(r, it),
                                    "job": dict(job) if job else None})
         wo_faces_data = {str(r["id"]): r.get("wo_faces", []) for r in data}
+        line_info = {str(r["id"]): {"name": r["name"], "brand": r.get("wo_brand", ""),
+                                    "rt_type": r.get("rt_type", "")} for r in data}
         extra = {"det_items": det_items, "cur_det": cur_det, "cur_det_item": cur_det_item,
                  "today": today, "cur_shift_name": shift,
-                 "wo_faces_json": json.dumps(wo_faces_data, ensure_ascii=False)}
+                 "wo_faces_json": json.dumps(wo_faces_data, ensure_ascii=False),
+                 "line_info_json": json.dumps(line_info, ensure_ascii=False)}
     return render_template("config.html", tab=tab, tabs=CONFIG_TABS, rows=data, pg=pg,
                            workshops=workshops, areas=areas, sched_brands=sched_brands,
                            active="config", **extra)

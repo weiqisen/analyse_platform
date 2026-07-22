@@ -226,7 +226,7 @@
 {% endif %}
 
 <div class="modal-mask" id="rowModal">
-  <div class="modal">
+  <div class="modal" style="{% if tab == 'schedule' %}width:580px;{% endif %}max-width:94vw">
     <div class="modal-head"><span id="rowModalTitle">新增{{ tabname }}</span>
       <span class="close" onclick="closeModal('rowModal')">×</span></div>
     <form method="post" action="{{ url_for('config_save', tab=tab) }}">
@@ -505,19 +505,17 @@ function openWo(lineId){
 
 /* 各机台当前工单牌号下的相机面目录 + 工作状态（按项目→相机面，每面独立开关） */
 var WOFACES = {{ wo_faces_json|safe }};
-var WFLINE = 0;                    // 当前打开弹窗的机台 id
+var LINE_INFO = {{ line_info_json|safe }};
 
 function openWoFaces(lineId){
   var fs = WOFACES[String(lineId)] || [];
-  WFLINE = lineId;
+  var li = LINE_INFO[String(lineId)] || {name:'', brand:'', rt_type:''};
   var body = document.getElementById('wfBody');
-  var lineInfo = '';
-  // 取第一个面的项目名做标题
-  var itemName = fs.length ? fs[0].item_name : '';
-  document.getElementById('wfTitle').textContent = '工单运行详情 — ' + (itemName || '当前检测项目');
+  document.getElementById('wfTitle').textContent = '工单运行详情 — ' + li.name +
+    (li.brand ? ' · ' + li.brand : '');
 
   var h = '<div style="font-size:12.5px;color:var(--text-secondary);margin-bottom:10px">' +
-          '每个相机面独立开关。开启后后台持续扫该面的实时目录，送该面绑定的模型推理。</div>';
+          '每个相机面独立开关（AJAX 提交，不刷新页面）。开启后只扫该面在当前工单下的目录。</div>';
   // 按项目分组
   var groups = {};
   fs.forEach(function(f){ (groups[f.item_id] = groups[f.item_id] || []).push(f); });
@@ -525,23 +523,20 @@ function openWoFaces(lineId){
     var g = groups[itemId];
     h += '<div style="font-size:14px;font-weight:600;margin:12px 0 6px;padding:6px 0;border-bottom:1px solid var(--split)">' +
          (g[0].item_name || '检测项目') + ' · ' + g.length + ' 相机面</div>';
-    h += '<table class="wo-tbl" data-line="' + lineId + '"><tr>' +
-         '<th>相机面</th><th>目录名</th><th>模型</th><th style="width:80px">工作</th><th>日志</th></tr>';
+    h += '<table class="wo-tbl"><tr>' +
+         '<th>相机面</th><th>目录名</th><th>模型</th><th style="width:70px">工作</th><th>日志</th></tr>';
     g.forEach(function(f){
-      h += '<tr data-job="' + lineId + '_' + f.item_id + '_' + f.face_id + '">' +
-           '<td>' + f.face_name + '</td><td><code>' + f.raw_name + '</code></td>' +
+      var jk = lineId + '_' + f.item_id + '_' + f.face_id;
+      h += '<tr><td>' + f.face_name + '</td><td><code>' + f.raw_name + '</code></td>' +
            '<td>' + (f.online ? '<span style="color:#52c41a">● ' + (f.version || '已上线') + '</span>'
                               : '<span style="color:var(--text-secondary)">未上线</span>') + '</td>' +
-           '<td><form method="post" action="{{ url_for("line_analyze_toggle") }}" style="display:inline">' +
-           '<input type="hidden" name="line_id" value="' + lineId + '">' +
-           '<input type="hidden" name="item_id" value="' + f.item_id + '">' +
-           '<input type="hidden" name="face_id" value="' + f.face_id + '">' +
-           '<input type="hidden" name="on" value="">' +
-           '<button class="switch" type="submit" data-job="' + lineId + '_' + f.item_id + '_' + f.face_id + '">' +
-           '<span class="switch-dot"></span></button></form></td>' +
+           '<td><button class="switch face-sw" data-job="' + jk + '"' +
+           (li.rt_type ? '' : ' disabled') +
+           ' title="' + (li.rt_type ? '点击切换' : '需先配置实时图像目录') + '">' +
+           '<span class="switch-dot"></span></button></td>' +
            '<td><a class="btn-link" style="font-size:12px" href="{{ url_for("line_analyze_logs", line_id=0) }}'.replace('0',''+lineId) +
            '?item=' + f.item_id + '&face=' + f.face_id + '">日志</a></td></tr>';
-      h += '<tr data-jobbox="' + lineId + '_' + f.item_id + '_' + f.face_id +
+      h += '<tr data-jobbox="' + jk +
            '" style="display:none"><td colspan="5"><div class="job-bar" style="height:5px;background:#eee;border-radius:3px;overflow:hidden;margin:0 0 3px">' +
            '<i class="job-fill" style="display:block;height:100%;background:var(--primary);width:0%"></i></div>' +
            '<span class="job-txt" style="font-size:11.5px;color:var(--text-secondary)"></span></td></tr>';
@@ -551,24 +546,55 @@ function openWoFaces(lineId){
   if(!fs.length) h = '<div style="color:var(--text-secondary)">暂无相机面数据 — 该机台可能未装检测项目，或当前无运行工单</div>';
   body.innerHTML = h;
   openModal('wfModal');
-  // 重新挂载开关点击事件（表格内 form submit 在 modal 里不会被覆盖）
-  body.querySelectorAll('.switch').forEach(function(sw){
-    sw.addEventListener('click', function(e){
-      e.preventDefault();
-      var form = sw.closest('form');
-      form.querySelector('[name=on]').value = sw.classList.contains('on') ? '0' : '1';
-      form.submit();
+
+  // 开关点击 → AJAX toggle，不关弹窗不刷新页面
+  body.querySelectorAll('.face-sw').forEach(function(sw){
+    sw.addEventListener('click', function(){
+      if(sw.disabled) return;
+      var on = sw.classList.contains('on') ? 0 : 1;
+      var fd = new FormData();
+      fd.append('line_id', lineId);
+      fd.append('item_id', sw.dataset.job.split('_')[1]);
+      fd.append('face_id', sw.dataset.job.split('_')[2]);
+      fd.append('on', on ? '1' : '0');
+      fetch('{{ url_for("line_analyze_toggle") }}', {method:'POST', body: fd})
+        .then(function(r){ if(r.ok) sw.classList.toggle('on', !!on); })
+        .catch(function(){});
     });
   });
-  // 启动进轮询
+
+  // 打开时从服务端拉一次真实开关状态，避免上次关闭弹窗的旧缓存
+  refreshJobs();
   pollJobs();
+}
+
+/* 打开弹窗时先拉一次真实状态（解决关闭重开后开关回退的 bug） */
+function refreshJobs(){
+  var keys = [];
+  document.querySelectorAll('#wfBody .face-sw').forEach(function(s){
+    keys.push(s.dataset.job);
+  });
+  if(!keys.length) return;
+  fetch('{{ url_for("api_line_analyze_status") }}?keys=' + keys.join(','))
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      document.querySelectorAll('#wfBody .face-sw').forEach(function(s){
+        var j = d[s.dataset.job];
+        if(j) s.classList.toggle('on', !!j.enabled);
+      });
+      // 有运行中的就展示进度条
+      document.querySelectorAll('#wfBody [data-jobbox]').forEach(function(box){
+        var j = d[box.dataset.jobbox];
+        if(j && (j.enabled || j.total)) box.style.display = '';
+      });
+    }).catch(function(){});
 }
 
 /* 工作进度轮询（按 face key = line_id_item_id_face_id） */
 function pollJobs(){
   var keys = [];
-  document.querySelectorAll('#wfBody [data-job]').forEach(function(el){
-    keys.push(el.dataset.job);
+  document.querySelectorAll('#wfBody .face-sw').forEach(function(s){
+    keys.push(s.dataset.job);
   });
   if(!keys.length) return;
   function tick(){
@@ -577,7 +603,7 @@ function pollJobs(){
       .then(function(d){
         var anyRunning = false;
         Object.keys(d).forEach(function(k){
-          var j = d[k], sw = document.querySelector('[data-job="' + k + '"]');
+          var j = d[k], sw = document.querySelector('.face-sw[data-job="' + k + '"]');
           if(sw) sw.classList.toggle('on', !!j.enabled);
           var box = document.querySelector('[data-jobbox="' + k + '"]');
           if(box){
