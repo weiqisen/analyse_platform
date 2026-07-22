@@ -48,7 +48,7 @@
   {% elif tab == 'defects' %}
     <tr><th>序号</th><th>分类名称</th><th>状态</th><th>操作</th></tr>
   {% elif tab == 'schedule' %}
-    <tr><th>序号</th><th>工单号</th><th>机台</th><th>日期</th><th>班次</th><th>起止时间</th><th>牌号</th><th>状态</th><th>操作</th></tr>
+    <tr><th>序号</th><th>工单号</th><th>机台</th><th>车间/区域</th><th>班次/班组</th><th>计划时段</th><th>实际起止</th><th>产品/牌号</th><th>操作</th></tr>
   {% endif %}
   </thead>
   <tbody>
@@ -124,22 +124,30 @@
       <td>{{ r.name }}</td>
     {% elif tab == 'schedule' %}
       <td><code style="font-size:11.5px">{{ r.order_no or '—' }}</code></td>
-      <td><code>{{ r.machine }}</code></td><td>{{ r.sched_date[:4] }}-{{ r.sched_date[4:6] }}-{{ r.sched_date[6:] }}</td>
-      <td>{{ r.shift or '全天' }}</td>
+      <td><code>{{ r.equipment_self_code or r.machine_code or '—' }}</code>
+        {% if r.equ_name %}<div style="font-size:11px;color:var(--text-secondary)">{{ r.equ_name }}</div>{% endif %}</td>
+      <td style="font-size:12.5px">{{ r.workshop_name or '—' }}{% if r.region_name %} / {{ r.region_name }}{% endif %}</td>
+      <td style="font-size:12.5px">{{ r.shift_name or '—' }}{% if r.team_name %}<div style="font-size:11px;color:var(--text-secondary)">{{ r.team_name }}</div>{% endif %}</td>
+      <td style="font-size:12px;white-space:nowrap;color:var(--text-secondary)">
+        {% if r.plan_start_time %}{{ r.plan_start_time[5:16] }}<br>→ {{ r.plan_end_time[5:16] }}{% else %}—{% endif %}</td>
       <td style="font-size:12px;white-space:nowrap">
-        {% if r.start_at and r.end_at %}{{ r.start_at }}<br>→ {{ r.end_at }}
-        {% else %}<span style="color:#faad14">未填（按班次匹配）</span>{% endif %}</td>
-      <td>{{ r.brand }}</td>
+        {% if r.start_time %}{{ r.start_time[5:16] }}<br>{% if r.end_time %}→ {{ r.end_time[5:16] }}{% else %}<span style="color:#52c41a">→ 运行中</span>{% endif %}
+        {% else %}<span style="color:#faad14">未开工</span>{% endif %}</td>
+      <td>{{ r.pro_name or '—' }}{% if r.brand and r.brand != r.pro_name %}<div style="font-size:11px;color:var(--primary)">▸ {{ r.brand }}</div>{% endif %}</td>
     {% endif %}
+    {% if tab != 'schedule' %}
     <td>{% if r.status %}<span class="tag">启用</span>{% else %}<span class="tag tag-gray">停用</span>{% endif %}</td>
+    {% endif %}
     <td>
       <button class="btn-link" onclick='editRow({{ dict(r)|tojson }})'>修改</button>
       {% if tab == 'lines' %}
       <button class="btn-link" onclick='openRt({{ dict(r)|tojson }})'>配置目录</button>
       {% endif %}
+      {% if tab != 'schedule' %}
       <form method="post" action="{{ url_for('config_toggle', tab=tab, rid=r.id) }}" style="display:inline">
         <button class="btn-link" type="submit">{{ '停用' if r.status else '启用' }}</button>
       </form>
+      {% endif %}
       <form method="post" action="{{ url_for('config_delete', tab=tab, rid=r.id) }}" style="display:inline"
             onsubmit="return confirm('确认删除？')">
         <button class="btn-link danger" type="submit">删除</button>
@@ -147,7 +155,7 @@
     </td>
   </tr>
   {% else %}
-  <tr><td colspan="7" class="empty">暂无数据，请点击右上角「新增」</td></tr>
+  <tr><td colspan="10" class="empty">暂无数据，请点击右上角「新增」</td></tr>
   {% endfor %}
   </tbody>
 </table>
@@ -193,10 +201,11 @@
           <div style="font-size:11.5px;color:var(--text-secondary);margin-top:3px">
             默认按「车间路径别名 / 机台路径别名」生成，可手工改成现场实际目录。</div></div>
         <div style="margin:10px 0;padding:10px 14px;background:#fafafa;border:1px solid #e8e8e8;border-radius:6px;font-size:13px">
-          <div><span id="rt_prev" style="font-family:monospace;font-weight:600">—</span><span
-            style="color:#999">/日期/班组/班次/相机面/文件</span></div>
+          <div style="line-height:1.7"><span id="rt_prev" style="font-family:monospace;font-weight:600;word-break:break-all">—</span><span
+            id="rt_prev_tail" style="color:#999">/日期/班组/班次/相机面/文件</span></div>
+          <div id="rt_wo_hint" style="font-size:11.5px;color:#52c41a;margin-top:4px;display:none"></div>
           <div style="font-size:11.5px;color:var(--text-secondary);margin-top:4px">
-            末段「{{ (cur_det_item.path_alias or cur_det_item.code) if cur_det_item else '—' }}」是当前检测项目
+            检测项目段「{{ (cur_det_item.path_alias or cur_det_item.code) if cur_det_item else '—' }}」是
             {{ (cur_det_item.short_name or cur_det_item.name) if cur_det_item else '' }} 的路径别名，切换顶栏项目即变</div>
         </div>
         <div><button class="btn btn-sm" type="button" onclick="rtTest()">测试目录可读</button>
@@ -285,31 +294,39 @@
         {% elif tab == 'defects' %}
         <div class="form-item"><label><span class="req">*</span>分类名称</label><input class="input" name="name" id="c_name" required></div>
         {% elif tab == 'schedule' %}
-        <div class="form-item"><label>工单号</label>
-          <input class="input" name="order_no" id="c_order_no" placeholder="如 WO20260721A011"></div>
-        <div class="form-item"><label><span class="req">*</span>机台</label>
-          <select class="select input" name="machine" id="c_machine" required>
+        <div style="font-size:11.5px;color:var(--text-secondary);margin-bottom:10px">
+          工单字段与现场 MES 对齐。手工新增仅填必要项，其余 MES 专有字段(设备编码/班组编码等)对接后由 MES 灌入。</div>
+        <div class="form-item"><label><span class="req">*</span>工单号</label>
+          <input class="input" name="order_no" id="c_order_no" placeholder="如 YJ22026072210306001EZX14_1" required></div>
+        <div class="form-item"><label><span class="req">*</span>机台(设备自编码)</label>
+          <select class="select input" name="equipment_self_code" id="c_equipment_self_code" required>
             <option value="">请选择机台</option>
             {% for l in sched_lines %}<option value="{{ l.alias }}">{{ l.alias }} · {{ l.name }}</option>{% endfor %}
           </select></div>
-        <div class="form-item"><label><span class="req">*</span>日期</label><input class="input" name="sched_date" id="c_sched_date" placeholder="YYYYMMDD 如 20260716" required></div>
-        <div class="form-item"><label>班次</label>
-          <select class="select input" name="shift" id="c_shift">
-            <option value="">全天</option><option>早班</option><option>中班</option><option>晚班</option>
-          </select></div>
+        <div class="form-grid">
+          <div class="form-item"><label>班次</label>
+            <select class="select input" name="shift_name" id="c_shift_name">
+              <option value="">—</option><option>早班</option><option>中班</option><option>夜班</option>
+            </select></div>
+          <div class="form-item"><label>班组</label>
+            <select class="select input" name="team_name" id="c_team_name">
+              <option value="">—</option><option>甲班</option><option>乙班</option><option>丙班</option>
+            </select></div>
+        </div>
         <div class="form-grid">
           <div class="form-item"><label>开始时间</label>
-            <input class="input" type="datetime-local" name="start_at" id="c_start_at"></div>
+            <input class="input" type="datetime-local" name="start_time" id="c_start_time"></div>
           <div class="form-item"><label>结束时间</label>
-            <input class="input" type="datetime-local" name="end_at" id="c_end_at"></div>
+            <input class="input" type="datetime-local" name="end_time" id="c_end_time"></div>
         </div>
         <div style="font-size:11.5px;color:var(--text-secondary);margin:-4px 0 10px">
-          填了起止时间，牌号反查就按图片拍摄时刻精确落到本工单；不填则退回按日期+班次匹配。</div>
-        <div class="form-item"><label><span class="req">*</span>牌号</label>
-          <select class="select input" name="brand" id="c_brand" required>
-            <option value="">请选择牌号</option>
-            {% for b in sched_brands %}<option>{{ b.spec }}</option>{% endfor %}
-          </select></div>
+          按图片拍摄时刻落在 开始~结束 区间内反查本工单；结束留空表示运行中(到当前)。</div>
+        <div class="form-item"><label><span class="req">*</span>产品名称</label>
+          <select class="select input" name="pro_name" id="c_pro_name" required>
+            <option value="">请选择产品</option>
+            {% for b in sched_brands %}<option value="{{ b.spec }}半成品">{{ b.spec }}半成品</option>{% endfor %}
+          </select>
+          <div style="font-size:11.5px;color:var(--text-secondary);margin-top:3px">对应平台牌号，系统会自动归一匹配。</div></div>
         {% endif %}
       </div>
       <div class="modal-foot">
@@ -336,13 +353,13 @@ function fillAreas(ws, selected){
 function editRow(r){
   r = r || {};
   document.getElementById('rowModalTitle').textContent = (r.id ? '修改' : '新增') + '{{ tabname }}';
-  ['id','code','name','short_name','workshop','area','spec','machine','sched_date','shift','brand',
-   'path_alias','order_no'].forEach(function(k){
+  ['id','code','name','short_name','workshop','area','spec','path_alias',
+   'order_no','equipment_self_code','shift_name','team_name','pro_name'].forEach(function(k){
     var el = document.getElementById('c_' + k);
     if (el) el.value = r[k] || '';
   });
   // datetime-local 要 "YYYY-MM-DDTHH:MM"，后端给的是 "YYYY-MM-DD HH:MM:SS"
-  ['start_at','end_at'].forEach(function(k){
+  ['start_time','end_time'].forEach(function(k){
     var el = document.getElementById('c_' + k);
     if (el) el.value = r[k] ? String(r[k]).replace(' ', 'T').slice(0, 16) : '';
   });
@@ -373,6 +390,11 @@ function openRt(r){
              .filter(function(x){ return x; }).join('/');
   document.getElementById('rt_path').value = r.rt_path || auto;
   document.getElementById('rt_src').textContent = '读取中…';
+  // cur_wo = 当前运行工单(有则用真实 日期/班组/班次，没有则显示占位)
+  var wo = r.cur_wo || {};
+  rtLine._wo_segs = [(wo.seg_date||''), (wo.seg_team||''), (wo.seg_shift||'')];
+  rtLine._wo_brand = wo.brand || '';
+  rtLine._wo_start = wo.start_time || wo.seg_date || '';
   rtPreview();
   rtLoadBuckets();
   openModal('rtModal');
@@ -380,7 +402,25 @@ function openRt(r){
 function rtPreview(){
   var p = document.getElementById('rt_path').value.replace(/^\/+|\/+$/g, '');
   var parts = [p, DET_SEG].filter(function(x){ return x; });
-  document.getElementById('rt_prev').textContent = parts.length ? parts.join('/') + '/' : '—';
+  // 工单中间三段：日期/班组/班次。有运行工单用真实值，没有则留占位符
+  var segs = rtLine && rtLine._wo_segs ? rtLine._wo_segs : ['','',''];
+  var seps = segs.some(function(x){ return x; }) ? '/' : '';
+  var tailSegs = segs.concat(['相机面', '文件']);
+  var prefix = parts.join('/') + (parts.length ? '/' : '');
+  document.getElementById('rt_prev').textContent = prefix + segs.join('/') + seps;
+  document.getElementById('rt_prev_tail').textContent =
+    (segs[0] ? '' : '/日期/') + (segs[1] ? '/' : '班组/') +
+    (segs[2] ? '/' : '班次/') + '相机面/文件';
+  // 工单信息提示
+  var hint = document.getElementById('rt_wo_hint');
+  if(rtLine && rtLine._wo_brand){
+    hint.style.display = '';
+    var woInfo = [rtLine._wo_brand];
+    if(rtLine._wo_start) woInfo.push(rtLine._wo_start.slice(0,10));
+    hint.textContent = '● 当前工单：' + woInfo.join(' · ') + '（运行中，目录段按实际工单填入）';
+  } else {
+    hint.style.display = 'none';
+  }
 }
 function rtLoadBuckets(){
   if(!rtLine) return;

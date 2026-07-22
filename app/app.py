@@ -219,6 +219,12 @@ def _has_column(db, table, column):
     return bool(r["c"])
 
 
+def _table_exists(db, table):
+    r = db.execute("SELECT COUNT(*) AS c FROM information_schema.tables "
+                   "WHERE table_schema=? AND table_name=?", (DB_NAME, table)).fetchone()
+    return bool(r["c"])
+
+
 def migrate_db(db):
     """给既有表补列。CREATE TABLE IF NOT EXISTS 只建新表不改老表，
     而 MySQL 8 的 ADD COLUMN 不支持 IF NOT EXISTS，只能先查 information_schema。"""
@@ -251,12 +257,10 @@ def migrate_db(db):
         ("prod_lines", "rt_type", "VARCHAR(16) DEFAULT '' COMMENT '实时目录类型: minio/ftp'"),
         ("prod_lines", "rt_bucket", "VARCHAR(128) DEFAULT '' COMMENT '桶名(minio), 空=用数据源输入桶'"),
         ("prod_lines", "rt_path", "VARCHAR(512) DEFAULT '' COMMENT '实时目录前缀(车间别名/机台别名)'"),
-        # 工单：班次只能到"半天"，且没法处理跨班/临时换牌号。图片文件名是毫秒时间戳，
-        # 有了起止时间就能按图片时刻精确落到工单上，班次匹配退化为兜底。
-        ("machine_schedule", "order_no", "VARCHAR(64) DEFAULT '' COMMENT '工单号'"),
-        ("machine_schedule", "start_at", "DATETIME NULL COMMENT '工单开始时间'"),
-        ("machine_schedule", "end_at", "DATETIME NULL COMMENT '工单结束时间'"),
         ("detect_items", "path_alias", "VARCHAR(64) DEFAULT '' COMMENT 'MinIO路径别名'"),
+        # 推理服务实时健康检查（后台线程定时探 health_url，把真实在线状态存库）
+        ("inference_services", "live_online", "INT DEFAULT -1 COMMENT '实时健康检查: 1在线 0离线 -1未检测'"),
+        ("inference_services", "checked_at", "DATETIME NULL COMMENT '最近一次健康检查时间'"),
     ]
     added = set()
     for table, col, ddl in adds:
@@ -335,6 +339,12 @@ def migrate_db(db):
                            "WHERE id=? AND rt_type=''",
                            (u["rt_type"], u["rt_bucket"] or "", prefix, u["rt_line_id"]))
             db.commit()
+
+    # 工单表按现场 MES(work_order)结构重建：旧的 machine_schedule 结构不同，直接丢弃。
+    # 排程是可重导的运行数据，不迁移(现场对接后由 MES 灌真实工单，或用一键 mock 生成)。
+    if _table_exists(db, "machine_schedule"):
+        db.execute("DROP TABLE IF EXISTS machine_schedule")
+        db.commit()
 
     # inference_results 换新架构：不再挂 label_images，image_id 应可空且去掉 uq_img
     # 唯一键。旧表 image_id NOT NULL + UNIQUE(image_id)，新流程不提供 image_id 会插入失败。
@@ -549,18 +559,40 @@ def init_db():
             detail VARCHAR(512) DEFAULT '' COMMENT '调用过程/结果',
             KEY idx_job_ts (line_id, item_id, id)
         ) DEFAULT CHARSET=utf8mb4 COMMENT='分析调用审计日志'""",
-        """CREATE TABLE IF NOT EXISTS machine_schedule(
-            id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
-            machine VARCHAR(64) NOT NULL COMMENT '机台/产线(如 a01)',
-            sched_date VARCHAR(16) NOT NULL COMMENT '日期 YYYYMMDD',
-            shift VARCHAR(16) DEFAULT '' COMMENT '班次(空=全天)',
-            brand VARCHAR(64) NOT NULL COMMENT '该时段生产的牌号',
-            order_no VARCHAR(64) DEFAULT '' COMMENT '工单号',
-            start_at DATETIME NULL COMMENT '工单开始时间',
-            end_at DATETIME NULL COMMENT '工单结束时间',
-            status INT DEFAULT 1 COMMENT '状态: 1启用 0停用',
-            UNIQUE KEY uq_sched (machine, sched_date, shift)
-        ) DEFAULT CHARSET=utf8mb4 COMMENT='机台工单/排程(机台×时段→牌号), 推理时反查牌号'""",
+        # 工单表，字段与现场 MES(yx_statistic.work_order)对齐，便于接口直接对接。
+        # 平台按 equipment_self_code 匹配机台(=prod_lines.path_alias)、按图片时刻落到
+        # start_time~end_time 区间、pro_name 归一化成本地牌号后反查模型。
+        """CREATE TABLE IF NOT EXISTS work_order(
+            id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+            pro_date DATETIME NULL COMMENT '生产日期',
+            device_id VARCHAR(100) DEFAULT NULL COMMENT 'SCADA设备编码',
+            order_no VARCHAR(100) DEFAULT NULL COMMENT '工单号',
+            start_time DATETIME NULL COMMENT '工单开始时间',
+            end_time DATETIME NULL COMMENT '工单结束时间(实际)',
+            shift_code VARCHAR(50) DEFAULT NULL COMMENT '班次编码',
+            shift_name VARCHAR(255) DEFAULT NULL COMMENT '班次名称',
+            team_name VARCHAR(255) DEFAULT NULL COMMENT '班组名称',
+            team_code VARCHAR(50) DEFAULT NULL COMMENT '班组编码',
+            equ_name VARCHAR(255) DEFAULT NULL COMMENT '设备机组名称',
+            equipment_code VARCHAR(100) DEFAULT NULL COMMENT 'MES设备编码',
+            pro_code VARCHAR(50) DEFAULT NULL COMMENT '产品编码',
+            pro_name VARCHAR(255) DEFAULT NULL COMMENT '产品名称',
+            workshop_code VARCHAR(32) DEFAULT NULL COMMENT '车间编码',
+            workshop_name VARCHAR(255) DEFAULT NULL COMMENT '车间名称',
+            region_code VARCHAR(32) DEFAULT NULL COMMENT '区域编码',
+            region_name VARCHAR(255) DEFAULT NULL COMMENT '区域名称',
+            equipment_self_code VARCHAR(32) DEFAULT NULL COMMENT '设备自编码',
+            machine_code VARCHAR(255) DEFAULT NULL COMMENT 'MES机台号',
+            create_time DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '记录创建时间',
+            update_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '记录更新时间',
+            plan_start_time DATETIME NULL COMMENT '计划开始时间',
+            plan_end_time DATETIME NULL COMMENT '计划结束时间',
+            UNIQUE KEY unq_order_no (order_no),
+            KEY index_d (device_id),
+            KEY idx_pro_date (pro_date),
+            KEY idx_shift_code (shift_code),
+            KEY idx_workshop_code (workshop_code)
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='设备生产工单信息'""",
         """CREATE TABLE IF NOT EXISTS line_items(
             line_id INT NOT NULL COMMENT '机台(prod_lines.id)',
             item_id INT NOT NULL COMMENT '检测项目(detect_items.id)',
@@ -649,6 +681,8 @@ def init_db():
             class_names VARCHAR(1024) DEFAULT '' COMMENT '项目缺陷标签(逗号分隔)',
             event_id VARCHAR(128) DEFAULT '' COMMENT '最近一次通知的event_id',
             acked INT DEFAULT 0 COMMENT '回执是否已发出: 1是 0否',
+            live_online INT DEFAULT -1 COMMENT '实时健康检查: 1在线 0离线 -1未检测',
+            checked_at DATETIME NULL COMMENT '最近一次健康检查时间',
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'
         ) DEFAULT CHARSET=utf8mb4 COMMENT='推理服务(按unit_key upsert, 来自MQ inference.ready)'""",
         """CREATE TABLE IF NOT EXISTS integration_config(
@@ -915,7 +949,7 @@ def config(tab):
         "workshops": "SELECT * FROM workshops ORDER BY id",
         "areas": "SELECT * FROM areas ORDER BY id",
         "defects": "SELECT * FROM label_classes ORDER BY id",
-        "schedule": "SELECT * FROM machine_schedule ORDER BY sched_date DESC, machine, shift",
+        "schedule": "SELECT * FROM work_order ORDER BY pro_date DESC, start_time DESC, id DESC",
     }[tab]
     rows, pg = paginate(db, base_sql, page=request.args.get("page"))
     data = [dict(r) for r in rows]
@@ -924,15 +958,16 @@ def config(tab):
     sched_brands = [dict(b) for b in db.execute("SELECT * FROM brands WHERE status=1 ORDER BY id").fetchall()]
     extra = {}
     if tab == "schedule":
-        # 机台下拉给排程用：值是路径别名(现场目录名)，避免手打错和产线编码混用
+        # 机台下拉给工单用：值是路径别名(=工单 equipment_self_code)，避免手打错
         extra["sched_lines"] = [{"alias": sched_machine_of(l), "name": l["name"]}
                                 for l in db.execute(
                                     "SELECT * FROM prod_lines WHERE status=1 ORDER BY id").fetchall()]
         # datetime 交给 tojson 会变成 HTTP 日期串(datetime-local 认不了、修改弹窗回显不出来)，
         # 统一转成 "YYYY-MM-DD HH:MM:SS" 字符串，列表展示和回填都用它
         for r in data:
-            r["start_at"] = str(r["start_at"])[:19] if r["start_at"] else ""
-            r["end_at"] = str(r["end_at"])[:19] if r["end_at"] else ""
+            for k in ("pro_date", "start_time", "end_time", "plan_start_time", "plan_end_time"):
+                r[k] = str(r[k])[:19] if r.get(k) else ""
+            r["brand"] = mes_brand(db, r.get("pro_name"))   # 归一到平台牌号，列表直观显示
     if tab == "lines":
         # 机台行上直接展示：实时目录（当前检测项目下的完整前缀）、工作状态、当前运行工单
         det_items, cur_det = detect_item_ctx(db)
@@ -958,12 +993,31 @@ def config(tab):
                                    "rt_full": line_rt_prefix(r, it),
                                    "job": dict(job) if job else None})
             wo = db.execute(
-                "SELECT * FROM machine_schedule WHERE machine=? AND status=1 "
-                "AND start_at IS NOT NULL AND end_at IS NOT NULL AND start_at<=? AND end_at>? "
-                "ORDER BY start_at DESC LIMIT 1",
+                "SELECT * FROM work_order WHERE equipment_self_code=? AND start_time IS NOT NULL "
+                "AND start_time<=? AND (end_time IS NULL OR end_time>?) "
+                "ORDER BY start_time DESC LIMIT 1",
                 (sched_machine_of(r), now, now)).fetchone()
-            r["cur_wo"] = dict(wo) if wo else None
-            r["cur_brand"] = wo["brand"] if wo else resolve_brand(db, sched_machine_of(r), today, shift)
+            if wo:
+                w = dict(wo)
+                w["brand"] = mes_brand(db, w.get("pro_name"))
+                w["end_at"] = str(w["end_time"])[:16] if w.get("end_time") else ""
+                w["shift"] = w.get("shift_name") or ""
+                # 实时目录里 日期/班组/班次 三段的真实值(现场结构:
+                # 车间/机台/检测项目/日期/班组/班次/相机面/文件)，供弹窗拼完整路径
+                d = w.get("pro_date") or w.get("start_time")
+                w["seg_date"] = str(d)[:10].replace("-", "") if d else ""
+                w["seg_team"] = w.get("team_name") or ""
+                w["seg_shift"] = w.get("shift_name") or ""
+                # 其余 datetime 字段转字符串，避免 dict(r)|tojson 输出 RFC822 难解析
+                for k in ("pro_date", "start_time", "end_time", "plan_start_time",
+                          "plan_end_time", "create_time", "update_time"):
+                    if w.get(k) is not None:
+                        w[k] = str(w[k])[:19]
+                r["cur_wo"] = w
+                r["cur_brand"] = w["brand"]
+            else:
+                r["cur_wo"] = None
+                r["cur_brand"] = ""
         extra = {"det_items": det_items, "cur_det": cur_det, "cur_det_item": cur_det_item,
                  "today": today, "cur_shift_name": shift}
     return render_template("config.html", tab=tab, tabs=CONFIG_TABS, rows=data, pg=pg,
@@ -1064,22 +1118,31 @@ def config_save(tab):
         else:
             db.execute("INSERT INTO label_classes(name) VALUES(?)", (f["name"],))
     elif tab == "schedule":
-        # 起止时间用 <input type="datetime-local">，值形如 2026-07-21T06:00
-        start = (f.get("start_at", "") or "").strip().replace("T", " ")
-        end = (f.get("end_at", "") or "").strip().replace("T", " ")
-        date = f.get("sched_date", "").strip()
-        if not date and start:      # 填了开始时间就不必再手填日期
-            date = start[:10].replace("-", "")
-        vals = (f["machine"].strip(), date, f.get("shift", "").strip(), f["brand"].strip(),
-                f.get("order_no", "").strip(), start or None, end or None)
+        # 工单表(work_order)：手工维护取工单必要字段，其余 MES 专有字段留空。
+        # datetime-local 值形如 2026-07-21T06:00。
+        start = (f.get("start_time", "") or "").strip().replace("T", " ") or None
+        end = (f.get("end_time", "") or "").strip().replace("T", " ") or None
+        machine = f.get("equipment_self_code", "").strip()
+        # 机台自编码 → 反查车间/区域名，工单表里冗余存一份(和现场一致)
+        line = db.execute("SELECT * FROM prod_lines WHERE path_alias=? OR code=? LIMIT 1",
+                          (machine, machine)).fetchone()
+        pro_date = (start[:10] + " 00:00:00") if start else None
+        vals = (f.get("order_no", "").strip(), machine, machine,
+                f.get("shift_name", "").strip(), f.get("team_name", "").strip(),
+                f.get("pro_name", "").strip(), start, end,
+                line["workshop"] if line else "", line["area"] if line else "", pro_date)
         if rid:
-            db.execute("UPDATE machine_schedule SET machine=?,sched_date=?,shift=?,brand=?,"
-                       "order_no=?,start_at=?,end_at=? WHERE id=?", vals + (rid,))
+            db.execute("UPDATE work_order SET order_no=?,equipment_self_code=?,machine_code=?,"
+                       "shift_name=?,team_name=?,pro_name=?,start_time=?,end_time=?,"
+                       "workshop_name=?,region_name=?,pro_date=? WHERE id=?", vals + (rid,))
         else:
-            db.execute("INSERT INTO machine_schedule(machine,sched_date,shift,brand,order_no,"
-                       "start_at,end_at) VALUES(?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE "
-                       "brand=VALUES(brand),order_no=VALUES(order_no),"
-                       "start_at=VALUES(start_at),end_at=VALUES(end_at)", vals)
+            db.execute("INSERT INTO work_order(order_no,equipment_self_code,machine_code,"
+                       "shift_name,team_name,pro_name,start_time,end_time,workshop_name,"
+                       "region_name,pro_date) VALUES(?,?,?,?,?,?,?,?,?,?,?) "
+                       "ON DUPLICATE KEY UPDATE equipment_self_code=VALUES(equipment_self_code),"
+                       "shift_name=VALUES(shift_name),team_name=VALUES(team_name),"
+                       "pro_name=VALUES(pro_name),start_time=VALUES(start_time),"
+                       "end_time=VALUES(end_time)", vals)
     elif tab == "faces":
         det = f.get("item_id", type=int) or 0
         vals = (det, f["raw_name"].strip().strip("/"), f["face_name"].strip(),
@@ -1106,7 +1169,7 @@ def config_save(tab):
 def config_delete(tab, rid):
     table = {"items": "detect_items", "lines": "prod_lines", "brands": "brands",
              "workshops": "workshops", "areas": "areas", "defects": "label_classes",
-             "faces": "camera_faces", "schedule": "machine_schedule"}.get(tab)
+             "faces": "camera_faces", "schedule": "work_order"}.get(tab)
     if not table:
         abort(404)
     db = get_db()
@@ -1119,9 +1182,10 @@ def config_delete(tab, rid):
 @app.route("/config/<tab>/toggle/<int:rid>", methods=["POST"])
 @login_required
 def config_toggle(tab, rid):
+    # 工单表(work_order)无 status 字段，不支持启停
     table = {"items": "detect_items", "lines": "prod_lines", "brands": "brands",
              "workshops": "workshops", "areas": "areas", "defects": "label_classes",
-             "faces": "camera_faces", "schedule": "machine_schedule"}.get(tab)
+             "faces": "camera_faces"}.get(tab)
     if not table:
         abort(404)
     db = get_db()
@@ -1370,9 +1434,11 @@ def collect(tab):
                 continue
             s = stats.get((l["name"], today, shift), {})
             wo = db.execute(
-                "SELECT * FROM machine_schedule WHERE machine=? AND sched_date=? AND shift=? "
-                "AND status=1", (sched_machine_of(l), today, shift)).fetchone()
-            ctx["cams"].append({"name": l["name"], "brand": wo["brand"] if wo else "",
+                "SELECT * FROM work_order WHERE equipment_self_code=? AND start_time IS NOT NULL "
+                "AND start_time<=NOW() AND (end_time IS NULL OR end_time>NOW()) "
+                "ORDER BY start_time DESC LIMIT 1", (sched_machine_of(l),)).fetchone()
+            ctx["cams"].append({"name": l["name"],
+                                "brand": mes_brand(db, wo["pro_name"]) if wo else "",
                                 "order_no": (wo["order_no"] if wo else "") or "",
                                 "count": s.get("collected", 0), "infer": s.get("infer", 0),
                                 "defect": s.get("defect", 0)})
@@ -1644,11 +1710,55 @@ def _cs_req(method, path, data=None, timeout=15):
     return d
 
 
+# CubeStudio 连通性缓存：后台线程每 30 秒真探一次 /health，页面读缓存不阻塞。
+# [在线布尔, 最近探测时刻]，-1=还没探过。
+_cs_state = [None, 0.0]
+
+
 def cs_ok():
+    """CubeStudio 是否连通（读后台探测缓存）。首次(还没探过)时同步探一次兜底。"""
+    if _cs_state[0] is None:
+        _cs_probe_once()
+    return bool(_cs_state[0])
+
+
+def _cs_probe_once():
+    """真实探一次 CubeStudio /health。get_cfg 用 get_db()，后台线程无 Flask g，
+    故用独立连接读 integration_config 表，回落 CFG_DEFAULTS 环境变量。"""
+    import urllib.request
+    base = CFG_DEFAULTS.get("cs_url", "")
     try:
-        return bool((_cs_req("GET", "/health") or {}).get("ok"))
+        db = _DB(_connect())
+        r = db.execute("SELECT cfg_value FROM integration_config WHERE cfg_key='cs_url'").fetchone()
+        if r and r["cfg_value"]:
+            base = r["cfg_value"]
+        db.close()
     except Exception:
-        return False
+        pass
+    if not base:
+        _cs_state[0] = False
+        _cs_state[1] = time.time()
+        return
+    try:
+        req = urllib.request.Request(base.rstrip("/") + "/health")
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            d = json.loads(resp.read().decode("utf-8"))
+        if isinstance(d, dict) and "result" in d:
+            d = d["result"]
+        _cs_state[0] = bool(d.get("ok"))
+    except Exception:
+        _cs_state[0] = False
+    _cs_state[1] = time.time()
+
+
+def _cs_monitor():
+    """后台常驻：每 30 秒探一次 CubeStudio /health，把真实在线状态写进缓存。"""
+    while True:
+        time.sleep(30)
+        try:
+            _cs_probe_once()
+        except Exception:
+            pass
 
 
 def cs_ensure_project(unit, brand, face):
@@ -2379,36 +2489,44 @@ def model():
            JOIN camera_faces cf ON cf.id=mu.face_id
            WHERE mu.brand=? AND cf.item_id=? ORDER BY cf.sort_order, cf.id""",
         (cur_brand, cur_det)).fetchall()]
-    # 先分页，只对当前页的单元拉对方模型列表（每行一次远程调用，不能给全部单元都调）
     page_units, pg = paginate_list(all_units, request.args.get("page"))
     rows = []
     for u in page_units:
-        models = cs_project_models(u["cs_project_id"]) if (cs_online and u["cs_project_id"]) else []
         n_infer = db.execute("SELECT COUNT(*) AS c FROM inference_results WHERE unit_id=?",
                              (u["id"],)).fetchone()["c"]
         uk = unit_key_of(db, cur_brand, dict(u))
         svc = db.execute("SELECT * FROM inference_services WHERE unit_key=?", (uk,)).fetchone()
         svc_d = dict(svc) if svc else None
-        if svc_d and svc_d.get("updated_at") is not None:
-            svc_d["updated_at"] = str(svc_d["updated_at"])[:19]  # datetime → 可 JSON 序列化
+        if svc_d:
+            for k in ("updated_at", "checked_at"):        # datetime → 可 JSON 序列化
+                if svc_d.get(k) is not None:
+                    svc_d[k] = str(svc_d[k])[:19]
         rows.append({"unit_key_str": uk, "svc": svc_d,
                      "unit_id": u["id"], "face_name": u["face_name"],
                      "face_raw": u["raw_name"],   # 相机面路径别名，实时目录末段用它
                      "unit_key": unit_key_of(db, cur_brand, dict(u)),
                      "bound_model": u["model_id"], "bound_version": u["model_version"],
-                     "bound_endpoint": u["model_endpoint"], "models": models,
+                     "bound_endpoint": u["model_endpoint"],
                      "infer_cnt": n_infer})
     return render_template("model.html", det_items=det_items, cur_det=cur_det,
                            brands=brands, cur_brand=cur_brand,
                            rows=rows, pg=pg, cs_online=cs_online, active="model")
 
 
-@app.route("/api/infer/health")
+@app.route("/api/infer/live")
 @login_required
-def api_infer_health():
-    """探对方推理服务在线情况（用 inference.ready 带来的 health_url）。"""
-    ok, msg = infer_health((request.args.get("key") or "").strip().upper())
-    return jsonify({"ok": ok, "msg": msg})
+def api_infer_live():
+    """轮询：返回若干 unit_key 的实时在线状态（后台健康检查线程刷新的）。"""
+    keys = [k.strip().upper() for k in (request.args.get("keys") or "").split(",") if k.strip()]
+    if not keys:
+        return jsonify({})
+    ph = ",".join(["?"] * len(keys))
+    rows = get_db().execute(
+        "SELECT unit_key, live_online, checked_at FROM inference_services "
+        "WHERE unit_key IN (%s)" % ph, keys).fetchall()
+    return jsonify({r["unit_key"]: {"online": r["live_online"],
+                    "checked_at": str(r["checked_at"])[:19] if r["checked_at"] else ""}
+                    for r in rows})
 
 
 @app.route("/model/bind", methods=["POST"])
@@ -2526,8 +2644,12 @@ def _rtdir_check(db, rt_type, line_id, bucket, path):
 @app.route("/config/schedule/mock", methods=["POST"])
 @login_required
 def schedule_mock():
-    """一键生成今天的工单：每台启用机组按 早/中/晚 三班各一张，牌号从牌号字典轮取。
-    重复点击先清掉当天同机台的行再生成，不会越点越多。晚班跨零点，结束时间落到明天。"""
+    """一键按现场 MES 逻辑生成今天的工单(work_order)：每台启用机组三班各一张。
+
+    对齐真实字段：班次编码 1早/2中/3夜 对应 甲/乙/丙 班组；三班计划时段
+    06:00-13:00 / 13:00-20:00 / 20:00-次日03:00；已过去的班填实际结束时间，
+    当前进行中的班 end_time 留空(和现场"运行中工单 end_time=NULL"一致)。
+    牌号取平台牌号字典 + 「半成品」拼成 pro_name。重复点先清当天再生成。"""
     db = get_db()
     lines = db.execute("SELECT * FROM prod_lines WHERE status=1 ORDER BY id").fetchall()
     brands = [b["spec"] for b in db.execute(
@@ -2535,23 +2657,45 @@ def schedule_mock():
     if not lines or not brands:
         flash("请先维护机组/产线和牌号", "error")
         return redirect(url_for("config", tab="schedule"))
-    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    date = today.strftime("%Y%m%d")
-    plan = [("早班", 6, 8), ("中班", 14, 8), ("晚班", 22, 8)]
+    now = datetime.now()
+    d0 = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    date = d0.strftime("%Y%m%d")
+    # (班次编码, 班次名, 班组名, 计划起hour, 计划止hour[可能跨日])
+    shifts = [("1", "早班", "甲班", 6, 13), ("2", "中班", "乙班", 13, 20),
+              ("3", "夜班", "丙班", 20, 27)]
     n, k = 0, 0
     for l in lines:
-        machine = sched_machine_of(l)
-        db.execute("DELETE FROM machine_schedule WHERE machine=? AND sched_date=?", (machine, date))
-        for i, (shift, hour, span) in enumerate(plan):
-            start = today + timedelta(hours=hour)
-            end = start + timedelta(hours=span)
+        machine = sched_machine_of(l)   # = equipment_self_code
+        db.execute("DELETE FROM work_order WHERE equipment_self_code=? AND DATE(pro_date)=?",
+                   (machine, d0.strftime("%Y-%m-%d")))
+        for sc, sname, tname, ph, peh in shifts:
+            plan_s = d0 + timedelta(hours=ph)
+            plan_e = d0 + timedelta(hours=peh)
             brand = brands[k % len(brands)]
             k += 1
-            db.execute("INSERT INTO machine_schedule(machine,sched_date,shift,brand,order_no,"
-                       "start_at,end_at) VALUES(?,?,?,?,?,?,?)",
-                       (machine, date, shift, brand,
-                        "WO%s%s%d" % (date, machine.upper(), i + 1),
-                        start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S")))
+            pro_name = brand if brand.endswith(("半成品", "成品")) else (brand + "半成品")
+            order_no = "WO%s%s%s" % (date, str(machine).upper(), sc)
+            # 实际开始≈计划开始晚几分钟；已结束的班给实际结束，进行中的留空
+            act_s = plan_s + timedelta(minutes=random.randint(0, 6))
+            if now >= plan_e:
+                act_e = plan_e - timedelta(minutes=random.randint(0, 5))
+            elif now >= plan_s:
+                act_e = None                          # 当前班，运行中
+            else:
+                act_s = None                          # 还没到点，未开工
+                act_e = None
+            db.execute(
+                "INSERT INTO work_order(pro_date,order_no,shift_code,shift_name,team_name,"
+                "team_code,equipment_self_code,machine_code,equ_name,pro_name,"
+                "workshop_name,region_name,start_time,end_time,plan_start_time,plan_end_time) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE "
+                "pro_name=VALUES(pro_name),start_time=VALUES(start_time),end_time=VALUES(end_time)",
+                (d0.strftime("%Y-%m-%d %H:%M:%S"), order_no, sc, sname, tname, sc,
+                 machine, machine, l["name"], pro_name,
+                 l["workshop"] or "", l["area"] or "",
+                 act_s.strftime("%Y-%m-%d %H:%M:%S") if act_s else None,
+                 act_e.strftime("%Y-%m-%d %H:%M:%S") if act_e else None,
+                 plan_s.strftime("%Y-%m-%d %H:%M:%S"), plan_e.strftime("%Y-%m-%d %H:%M:%S")))
             n += 1
     db.commit()
     app.logger.info("一键生成今日工单 %d 条 by=%s", n, session.get("username", ""))
@@ -2870,13 +3014,17 @@ def line_schedule(line_id):
     now = datetime.now()
     today = now.strftime("%Y%m%d")
     shift = cur_shift()
-    day = [{"shift": r["shift"], "brand": r["brand"], "order_no": r["order_no"] or "",
-            "start": str(r["start_at"])[:16] if r["start_at"] else "",
-            "end": str(r["end_at"])[:16] if r["end_at"] else "",
-            "now": bool(r["start_at"] and r["end_at"] and r["start_at"] <= now < r["end_at"])}
-           for r in db.execute(
-        "SELECT * FROM machine_schedule WHERE machine=? AND sched_date=? AND status=1 "
-        "ORDER BY FIELD(shift,'早班','中班','晚班',''), id", (machine, today)).fetchall()]
+    # 该机台今天的工单(按生产日期 pro_date 当天，或起止时间落在今天)
+    day = []
+    for r in db.execute(
+            "SELECT * FROM work_order WHERE equipment_self_code=? AND "
+            "(DATE(pro_date)=CURDATE() OR DATE(start_time)=CURDATE()) "
+            "ORDER BY start_time", (machine,)).fetchall():
+        st, et = r["start_time"], r["end_time"]
+        day.append({"shift": r["shift_name"] or "", "brand": mes_brand(db, r["pro_name"]),
+                    "order_no": r["order_no"] or "",
+                    "start": str(st)[:16] if st else "", "end": str(et)[:16] if et else "",
+                    "now": bool(st and st <= now and (et is None or now < et))})
     cur_wo = next((d for d in day if d["now"]), None)
     brand = (cur_wo["brand"] if cur_wo else "") or resolve_brand(db, machine, today, shift)
     faces = []
@@ -2976,18 +3124,33 @@ def infer_call(endpoint, src_key, image_url=""):
         return None
 
 
-def infer_health(unit_key):
-    """调用前探一下推理服务是否在线（契约建议行为 3）。返回 (ok, msg)。"""
+def _ping_health(url):
+    """GET 一次 health_url，2xx 视为在线。返回 True/False。"""
     import urllib.request
-    r = get_db().execute("SELECT * FROM inference_services WHERE unit_key=?",
-                         (unit_key,)).fetchone()
-    if not r or not r["health_url"]:
-        return False, "尚未收到该单元的推理就绪通知"
     try:
-        with urllib.request.urlopen(r["health_url"], timeout=6) as resp:
-            return resp.status == 200, "HTTP %d" % resp.status
-    except Exception as e:
-        return False, str(e)[:120]
+        with urllib.request.urlopen(url, timeout=6) as resp:
+            return 200 <= resp.status < 300
+    except Exception:
+        return False
+
+
+def _health_monitor():
+    """后台常驻：每 30 秒探一遍所有推理服务的 health_url，把真实在线状态写库。
+    online/offline 由此而来，不再是 MQ 通知里那个静态 model_status。用独立 DB 连接。"""
+    while True:
+        try:
+            db = _DB(_connect())
+            rows = db.execute(
+                "SELECT unit_key, health_url FROM inference_services WHERE health_url<>''").fetchall()
+            for r in rows:
+                online = 1 if _ping_health(r["health_url"]) else 0
+                db.execute("UPDATE inference_services SET live_online=?,checked_at=NOW() "
+                           "WHERE unit_key=?", (online, r["unit_key"]))
+            db.commit()
+            db.close()
+        except Exception as e:
+            app.logger.warning("推理服务健康检查轮询失败：%s", e)
+        time.sleep(30)
 
 
 def key_shot_time(key):
@@ -3002,22 +3165,47 @@ def key_shot_time(key):
         return None
 
 
+def _norm_brand(s):
+    """牌号归一：去掉「半成品」等后缀、统一全角/半角括号、去空白，便于跨系统比对。
+    现场 MES 的 pro_name 形如「玉溪(软)半成品」，平台牌号是「玉溪（软）」。"""
+    if not s:
+        return ""
+    s = s.strip()
+    for suf in ("半成品", "成品"):
+        if s.endswith(suf):
+            s = s[:-len(suf)]
+    return (s.replace("（", "(").replace("）", ")").replace(" ", "").strip())
+
+
+def mes_brand(db, pro_name):
+    """把 MES 工单的 pro_name 匹配到平台牌号 spec；匹配不上就原样返回归一后的名字，
+    保证「有工单=能反查到一个牌号」，只是可能没有对应模型(在推理处按 无模型 统计)。"""
+    want = _norm_brand(pro_name)
+    if not want:
+        return ""
+    for b in db.execute("SELECT spec FROM brands WHERE status=1").fetchall():
+        if _norm_brand(b["spec"]) == want:
+            return b["spec"]
+    return pro_name or ""
+
+
+def wo_machine_expr():
+    """工单表里代表「机台」的字段：现场用 equipment_self_code(如 EBD05/YJD01/A01)，
+    平台机台标识 = prod_lines.path_alias 或 code，两者对齐。"""
+    return "equipment_self_code"
+
+
 def resolve_brand(db, machine, date, shift, shot_at=None):
-    """工单反查牌号：优先按拍摄时刻落在哪张工单的起止区间内（能处理跨班/临时换牌号），
-    没有时刻或工单没填时间时，退回 机台+日期+班次，再退到全天(班次为空)。"""
-    if shot_at is not None:
-        r = db.execute("SELECT brand FROM machine_schedule WHERE machine=? AND status=1 "
-                       "AND start_at IS NOT NULL AND end_at IS NOT NULL "
-                       "AND start_at<=? AND end_at>? ORDER BY start_at DESC LIMIT 1",
-                       (machine, shot_at, shot_at)).fetchone()
-        if r:
-            return r["brand"]
-    r = db.execute("SELECT brand FROM machine_schedule WHERE machine=? AND sched_date=? "
-                   "AND shift=? AND status=1", (machine, date, shift)).fetchone()
-    if not r:
-        r = db.execute("SELECT brand FROM machine_schedule WHERE machine=? AND sched_date=? "
-                       "AND shift='' AND status=1", (machine, date)).fetchone()
-    return r["brand"] if r else ""
+    """工单反查牌号：按拍摄时刻落在哪张工单的 start_time~end_time 区间内（能处理跨班/
+    临时换牌号；end_time 为空表示仍在进行，视作到现在）。没有时刻则退回当前时刻。
+    machine 传平台机台标识(path_alias)，对齐工单 equipment_self_code。"""
+    at = shot_at or datetime.now()
+    r = db.execute(
+        "SELECT pro_name FROM work_order WHERE equipment_self_code=? "
+        "AND start_time IS NOT NULL AND start_time<=? "
+        "AND (end_time IS NULL OR end_time>?) ORDER BY start_time DESC LIMIT 1",
+        (machine, at, at)).fetchone()
+    return mes_brand(db, r["pro_name"]) if r else ""
 
 
 @app.route("/analysis/infer", methods=["POST"])
@@ -3136,12 +3324,14 @@ app.logger.info("平台启动中 db=%s:%s/%s log_dir=%s", DB_HOST, DB_PORT, DB_N
 init_db()
 app.logger.info("数据库初始化完成")
 
-# 启动 MQ 回执消费者（守护线程，随进程存活）
+# 启动后台守护线程（随进程存活）：MQ 回执消费者 + 推理服务健康检查
 try:
     import threading
     threading.Thread(target=_mq_reply_consumer, daemon=True).start()
+    threading.Thread(target=_health_monitor, daemon=True).start()
+    threading.Thread(target=_cs_monitor, daemon=True).start()
 except Exception as _e:
-    app.logger.warning("MQ 回执消费者未能启动：%s", _e)
+    app.logger.warning("后台线程未能启动：%s", _e)
 
 if __name__ == "__main__":
     _port = int(os.environ.get("PORT", "9573"))
