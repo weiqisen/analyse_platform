@@ -61,15 +61,19 @@
     {% elif tab == 'lines' %}
       <td>{{ r.code }}</td><td>{{ r.name }}</td><td><code>{{ r.path_alias or '—' }}</code></td>
       <td>{{ r.workshop }}{% if r.area %} / {{ r.area }}{% endif %}</td>
-      {# 实时图像目录：机台上存前缀，每个已装检测项目展开成完整目录 #}
+      {# 实时图像目录：前缀/检测项目/日期/班组/班次/相机面 #}
       <td>
         {% if r.rt_type %}
+          {% set wo_segs = [r.cur_wo.seg_date if r.cur_wo else '',
+                            r.cur_wo.seg_team if r.cur_wo else '',
+                            r.cur_wo.seg_shift if r.cur_wo else ''] %}
+          {% set wo_trail = '/' + wo_segs|reject('eq','')|join('/') %}
           <div style="font-size:12px"><span class="tag {{ 'tag-orange' if r.rt_type=='ftp' else '' }}">{{ 'FTP' if r.rt_type=='ftp' else 'MinIO' }}</span>
-            <code style="font-size:11.5px;color:var(--text-secondary)">{{ (r.rt_bucket + '/' if r.rt_bucket else '') ~ r.rt_path }}</code></div>
+            {% if r.rt_bucket %}<code style="font-size:11px;color:var(--text-secondary)">{{ r.rt_bucket }}/</code>{% endif %}</div>
           {% for it in r['items'] %}
-          <div style="font-size:11.5px;margin-top:3px">
+          <div style="font-size:11.5px;margin-top:3px;line-height:1.5">
             <span style="color:var(--text-secondary)">{{ it.name }}</span>
-            <code style="color:var(--text)">/{{ it.rt_full.rsplit('/', 1)[-1] }}/</code>
+            <code style="color:var(--text);word-break:break-all">{{ r.rt_path }}/{{ it.rt_full.rsplit('/', 1)[-1] }}{{ wo_trail }}/相机面/</code>
           </div>
           {% endfor %}
         {% else %}<span style="color:var(--text-secondary)">未配置</span>{% endif %}
