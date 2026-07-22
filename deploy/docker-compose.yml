@@ -1,0 +1,86 @@
+name: analyse-platform
+
+# 现场部署三件套：应用(app) + 数据库(mysql) + 消息队列(rabbitmq)。
+# MinIO 用现场已有的对象存储（不在本编排内，地址存在数据库 storage_config，随 dump 带过来）。
+# CubeStudio 在另一台机器（外部），用 CS_URL / WORKFLOW_URL 指过去。
+
+services:
+  mysql:
+    image: mysql:8.0.33
+    container_name: ap-mysql
+    restart: unless-stopped
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-123456}
+      MYSQL_DATABASE: ${DB_NAME:-analyse_platform}
+    ports:
+      - "${DB_PUBLISH_PORT:-3307}:3306"       # 仅为外部工具方便；app 走内网 mysql:3306
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./mysql-init:/docker-entrypoint-initdb.d:ro   # 首次启动(空库)自动导入 10-data.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${DB_PASSWORD:-123456}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  rabbitmq:
+    image: rabbitmq:3.12-management
+    container_name: ap-rabbitmq
+    hostname: ap-rabbitmq                      # 固定 hostname，避免容器重建后数据目录不认
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${MQ_USER:-admin}
+      RABBITMQ_DEFAULT_PASS: ${MQ_PASS:-Hlxd@123456}
+    ports:
+      - "${MQ_PUBLISH_PORT:-5672}:5672"        # AMQP（CubeStudio 也连这个）
+      - "${MQ_MGMT_PORT:-15672}:15672"         # 管理面板
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  app:
+    build:
+      context: ..
+      dockerfile: deploy/app.Dockerfile
+    image: analyse-platform-app:latest
+    container_name: ap-app
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy            # 等库就绪再启动（init_db 在导入时连库）
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: root
+      DB_PASSWORD: ${DB_PASSWORD:-123456}
+      DB_NAME: ${DB_NAME:-analyse_platform}
+      MQ_HOST: rabbitmq
+      MQ_PORT: 5672
+      MQ_USER: ${MQ_USER:-admin}
+      MQ_PASS: ${MQ_PASS:-Hlxd@123456}
+      CS_URL: ${CS_URL:-}
+      WORKFLOW_URL: ${WORKFLOW_URL:-}
+      SAMPLE_BUCKET: ${SAMPLE_BUCKET:-defect-samples}
+      WS_USER: ${WS_USER:-root}                # 工控机 SFTP 采集账号
+      WS_PASS: ${WS_PASS:-hlxd@123}
+      LOG_DIR: /app/logs
+      PORT: 9573
+    ports:
+      - "${APP_PUBLISH_PORT:-9573}:9573"
+    volumes:
+      - app-logs:/app/logs
+
+volumes:
+  mysql-data:
+  rabbitmq-data:
+  app-logs:

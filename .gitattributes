@@ -1,0 +1,2 @@
+# 部署脚本必须 LF，否则 Linux 上 bash 会因 CRLF 报错
+*.sh text eol=lf

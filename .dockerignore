@@ -1,0 +1,13 @@
+**/__pycache__/
+**/*.pyc
+.git/
+.idea/
+.venv/
+venv/
+logs/
+*.log
+deploy/images/
+deploy/mysql-init/*.sql
+小包外观剔除图片/
+*.bmp
+cubestudio_mock/

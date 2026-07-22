@@ -16,16 +16,29 @@
 <div class="hint">请先维护检测项 !!!</div>
 {% endif %}
 <div class="toolbar">
-  <div class="page-title" style="margin:0">{{ tabname }}</div>
+  <div class="page-title" style="margin:0">{{ tabname }}
+    {% if tab == 'lines' %}
+    <span class="hint-icon" title="实时图像目录按机台配一次；「本机台检测项目」勾了哪些，工作状态列就有哪些开关（一台机可同时跑多个检测项目）。当前运行工单来自机台排程，按图片时刻落到对应工单反查牌号。">?</span>
+    {% elif tab == 'schedule' %}
+    <span class="hint-icon" title="工单决定「这台机这段时间生产什么牌号」。图片文件名是毫秒时间戳，优先按时刻落到工单区间；没有起止时间时退回按日期+班次匹配。">?</span>
+    {% endif %}
+  </div>
+  {% if tab == 'schedule' %}
+  <form method="post" action="{{ url_for('schedule_mock') }}" style="display:inline"
+        onsubmit="return confirm('将按早/中/晚三班为所有启用机组生成今天的工单，并覆盖当天已有排程。继续？')">
+    <button class="btn" type="submit">一键生成今日工单</button>
+  </form>
+  {% endif %}
   <button class="btn btn-primary" onclick="editRow()">+ 新增</button>
 </div>
 <div class="card tbl-card"><div class="card-body" style="padding:0">
 <table class="table">
   <thead>
   {% if tab == 'items' %}
-    <tr><th>序号</th><th>代码</th><th>名称</th><th>简称</th><th>数据源目录</th><th>Label Studio</th><th>状态</th><th>操作</th></tr>
+    <tr><th>序号</th><th>项目编码</th><th>名称</th><th>简称</th><th>路径别名</th><th>状态</th><th>操作</th></tr>
   {% elif tab == 'lines' %}
-    <tr><th>序号</th><th>产线编码</th><th>名称</th><th>路径别名</th><th>车间</th><th>区域</th><th>状态</th><th>操作</th></tr>
+    <tr><th>序号</th><th>产线编码</th><th>名称</th><th>路径别名</th><th>车间/区域</th>
+        <th>实时图像目录</th><th>工作状态</th><th>当前运行工单</th><th>状态</th><th>操作</th></tr>
   {% elif tab == 'brands' %}
     <tr><th>序号</th><th>产品代码</th><th>产品规格</th><th>状态</th><th>操作</th></tr>
   {% elif tab == 'workshops' %}
@@ -35,7 +48,7 @@
   {% elif tab == 'defects' %}
     <tr><th>序号</th><th>分类名称</th><th>状态</th><th>操作</th></tr>
   {% elif tab == 'schedule' %}
-    <tr><th>序号</th><th>机台</th><th>日期</th><th>班次</th><th>牌号</th><th>状态</th><th>操作</th></tr>
+    <tr><th>序号</th><th>工单号</th><th>机台</th><th>日期</th><th>班次</th><th>起止时间</th><th>牌号</th><th>状态</th><th>操作</th></tr>
   {% endif %}
   </thead>
   <tbody>
@@ -44,13 +57,63 @@
     <td>{{ '%02d' % loop.index }}</td>
     {% if tab == 'items' %}
       <td>{{ r.code }}</td><td>{{ r.name }}</td><td>{{ r.short_name }}</td>
-      <td>{% if r.src_prefix %}<code>{{ r.src_prefix }}</code>
-            <span style="font-size:11.5px;color:{{ '#52c41a' if r.img_count else '#faad14' }}">
-              {{ r.img_count ~ ' 张' if r.img_count else '未采到图' }}</span>
-          {% else %}<span style="color:var(--text-secondary)">未配置</span>{% endif %}</td>
-      <td>{% if r.ls_project_id %}<span style="color:#52c41a">● 项目 {{ r.ls_project_id }}</span>{% else %}<span style="color:var(--text-secondary)">未建</span>{% endif %}</td>
+      <td><code>{{ r.path_alias or '—' }}</code></td>
     {% elif tab == 'lines' %}
-      <td>{{ r.code }}</td><td>{{ r.name }}</td><td><code>{{ r.path_alias or '—' }}</code></td><td>{{ r.workshop }}</td><td>{{ r.area }}</td>
+      <td>{{ r.code }}</td><td>{{ r.name }}</td><td><code>{{ r.path_alias or '—' }}</code></td>
+      <td>{{ r.workshop }}{% if r.area %} / {{ r.area }}{% endif %}</td>
+      {# 实时图像目录：机台上存前缀，每个已装检测项目展开成完整目录 #}
+      <td>
+        {% if r.rt_type %}
+          <div style="font-size:12px"><span class="tag {{ 'tag-orange' if r.rt_type=='ftp' else '' }}">{{ 'FTP' if r.rt_type=='ftp' else 'MinIO' }}</span>
+            <code style="font-size:11.5px;color:var(--text-secondary)">{{ (r.rt_bucket + '/' if r.rt_bucket else '') ~ r.rt_path }}</code></div>
+          {% for it in r['items'] %}
+          <div style="font-size:11.5px;margin-top:3px">
+            <span style="color:var(--text-secondary)">{{ it.name }}</span>
+            <code style="color:var(--text)">/{{ it.rt_full.rsplit('/', 1)[-1] }}/</code>
+          </div>
+          {% endfor %}
+        {% else %}<span style="color:var(--text-secondary)">未配置</span>{% endif %}
+      </td>
+      {# 工作状态：本机台每个检测项目一行开关（一对多） #}
+      <td style="white-space:nowrap">
+        {% for it in r['items'] %}
+        {% set on = it.job and it.job.enabled %}
+        <div style="margin:2px 0;display:flex;align-items:center;gap:4px">
+          <form method="post" action="{{ url_for('line_analyze_toggle') }}" style="display:inline">
+            <input type="hidden" name="line_id" value="{{ r.id }}">
+            <input type="hidden" name="item_id" value="{{ it.id }}">
+            <input type="hidden" name="on" value="{{ '0' if on else '1' }}">
+            <button class="switch {{ 'on' if on else '' }}" type="submit" data-job="{{ r.id }}_{{ it.id }}"
+              {{ 'disabled' if not r.rt_type }} title="{{ '需先配置实时图像目录' if not r.rt_type else ('点击关闭' if on else '点击开启') }}">
+              <span class="switch-dot"></span></button>
+          </form>
+          <span style="font-size:12px">{{ it.name }}</span>
+          <a class="btn-link" style="font-size:12px" href="{{ url_for('line_analyze_logs', line_id=r.id, item=it.id) }}">日志</a>
+        </div>
+        <div class="job-box" data-job="{{ r.id }}_{{ it.id }}" style="font-size:11.5px;margin:0 0 6px;{{ '' if it.job else 'display:none' }}">
+          <div style="height:5px;background:#eee;border-radius:3px;overflow:hidden;margin:2px 0">
+            <i class="job-fill" style="display:block;height:100%;background:var(--primary);width:{{ ((it.job.read_cnt/it.job.total*100) if it.job and it.job.total else 0)|round }}%"></i>
+          </div>
+          <span class="job-txt" style="color:var(--text-secondary)">{% if it.job %}{{ it.job.msg }}{% endif %}</span>
+        </div>
+        {% else %}
+        <span style="font-size:12px;color:var(--text-secondary)">未装检测项目</span>
+        {% endfor %}
+      </td>
+      {# 当前运行工单：按当前时刻落在哪张工单区间内 #}
+      <td>
+        {% if r.cur_wo %}
+          <a class="btn-link" href="javascript:;" onclick="openWo({{ r.id }})">{{ r.cur_wo.brand }}</a>
+          <div style="font-size:11.5px;color:var(--text-secondary)">
+            {{ r.cur_wo.order_no or r.cur_wo.shift }}
+            {% if r.cur_wo.end_at %}· 至 {{ r.cur_wo.end_at.strftime('%H:%M') }}{% endif %}</div>
+        {% elif r.cur_brand %}
+          <a class="btn-link" href="javascript:;" onclick="openWo({{ r.id }})">{{ r.cur_brand }}</a>
+          <div style="font-size:11.5px;color:#faad14">按班次匹配（无起止时间）</div>
+        {% else %}
+          <a class="btn-link" style="color:var(--text-secondary)" href="javascript:;" onclick="openWo({{ r.id }})">当前无工单</a>
+        {% endif %}
+      </td>
     {% elif tab == 'brands' %}
       <td>{{ r.code }}</td><td>{{ r.spec }}</td>
     {% elif tab == 'workshops' %}
@@ -60,12 +123,20 @@
     {% elif tab == 'defects' %}
       <td>{{ r.name }}</td>
     {% elif tab == 'schedule' %}
+      <td><code style="font-size:11.5px">{{ r.order_no or '—' }}</code></td>
       <td><code>{{ r.machine }}</code></td><td>{{ r.sched_date[:4] }}-{{ r.sched_date[4:6] }}-{{ r.sched_date[6:] }}</td>
-      <td>{{ r.shift or '全天' }}</td><td>{{ r.brand }}</td>
+      <td>{{ r.shift or '全天' }}</td>
+      <td style="font-size:12px;white-space:nowrap">
+        {% if r.start_at and r.end_at %}{{ r.start_at }}<br>→ {{ r.end_at }}
+        {% else %}<span style="color:#faad14">未填（按班次匹配）</span>{% endif %}</td>
+      <td>{{ r.brand }}</td>
     {% endif %}
     <td>{% if r.status %}<span class="tag">启用</span>{% else %}<span class="tag tag-gray">停用</span>{% endif %}</td>
     <td>
       <button class="btn-link" onclick='editRow({{ dict(r)|tojson }})'>修改</button>
+      {% if tab == 'lines' %}
+      <button class="btn-link" onclick='openRt({{ dict(r)|tojson }})'>配置目录</button>
+      {% endif %}
       <form method="post" action="{{ url_for('config_toggle', tab=tab, rid=r.id) }}" style="display:inline">
         <button class="btn-link" type="submit">{{ '停用' if r.status else '启用' }}</button>
       </form>
@@ -83,6 +154,76 @@
 {% if pg %}<div class="pager" data-page="{{ pg.page }}" data-pages="{{ pg.pages }}" data-total="{{ pg.total }}"></div>{% endif %}
 </div></div>
 
+{% if tab == 'lines' %}
+<style>
+  .switch{position:relative;width:38px;height:20px;border:0;border-radius:11px;background:#ccc;cursor:pointer;padding:0;vertical-align:middle}
+  .switch.on{background:var(--primary,#00923f)}
+  .switch:disabled{opacity:.4;cursor:not-allowed}
+  .switch .switch-dot{position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:left .18s}
+  .switch.on .switch-dot{left:20px}
+  .switch-label{margin:0 6px 0 4px}
+  .wo-tbl{width:100%;border-collapse:collapse;font-size:13px}
+  .wo-tbl th,.wo-tbl td{padding:6px 8px;border-bottom:1px solid var(--split,#eee);text-align:left}
+  .wo-tbl th{color:var(--text-secondary);font-weight:500}
+</style>
+
+{# 实时图像目录：按机台配一次，检测项目那一段跟随顶栏上下文 #}
+<div class="modal-mask" id="rtModal">
+  <div class="modal" style="width:620px;max-width:94vw">
+    <div class="modal-head"><span id="rtTitle">配置实时图像目录</span>
+      <span class="close" onclick="closeModal('rtModal')">×</span></div>
+    <form method="post" action="{{ url_for('line_rtdir_save') }}" id="rtForm">
+      <input type="hidden" name="line_id" id="rt_line_id">
+      <input type="hidden" name="rt_type" id="rt_type" value="minio">
+      <div class="modal-body">
+        <div style="font-size:12.5px;color:var(--text-secondary);margin-bottom:12px">
+          目录按机台配一次，本机台上所有牌号、所有相机面共用。系统在其下按
+          「检测项目/日期/班组/班次/相机面」自动查找待推理图片。
+        </div>
+        <div class="form-item"><label>数据源</label>
+          <div class="input" id="rt_src" style="background:#fafafa;color:var(--text-secondary);
+               display:flex;align-items:center;cursor:default">—</div></div>
+        <div class="form-item"><label>桶</label>
+          <div style="display:flex;gap:6px">
+            <select class="select input" name="rt_bucket" id="rt_bucket" style="flex:1"><option value="">加载中…</option></select>
+            <button class="btn btn-sm" type="button" onclick="rtLoadBuckets()">刷新</button>
+          </div></div>
+        <div class="form-item"><label>目录前缀</label>
+          <input class="input" name="rt_path" id="rt_path" placeholder="如 jb1/a01" oninput="rtPreview()">
+          <div style="font-size:11.5px;color:var(--text-secondary);margin-top:3px">
+            默认按「车间路径别名 / 机台路径别名」生成，可手工改成现场实际目录。</div></div>
+        <div style="margin:10px 0;padding:10px 14px;background:#fafafa;border:1px solid #e8e8e8;border-radius:6px;font-size:13px">
+          <div><span id="rt_prev" style="font-family:monospace;font-weight:600">—</span><span
+            style="color:#999">/日期/班组/班次/相机面/文件</span></div>
+          <div style="font-size:11.5px;color:var(--text-secondary);margin-top:4px">
+            末段「{{ (cur_det_item.path_alias or cur_det_item.code) if cur_det_item else '—' }}」是当前检测项目
+            {{ (cur_det_item.short_name or cur_det_item.name) if cur_det_item else '' }} 的路径别名，切换顶栏项目即变</div>
+        </div>
+        <div><button class="btn btn-sm" type="button" onclick="rtTest()">测试目录可读</button>
+          <span id="rt_msg" style="font-size:12.5px;margin-left:10px"></span></div>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn" onclick="closeModal('rtModal')">取消</button>
+        <button type="submit" class="btn btn-primary">保存</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{# 当前运行工单：排程 → 牌号 → 各相机面模型就绪情况 #}
+<div class="modal-mask" id="woModal">
+  <div class="modal" style="width:600px;max-width:94vw">
+    <div class="modal-head"><span id="woTitle">当前运行工单</span>
+      <span class="close" onclick="closeModal('woModal')">×</span></div>
+    <div class="modal-body" id="woBody">加载中…</div>
+    <div class="modal-foot">
+      <a class="btn" href="{{ url_for('config', tab='schedule') }}">去维护排程</a>
+      <button type="button" class="btn btn-primary" onclick="closeModal('woModal')">关闭</button>
+    </div>
+  </div>
+</div>
+{% endif %}
+
 <div class="modal-mask" id="rowModal">
   <div class="modal">
     <div class="modal-head"><span id="rowModalTitle">新增{{ tabname }}</span>
@@ -91,15 +232,13 @@
       <div class="modal-body">
         <input type="hidden" name="id" id="c_id">
         {% if tab == 'items' %}
-        <div class="form-item"><label><span class="req">*</span>代码</label><input class="input" name="code" id="c_code" required></div>
+        <div class="form-item"><label><span class="req">*</span>项目编码</label><input class="input" name="code" id="c_code" required></div>
         <div class="form-item"><label><span class="req">*</span>名称</label><input class="input" name="name" id="c_name" required></div>
         <div class="form-item"><label>简称</label><input class="input" name="short_name" id="c_short_name"></div>
-        <div class="form-item"><label>数据源目录</label>
-          <select class="select input" name="src_prefix" id="c_src_prefix">
-            <option value="">加载中…</option>
-          </select>
-          <div style="font-size:12px;color:var(--text-secondary);margin-top:4px" id="srcHint">
-            从各产线数据源实时探测到的顶层目录。选定后该项目才会采集图片，并自动建立 Label Studio 标注项目。</div></div>
+        <div class="form-item"><label>MinIO 路径别名</label>
+          <input class="input" name="path_alias" id="c_path_alias" placeholder="如 xbccd">
+          <div style="font-size:11.5px;color:var(--text-secondary);margin-top:3px">用于构造实时目录路径的检测项目段。不填则用项目编码。</div>
+        </div>
         {% elif tab == 'lines' %}
         <div class="form-item"><label><span class="req">*</span>产线编码</label><input class="input" name="code" id="c_code" required></div>
         <div class="form-item"><label><span class="req">*</span>名称</label><input class="input" name="name" id="c_name" required></div>
@@ -114,6 +253,19 @@
           </select></div>
         <div class="form-item"><label>区域</label>
           <select class="select input" name="area" id="c_area"><option value="">请先选择车间</option></select></div>
+        <div class="form-item"><label>本机台检测项目</label>
+          <div style="display:flex;flex-wrap:wrap;gap:10px 18px;padding:8px 10px;border:1px solid var(--split,#e8e8e8);border-radius:6px">
+            {% for it in det_items %}
+            <label style="display:inline-flex;align-items:center;gap:5px;font-size:13px;cursor:pointer">
+              <input type="checkbox" name="items" value="{{ it.id }}" class="li-item-cb"> {{ it.short_name or it.name }}
+            </label>
+            {% else %}
+            <span style="font-size:12.5px;color:var(--text-secondary)">暂无检测项目</span>
+            {% endfor %}
+          </div>
+          <div style="font-size:11.5px;color:var(--text-secondary);margin-top:3px">
+            这台机装了哪些检测设备。勾几个，工作状态列就有几个开关；取消勾选会同时停掉它的分析任务。</div>
+        </div>
         {% elif tab == 'brands' %}
         <div class="form-item"><label><span class="req">*</span>产品代码</label><input class="input" name="code" id="c_code" required></div>
         <div class="form-item"><label><span class="req">*</span>产品规格</label><input class="input" name="spec" id="c_spec" required></div>
@@ -133,12 +285,26 @@
         {% elif tab == 'defects' %}
         <div class="form-item"><label><span class="req">*</span>分类名称</label><input class="input" name="name" id="c_name" required></div>
         {% elif tab == 'schedule' %}
-        <div class="form-item"><label><span class="req">*</span>机台</label><input class="input" name="machine" id="c_machine" placeholder="如 a01" required></div>
+        <div class="form-item"><label>工单号</label>
+          <input class="input" name="order_no" id="c_order_no" placeholder="如 WO20260721A011"></div>
+        <div class="form-item"><label><span class="req">*</span>机台</label>
+          <select class="select input" name="machine" id="c_machine" required>
+            <option value="">请选择机台</option>
+            {% for l in sched_lines %}<option value="{{ l.alias }}">{{ l.alias }} · {{ l.name }}</option>{% endfor %}
+          </select></div>
         <div class="form-item"><label><span class="req">*</span>日期</label><input class="input" name="sched_date" id="c_sched_date" placeholder="YYYYMMDD 如 20260716" required></div>
         <div class="form-item"><label>班次</label>
           <select class="select input" name="shift" id="c_shift">
             <option value="">全天</option><option>早班</option><option>中班</option><option>晚班</option>
           </select></div>
+        <div class="form-grid">
+          <div class="form-item"><label>开始时间</label>
+            <input class="input" type="datetime-local" name="start_at" id="c_start_at"></div>
+          <div class="form-item"><label>结束时间</label>
+            <input class="input" type="datetime-local" name="end_at" id="c_end_at"></div>
+        </div>
+        <div style="font-size:11.5px;color:var(--text-secondary);margin:-4px 0 10px">
+          填了起止时间，牌号反查就按图片拍摄时刻精确落到本工单；不填则退回按日期+班次匹配。</div>
         <div class="form-item"><label><span class="req">*</span>牌号</label>
           <select class="select input" name="brand" id="c_brand" required>
             <option value="">请选择牌号</option>
@@ -167,51 +333,181 @@ function fillAreas(ws, selected){
     sel.appendChild(o);
   });
 }
-function fillSources(selected){
-  var sel = document.getElementById('c_src_prefix');
-  if (!sel) return;
-  var hint = document.getElementById('srcHint');
-  sel.innerHTML = '<option value="">加载中…</option>';
-  fetch('/config/items/sources').then(function(r){ return r.json(); }).then(function(d){
-    sel.innerHTML = '';
-    var none = document.createElement('option');
-    none.value = ''; none.textContent = '（不配置 —— 该项目不采集图片）';
-    sel.appendChild(none);
-    var hit = false;
-    d.dirs.forEach(function(x){
-      var o = document.createElement('option');
-      o.value = x.name;
-      o.textContent = x.name + '  · 产线 ' + x.lines.join('/') +
-        (x.used_by && x.used_by !== '{{ tabname }}' ? '  · 已被「' + x.used_by + '」使用' : '');
-      if (x.name === selected) { o.selected = true; hit = true; }
-      sel.appendChild(o);
-    });
-    // 当前值在数据源里已不存在时保留它，否则一保存就把配置弄丢了
-    if (selected && !hit) {
-      var o = document.createElement('option');
-      o.value = selected; o.textContent = selected + '  · ⚠ 数据源中未找到';
-      o.selected = true; sel.appendChild(o);
-    }
-    var msg = d.dirs.length ? ('探测到 ' + d.dirs.length + ' 个顶层目录。选定后该项目才会采集图片，并自动建立 Label Studio 标注项目。')
-                            : '未探测到任何目录 —— 请先在「图片采集 → 采集配置」为产线配好数据源。';
-    if (d.errors && d.errors.length) msg += ' 部分产线读取失败：' + d.errors.join('；');
-    if (hint) hint.textContent = msg;
-  }).catch(function(e){
-    sel.innerHTML = '<option value="' + (selected || '') + '">' + (selected || '') + '</option>';
-    if (hint) hint.textContent = '探测数据源失败：' + e;
-  });
-}
 function editRow(r){
   r = r || {};
   document.getElementById('rowModalTitle').textContent = (r.id ? '修改' : '新增') + '{{ tabname }}';
-  ['id','code','name','short_name','workshop','area','spec','machine','sched_date','shift','brand','path_alias'].forEach(function(k){
+  ['id','code','name','short_name','workshop','area','spec','machine','sched_date','shift','brand',
+   'path_alias','order_no'].forEach(function(k){
     var el = document.getElementById('c_' + k);
     if (el) el.value = r[k] || '';
   });
-  if (document.getElementById('c_src_prefix')) fillSources(r.src_prefix || '');
+  // datetime-local 要 "YYYY-MM-DDTHH:MM"，后端给的是 "YYYY-MM-DD HH:MM:SS"
+  ['start_at','end_at'].forEach(function(k){
+    var el = document.getElementById('c_' + k);
+    if (el) el.value = r[k] ? String(r[k]).replace(' ', 'T').slice(0, 16) : '';
+  });
+  // 机台已装的检测项目回显勾选
+  var picked = (r.item_ids || []).map(String);
+  document.querySelectorAll('.li-item-cb').forEach(function(cb){
+    cb.checked = picked.indexOf(cb.value) >= 0;
+  });
   var wsEl = document.getElementById('c_workshop');
   if (wsEl && document.getElementById('c_area')) { fillAreas(r.workshop || '', r.area || ''); }
   openModal('rowModal');
 }
+
+{% if tab == 'lines' %}
+/* ---------------- 机台实时图像目录 ---------------- */
+var DET_SEG = {{ ((cur_det_item.path_alias or cur_det_item.code) if cur_det_item else '')|tojson }};
+var CUR_DET = {{ cur_det|tojson }};
+var rtLine = null;
+
+function openRt(r){
+  rtLine = r;
+  document.getElementById('rtTitle').textContent = '配置实时图像目录 — ' + (r.name || '');
+  document.getElementById('rt_line_id').value = r.id;
+  document.getElementById('rt_type').value = r.rt_type || 'minio';
+  document.getElementById('rt_msg').textContent = '';
+  // 前缀：已配的优先，否则按 车间别名/机台别名 生成
+  var auto = [r.ws_alias || r.workshop || '', r.line_alias || r.code || '']
+             .filter(function(x){ return x; }).join('/');
+  document.getElementById('rt_path').value = r.rt_path || auto;
+  document.getElementById('rt_src').textContent = '读取中…';
+  rtPreview();
+  rtLoadBuckets();
+  openModal('rtModal');
+}
+function rtPreview(){
+  var p = document.getElementById('rt_path').value.replace(/^\/+|\/+$/g, '');
+  var parts = [p, DET_SEG].filter(function(x){ return x; });
+  document.getElementById('rt_prev').textContent = parts.length ? parts.join('/') + '/' : '—';
+}
+function rtLoadBuckets(){
+  if(!rtLine) return;
+  var sel = document.getElementById('rt_bucket');
+  var want = rtLine.rt_bucket || '';
+  sel.innerHTML = '<option value="">读取中…</option>';
+  fetch('/config/lines/buckets/' + rtLine.id).then(function(r){ return r.json(); }).then(function(d){
+    document.getElementById('rt_src').textContent = d.msg || '';
+    sel.innerHTML = '';
+    var def = document.createElement('option');
+    def.value = ''; def.textContent = '（用数据源默认桶' + (d.default ? ' ' + d.default : '') + '）';
+    sel.appendChild(def);
+    var hit = false;
+    (d.buckets||[]).forEach(function(b){
+      var o = document.createElement('option');
+      o.value = b; o.textContent = b;
+      if(b === want){ o.selected = true; hit = true; }
+      sel.appendChild(o);
+    });
+    if(want && !hit){
+      var o = document.createElement('option');
+      o.value = want; o.textContent = want + '  · ⚠ 服务器上未找到';
+      o.selected = true; sel.appendChild(o);
+    }
+  }).catch(function(){
+    document.getElementById('rt_src').textContent = '读取数据源失败';
+    sel.innerHTML = '<option value="' + want + '">' + (want || '（默认桶）') + '</option>';
+  });
+}
+function rtTest(){
+  var msg = document.getElementById('rt_msg');
+  msg.textContent = '测试中…'; msg.style.color = 'var(--text-secondary)';
+  var fd = new FormData(document.getElementById('rtForm'));
+  fd.append('item_id', CUR_DET);
+  fetch('{{ url_for("line_rtdir_test") }}', {method:'POST', body: fd})
+    .then(function(r){ return r.json(); })
+    .then(function(d){ msg.textContent = d.msg; msg.style.color = d.ok ? '#52c41a' : '#ff4d4f'; })
+    .catch(function(){ msg.textContent = '请求失败'; msg.style.color = '#ff4d4f'; });
+}
+
+/* ---------------- 当前运行工单 ---------------- */
+function openWo(lineId){
+  var body = document.getElementById('woBody');
+  body.textContent = '加载中…';
+  openModal('woModal');
+  fetch('/config/lines/schedule/' + lineId + '?item=' + CUR_DET)
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      document.getElementById('woTitle').textContent = '当前运行工单 — ' + d.line_name;
+      var h = '<div style="font-size:13px;margin-bottom:10px">机台 <code>' + d.machine +
+              '</code> · ' + d.date + ' · ' + d.shift +
+              (d.order_no ? ' · 工单 <code>' + d.order_no + '</code>' : '') +
+              (d.start ? '<div style="color:var(--text-secondary);font-size:12px;margin-top:2px">' +
+                         d.start + ' → ' + d.end + '</div>' : '') + '</div>';
+      if(d.brand){
+        h += '<div style="font-size:15px;font-weight:600;margin-bottom:4px">' + d.brand + '</div>' +
+             '<div style="font-size:12.5px;color:' + (d.bound === d.total_faces && d.total_faces ? '#52c41a' : '#faad14') +
+             ';margin-bottom:12px">' + d.total_faces + ' 个相机面中 ' + d.bound + ' 个已上线模型</div>';
+      } else {
+        h += '<div style="color:#faad14;font-size:13px;margin-bottom:12px">' +
+             '当前班次没有排程 —— 推不出牌号，这台机的图不会被分析</div>';
+      }
+      h += '<table class="wo-tbl"><tr><th>班次</th><th>时段</th><th>工单号</th><th>牌号</th></tr>';
+      if(d.day.length){
+        d.day.forEach(function(s){
+          h += '<tr><td>' + (s.shift || '全天') + (s.now ? ' <span class="tag">当前</span>' : '') +
+               '</td><td style="font-size:12px;color:var(--text-secondary)">' +
+               (s.start ? s.start.slice(11) + '–' + s.end.slice(11) : '—') +
+               '</td><td><code style="font-size:11.5px">' + (s.order_no || '—') + '</code></td><td>' +
+               s.brand + '</td></tr>';
+        });
+      } else {
+        h += '<tr><td colspan="4" style="color:var(--text-secondary)">今日无排程，可到机台排程页「一键生成今日工单」</td></tr>';
+      }
+      h += '</table>';
+      if(d.faces.length){
+        h += '<div style="margin-top:14px;font-size:12.5px;color:var(--text-secondary)">该牌号各相机面模型</div>' +
+             '<table class="wo-tbl"><tr><th>相机面</th><th>目录名</th><th>模型</th></tr>';
+        d.faces.forEach(function(f){
+          h += '<tr><td>' + f.face_name + '</td><td><code>' + f.raw_name + '</code></td><td>' +
+               (f.online ? '<span style="color:#52c41a">● ' + (f.version || '已上线') + '</span>'
+                         : '<span style="color:var(--text-secondary)">未上线</span>') + '</td></tr>';
+        });
+        h += '</table>';
+      }
+      body.innerHTML = h;
+    })
+    .catch(function(){ body.textContent = '加载失败'; });
+}
+
+/* ---------------- 工作进度轮询（每个 机台×检测项目 一条） ---------------- */
+(function(){
+  var boxes = Array.prototype.slice.call(document.querySelectorAll('.job-box'));
+  if(!boxes.length) return;
+  // data-job = "机台id_项目id"，按项目分组查，一个项目一次请求
+  var byItem = {};
+  boxes.forEach(function(b){
+    var p = b.dataset.job.split('_');
+    (byItem[p[1]] = byItem[p[1]] || []).push(p[0]);
+  });
+  function tick(){
+    var pending = Object.keys(byItem).length, anyRunning = false;
+    Object.keys(byItem).forEach(function(itemId){
+      fetch('{{ url_for("api_line_analyze_status") }}?item=' + itemId + '&lines=' + byItem[itemId].join(','))
+        .then(function(r){ return r.json(); })
+        .then(function(d){
+          Object.keys(d).forEach(function(lineId){
+            var j = d[lineId], key = lineId + '_' + itemId;
+            var b = document.querySelector('.job-box[data-job="' + key + '"]');
+            if(b){
+              b.style.display = '';
+              var pct = j.total ? Math.round(j.read / j.total * 100) : 0;
+              b.querySelector('.job-fill').style.width = pct + '%';
+              b.querySelector('.job-fill').style.background = j.status==='error' ? '#ff4d4f' : 'var(--primary)';
+              b.querySelector('.job-txt').textContent = j.msg || '';
+            }
+            var sw = document.querySelector('.switch[data-job="' + key + '"]');
+            if(sw){ sw.classList.toggle('on', !!j.enabled); }
+            if(j.enabled) anyRunning = true;
+          });
+        })
+        .catch(function(){})
+        .then(function(){ if(--pending === 0 && anyRunning) setTimeout(tick, 3000); });
+    });
+  }
+  tick();
+})();
+{% endif %}
 </script>
 {% endblock %}

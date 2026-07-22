@@ -46,6 +46,7 @@
     <td style="white-space:nowrap">
       <a class="btn-link" href="javascript:;" onclick="openUpload({{ u.face_id }},'{{ u.face_name }}','{{ u.class_name }}')">上传样本</a>
       <a class="btn-link" href="{{ url_for('label_workflow', unit_key=u.unit_key) }}">进入工作流</a>
+      <a class="btn-link" href="{{ wf_base }}/frontend/visionWorkflow/embed/{{ u.unit_key }}?embed=1" target="_blank" rel="noopener">外部工作流</a>
       {% if not u.exists %}
       <form method="post" action="{{ url_for('label_unit_create') }}" style="display:inline">
         <input type="hidden" name="brand" value="{{ cur_brand }}">

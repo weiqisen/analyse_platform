@@ -33,10 +33,6 @@ WS_PASS = os.environ.get("WS_PASS", "hlxd@123")
 # 外部系统集成参数的兜底默认值。运行期一律走 get_cfg()：优先读 integration_config 表
 # （集成配置页可改、即时生效），表里没配才回落到这里的环境变量。
 CFG_DEFAULTS = {
-    "ls_url": os.environ.get("LS_URL", "http://127.0.0.1:8080"),
-    "ls_token": os.environ.get("LS_TOKEN", "cigarette-label-studio-token-2026"),
-    "ls_user": os.environ.get("LS_USER", "admin@cigarette.local"),
-    "ls_webhook_url": os.environ.get("LS_WEBHOOK_URL", ""),  # 本平台回调地址，注册进 LS
     "cs_url": os.environ.get("CS_URL", ""),                 # CubeStudio（预留）
     "cs_token": os.environ.get("CS_TOKEN", ""),
     "workflow_url": os.environ.get("WORKFLOW_URL", "http://10.10.52.127"),
@@ -47,10 +43,6 @@ CFG_DEFAULTS = {
     "sample_bucket": os.environ.get("SAMPLE_BUCKET", "defect-samples"),
 }
 CFG_LABELS = [
-    ("ls_url", "Label Studio 地址", "浏览器与平台都要能访问，故必须用 IP 不能用 127.0.0.1"),
-    ("ls_token", "Label Studio API Token", "LS 1.23+ 需在组织设置里开启 legacy token 才可用"),
-    ("ls_user", "Label Studio 登录账号", "仅用于标注页提示，不参与鉴权"),
-    ("ls_webhook_url", "标注回调地址(Webhook)", "留空则用本机地址推算；LS 标注后回写进度到此"),
     ("cs_url", "CubeStudio 地址", "预留，本机资源不足未部署"),
     ("cs_token", "CubeStudio Token", "预留"),
     ("workflow_url", "视觉工作流地址", "工作流平台基地址(仅IP:端口)。进入工作流时拼 /frontend/visionWorkflow/embed/{unit_key}?embed=1"),
@@ -231,30 +223,20 @@ def migrate_db(db):
     """给既有表补列。CREATE TABLE IF NOT EXISTS 只建新表不改老表，
     而 MySQL 8 的 ADD COLUMN 不支持 IF NOT EXISTS，只能先查 information_schema。"""
     adds = [
-        # 检测项目升级为一等公民：自己挂数据源目录与外部系统项目 id
-        ("detect_items", "src_prefix", "VARCHAR(128) DEFAULT '' COMMENT '数据源顶层目录(如 小包外观)'"),
-        ("detect_items", "ls_project_id", "INT DEFAULT 0 COMMENT '对应 Label Studio 项目ID, 0=未建'"),
+        # 检测项目升级为一等公民：自己挂外部系统项目 id
         ("detect_items", "cs_project_id", "VARCHAR(64) DEFAULT '' COMMENT '对应 CubeStudio 项目组(预留)'"),
         # 缺陷类别与标注图片归属到检测项目
         ("label_classes", "item_id", "INT DEFAULT 0 COMMENT '所属检测项目(detect_items.id)'"),
         ("label_images", "item_id", "INT DEFAULT 0 COMMENT '所属检测项目(detect_items.id)'"),
-        ("label_tasks", "item_id", "INT DEFAULT 0 COMMENT '所属检测项目(detect_items.id)'"),
         ("inference_results", "item_id", "INT DEFAULT 0 COMMENT '所属检测项目(detect_items.id)'"),
-        ("model_versions", "item_id", "INT DEFAULT 0 COMMENT '所属检测项目(detect_items.id)'"),
         # 新架构推理：结果不再来自 label_images，直接记 机台/相机面/单元/对象key
         ("inference_results", "machine", "VARCHAR(64) DEFAULT '' COMMENT '机台/产线'"),
         ("inference_results", "face_name", "VARCHAR(64) DEFAULT '' COMMENT '相机面'"),
         ("inference_results", "unit_id", "INT DEFAULT 0 COMMENT '建模单元(model_units.id)'"),
         ("inference_results", "src_key", "VARCHAR(512) DEFAULT '' COMMENT '对象key'"),
-        # 实时图像目录：绑定相机采集图片的持续输入目录，job 服务定时从此读图送推理
-        ("model_units", "rt_type", "VARCHAR(16) DEFAULT '' COMMENT '实时目录类型: minio/ftp'"),
-        ("model_units", "rt_line_id", "INT DEFAULT 0 COMMENT '复用哪条产线的数据源凭据(prod_lines.id)'"),
-        ("model_units", "rt_bucket", "VARCHAR(128) DEFAULT '' COMMENT '桶名(minio)'"),
-        ("model_units", "rt_path", "VARCHAR(512) DEFAULT '' COMMENT '目录路径'"),
         # 数据源独立化：产线引用某个数据源（多产线可共用）。storage_config/terminal_config
         # 退化为由数据源派生的按产线缓存（rebuild_line_cfg 重建），现有读代码不用改。
         ("prod_lines", "source_id", "INT DEFAULT 0 COMMENT '引用的数据源(data_sources.id)'"),
-        ("analysis_jobs", "enabled", "INT DEFAULT 0 COMMENT '工作状态开关: 1开启 0关闭'"),
         # 样本上传：msg_id 只做消息关联，项目归属改用稳定的 unit_key（CubeStudio 按此 upsert，
         # 避免同一建模单元多次上传被建成多个项目）。
         ("sample_uploads", "unit_key", "VARCHAR(160) DEFAULT '' COMMENT '建模单元稳定标识=项目编码_牌号编码_相机面编码(大写)'"),
@@ -264,6 +246,17 @@ def migrate_db(db):
         ("sample_uploads", "class_name", "VARCHAR(512) DEFAULT '' COMMENT '缺陷分类名称(可多个, / 分隔)'"),
         ("workshops", "path_alias", "VARCHAR(32) DEFAULT '' COMMENT 'MinIO路径别名, 如 jb1'"),
         ("prod_lines", "path_alias", "VARCHAR(32) DEFAULT '' COMMENT 'MinIO路径别名, 如 a01'"),
+        # 实时图像目录挪到机台：前缀就是 车间别名/机台别名，检测项目段运行时按上下文追加。
+        # 原先挂在 model_units 上，同一机台的 N牌号×6面 存着同一个字符串，改一次要改 6N 次。
+        ("prod_lines", "rt_type", "VARCHAR(16) DEFAULT '' COMMENT '实时目录类型: minio/ftp'"),
+        ("prod_lines", "rt_bucket", "VARCHAR(128) DEFAULT '' COMMENT '桶名(minio), 空=用数据源输入桶'"),
+        ("prod_lines", "rt_path", "VARCHAR(512) DEFAULT '' COMMENT '实时目录前缀(车间别名/机台别名)'"),
+        # 工单：班次只能到"半天"，且没法处理跨班/临时换牌号。图片文件名是毫秒时间戳，
+        # 有了起止时间就能按图片时刻精确落到工单上，班次匹配退化为兜底。
+        ("machine_schedule", "order_no", "VARCHAR(64) DEFAULT '' COMMENT '工单号'"),
+        ("machine_schedule", "start_at", "DATETIME NULL COMMENT '工单开始时间'"),
+        ("machine_schedule", "end_at", "DATETIME NULL COMMENT '工单结束时间'"),
+        ("detect_items", "path_alias", "VARCHAR(64) DEFAULT '' COMMENT 'MinIO路径别名'"),
     ]
     added = set()
     for table, col, ddl in adds:
@@ -302,6 +295,46 @@ def migrate_db(db):
             if sid:
                 db.execute("UPDATE prod_lines SET source_id=? WHERE id=?", (sid, l["id"]))
         db.commit()
+
+    # 实时目录与工作状态从建模单元下放到机台：analysis_jobs / analysis_logs 的主体
+    # 从 unit_id 换成 (line_id, item_id)。两张表都是纯运行态数据，直接重建不迁移。
+    if _has_column(db, "analysis_jobs", "unit_id"):
+        db.execute("DROP TABLE IF EXISTS analysis_jobs")
+        db.execute("DROP TABLE IF EXISTS analysis_logs")
+        db.execute("""CREATE TABLE analysis_jobs(
+            line_id INT NOT NULL COMMENT '机台(prod_lines.id)',
+            item_id INT NOT NULL COMMENT '检测项目(detect_items.id)',
+            status VARCHAR(16) DEFAULT 'idle' COMMENT 'idle/running/done/error/stopped',
+            enabled INT DEFAULT 0 COMMENT '工作状态开关: 1开启 0关闭',
+            total INT DEFAULT 0 COMMENT '目录总张数',
+            read_cnt INT DEFAULT 0 COMMENT '已读取张数',
+            analyzed INT DEFAULT 0 COMMENT '已分析(新推理入库)',
+            skipped INT DEFAULT 0 COMMENT '已跳过(之前分析过)',
+            msg VARCHAR(255) DEFAULT '' COMMENT '最新消息',
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+            PRIMARY KEY (line_id, item_id)
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='实时目录分析任务(按 机台×检测项目)'""")
+        db.execute("""CREATE TABLE analysis_logs(
+            id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+            line_id INT NOT NULL COMMENT '机台(prod_lines.id)',
+            item_id INT NOT NULL COMMENT '检测项目(detect_items.id)',
+            ts DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '时间',
+            level VARCHAR(8) DEFAULT 'info' COMMENT 'info/ok/warn/error',
+            src_key VARCHAR(512) DEFAULT '' COMMENT '图片key',
+            detail VARCHAR(512) DEFAULT '' COMMENT '调用过程/结果',
+            KEY idx_job_ts (line_id, item_id, id)
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='分析调用审计日志'""")
+        db.commit()
+        # 老的单元级实时目录配置搬到机台上（同机台多单元取第一条，本来就是同一份）
+        if _has_column(db, "model_units", "rt_type"):
+            for u in db.execute(
+                    "SELECT * FROM model_units WHERE rt_type<>'' AND rt_line_id<>0").fetchall():
+                # 单元里的 rt_path 是 车间/机台/检测项目 三段，机台上只留前两段
+                prefix = "/".join((u["rt_path"] or "").strip("/").split("/")[:2])
+                db.execute("UPDATE prod_lines SET rt_type=?,rt_bucket=?,rt_path=? "
+                           "WHERE id=? AND rt_type=''",
+                           (u["rt_type"], u["rt_bucket"] or "", prefix, u["rt_line_id"]))
+            db.commit()
 
     # inference_results 换新架构：不再挂 label_images，image_id 应可空且去掉 uq_img
     # 唯一键。旧表 image_id NOT NULL + UNIQUE(image_id)，新流程不提供 image_id 会插入失败。
@@ -349,24 +382,11 @@ def migrate_db(db):
                        "VALUES(?,?,?,?,?,?)", (xb_id, raw, name, code, "is7600C", order))
         db.commit()
 
-    # 老数据按牌号存（牌号是 BRAND_MAP 编出来的），归到第一个配了数据源目录的检测
-    # 项目。只在刚加列时回填一次，避免误伤之后 item_id 合法为 0 的行。
-    if "model_versions" in added:
-        it = db.execute("SELECT id FROM detect_items WHERE src_prefix<>'' ORDER BY id LIMIT 1").fetchone()
-        if it:
-            db.execute("UPDATE model_versions SET item_id=? WHERE item_id=0", (it["id"],))
-            db.commit()
-
-    # 一次性引导：把既有数据归到「小包CCD」项目下（此前 BRAND_MAP 硬编码 小包外观→玉溪（硬））
-    row = db.execute("SELECT COUNT(*) AS c FROM detect_items WHERE src_prefix<>''").fetchone()
-    if not row["c"]:
-        it = db.execute("SELECT id FROM detect_items WHERE short_name=? OR name=?",
-                        ("小包CCD", "小包CCD检测")).fetchone()
-        if it:
-            db.execute("UPDATE detect_items SET src_prefix=? WHERE id=?", ("小包外观", it["id"]))
-            db.execute("UPDATE label_classes SET item_id=? WHERE item_id=0", (it["id"],))
-            db.execute("UPDATE label_images SET item_id=? WHERE item_id=0", (it["id"],))
-            db.commit()
+    # 一次性引导：把没归属的既有数据归到「小包CCD」项目下
+    if xb_id:
+        db.execute("UPDATE label_classes SET item_id=? WHERE item_id=0", (xb_id,))
+        db.execute("UPDATE label_images SET item_id=? WHERE item_id=0", (xb_id,))
+        db.commit()
 
     # unit_sample_class 唯一键从 (brand,face_id) 换成 (brand,face_id,class_id)，
     # 支持一个建模单元绑定多个缺陷分类（CubeStudio 多选需求）。
@@ -411,6 +431,7 @@ def init_db():
             code VARCHAR(64) NOT NULL COMMENT '项目编码',
             name VARCHAR(128) NOT NULL COMMENT '项目名称',
             short_name VARCHAR(64) DEFAULT '' COMMENT '简称',
+            path_alias VARCHAR(64) DEFAULT '' COMMENT 'MinIO路径别名',
             status INT DEFAULT 1 COMMENT '状态: 1启用 0停用'
         ) DEFAULT CHARSET=utf8mb4 COMMENT='检测项目表'""",
                 """CREATE TABLE IF NOT EXISTS prod_lines(
@@ -420,6 +441,9 @@ def init_db():
             workshop VARCHAR(64) DEFAULT '' COMMENT '所属车间',
             area VARCHAR(64) DEFAULT '' COMMENT '所属区域',
             path_alias VARCHAR(32) DEFAULT '' COMMENT 'MinIO路径别名, 如 a01',
+            rt_type VARCHAR(16) DEFAULT '' COMMENT '实时目录类型: minio/ftp',
+            rt_bucket VARCHAR(128) DEFAULT '' COMMENT '桶名(minio), 空=用数据源输入桶',
+            rt_path VARCHAR(512) DEFAULT '' COMMENT '实时目录前缀(车间别名/机台别名)',
             status INT DEFAULT 1 COMMENT '状态: 1启用 0停用'
         ) DEFAULT CHARSET=utf8mb4 COMMENT='机组/产线表'""",        """CREATE TABLE IF NOT EXISTS brands(
             id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
@@ -468,7 +492,8 @@ def init_db():
             status INT DEFAULT 1 COMMENT '状态: 1启用 0停用'
         ) DEFAULT CHARSET=utf8mb4 COMMENT='缺陷标注分类表'""",
         """CREATE TABLE IF NOT EXISTS analysis_jobs(
-            unit_id INT PRIMARY KEY COMMENT '建模单元(model_units.id), 一单元一当前任务',
+            line_id INT NOT NULL COMMENT '机台(prod_lines.id)',
+            item_id INT NOT NULL COMMENT '检测项目(detect_items.id)',
             status VARCHAR(16) DEFAULT 'idle' COMMENT 'idle/running/done/error/stopped',
             enabled INT DEFAULT 0 COMMENT '工作状态开关: 1开启 0关闭',
             total INT DEFAULT 0 COMMENT '目录总张数',
@@ -476,8 +501,9 @@ def init_db():
             analyzed INT DEFAULT 0 COMMENT '已分析(新推理入库)',
             skipped INT DEFAULT 0 COMMENT '已跳过(之前分析过)',
             msg VARCHAR(255) DEFAULT '' COMMENT '最新消息',
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'
-        ) DEFAULT CHARSET=utf8mb4 COMMENT='实时目录分析任务(进度)'""",
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+            PRIMARY KEY (line_id, item_id)
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='实时目录分析任务(按 机台×检测项目)'""",
         """CREATE TABLE IF NOT EXISTS sample_uploads(
             id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
             msg_id VARCHAR(64) NOT NULL COMMENT '消息ID(与MQ回执关联)',
@@ -515,12 +541,13 @@ def init_db():
         ) DEFAULT CHARSET=utf8mb4 COMMENT='建模单元的缺陷分类绑定(一单元可多分类)'""",
         """CREATE TABLE IF NOT EXISTS analysis_logs(
             id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
-            unit_id INT NOT NULL COMMENT '建模单元(model_units.id)',
+            line_id INT NOT NULL COMMENT '机台(prod_lines.id)',
+            item_id INT NOT NULL COMMENT '检测项目(detect_items.id)',
             ts DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '时间',
             level VARCHAR(8) DEFAULT 'info' COMMENT 'info/ok/warn/error',
             src_key VARCHAR(512) DEFAULT '' COMMENT '图片key',
             detail VARCHAR(512) DEFAULT '' COMMENT '调用过程/结果',
-            KEY idx_unit_ts (unit_id, id)
+            KEY idx_job_ts (line_id, item_id, id)
         ) DEFAULT CHARSET=utf8mb4 COMMENT='分析调用审计日志'""",
         """CREATE TABLE IF NOT EXISTS machine_schedule(
             id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
@@ -528,9 +555,17 @@ def init_db():
             sched_date VARCHAR(16) NOT NULL COMMENT '日期 YYYYMMDD',
             shift VARCHAR(16) DEFAULT '' COMMENT '班次(空=全天)',
             brand VARCHAR(64) NOT NULL COMMENT '该时段生产的牌号',
+            order_no VARCHAR(64) DEFAULT '' COMMENT '工单号',
+            start_at DATETIME NULL COMMENT '工单开始时间',
+            end_at DATETIME NULL COMMENT '工单结束时间',
             status INT DEFAULT 1 COMMENT '状态: 1启用 0停用',
             UNIQUE KEY uq_sched (machine, sched_date, shift)
-        ) DEFAULT CHARSET=utf8mb4 COMMENT='机台排程(机台×日期×班次→牌号), 推理时反查牌号'""",
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='机台工单/排程(机台×时段→牌号), 推理时反查牌号'""",
+        """CREATE TABLE IF NOT EXISTS line_items(
+            line_id INT NOT NULL COMMENT '机台(prod_lines.id)',
+            item_id INT NOT NULL COMMENT '检测项目(detect_items.id)',
+            PRIMARY KEY (line_id, item_id)
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='机台装了哪些检测项目(一对多), 工作状态按此逐项开关'""",
         """CREATE TABLE IF NOT EXISTS model_units(
             id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
             brand VARCHAR(64) NOT NULL COMMENT '牌号/品规',
@@ -548,31 +583,16 @@ def init_db():
         ) DEFAULT CHARSET=utf8mb4 COMMENT='建模单元(牌号×相机面), 菜单②③④枢纽'""",
         """CREATE TABLE IF NOT EXISTS camera_faces(
             id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
-            raw_name VARCHAR(128) NOT NULL COMMENT 'MinIO 里的原始相机面目录名, 如 is7600C_D',
+            raw_name VARCHAR(128) NOT NULL COMMENT 'MinIO 路径别名(现场相机面目录名), 如 is7600C_D',
             face_name VARCHAR(64) NOT NULL COMMENT '标准面名(界面显示), 如 正面',
             face_code VARCHAR(32) NOT NULL COMMENT '标准面编码(传对方模型接口), 如 front',
             machine_model VARCHAR(64) DEFAULT '' COMMENT '机型, 如 is7600C',
             sort_order INT DEFAULT 0 COMMENT '面序号 1-6',
             status INT DEFAULT 1 COMMENT '状态: 1启用 0停用',
             UNIQUE KEY uq_raw (raw_name)
-        ) DEFAULT CHARSET=utf8mb4 COMMENT='相机面映射表(原始目录名→标准面)'""",
-        """CREATE TABLE IF NOT EXISTS label_tasks(
-            id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
-            brand VARCHAR(64) NOT NULL COMMENT '牌号',
-            total INT COMMENT '图片总数',
-            labeling INT COMMENT '标注中数量',
-            unlabeled INT COMMENT '未标注数量',
-            exported INT DEFAULT 0 COMMENT '是否已导出: 1是 0否'
-        ) DEFAULT CHARSET=utf8mb4 COMMENT='缺陷标注任务表'""",
-        """CREATE TABLE IF NOT EXISTS model_versions(
-            id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
-            brand VARCHAR(64) NOT NULL COMMENT '牌号',
-            version VARCHAR(32) NOT NULL COMMENT '版本号',
-            pub_date VARCHAR(32) COMMENT '发布日期',
-            note VARCHAR(255) DEFAULT '' COMMENT '备注说明',
-            status VARCHAR(16) DEFAULT '停用' COMMENT '状态: 测试/推理/停用'
-        ) DEFAULT CHARSET=utf8mb4 COMMENT='模型版本表'""",
-        # collect_history 表已废弃：历史采集页直接按 label_images 实时聚合，
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='相机面映射表(路径别名→标准面)'""",
+        # label_tasks(LS标注进度缓存) / model_versions(LS导出的样本集版本) 随 Label Studio
+        # 下线一并废弃，不再建表。collect_history 更早废弃：历史采集页直接按 label_images 实时聚合，
         # 该表只存过种子假数据，无任何代码读取。
         """CREATE TABLE IF NOT EXISTS label_images(
             id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
@@ -612,13 +632,32 @@ def init_db():
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '推理时间',
             UNIQUE KEY uq_img (image_id)
         ) DEFAULT CHARSET=utf8mb4 COMMENT='推理结果表'""",
+        """CREATE TABLE IF NOT EXISTS inference_services(
+            unit_key VARCHAR(160) PRIMARY KEY COMMENT '建模单元稳定标识(业务侧主键)',
+            project_id VARCHAR(64) DEFAULT '' COMMENT 'CubeStudio视觉项目ID',
+            project_label VARCHAR(255) DEFAULT '' COMMENT '对方项目显示名',
+            service_id VARCHAR(64) DEFAULT '' COMMENT '对方推理服务表主键',
+            service_name VARCHAR(128) DEFAULT '' COMMENT '推理服务名',
+            model_name VARCHAR(128) DEFAULT '' COMMENT '模型名',
+            model_version VARCHAR(64) DEFAULT '' COMMENT '模型版本',
+            model_path VARCHAR(512) DEFAULT '' COMMENT '模型路径(容器内)',
+            model_status VARCHAR(32) DEFAULT '' COMMENT '模型状态',
+            endpoint VARCHAR(512) DEFAULT '' COMMENT '推理服务根地址',
+            health_url VARCHAR(512) DEFAULT '' COMMENT '健康检查URL',
+            predict_url VARCHAR(512) DEFAULT '' COMMENT '预测URL(LS ML Backend协议)',
+            task_type VARCHAR(32) DEFAULT '' COMMENT 'detection/segmentation/classification',
+            class_names VARCHAR(1024) DEFAULT '' COMMENT '项目缺陷标签(逗号分隔)',
+            event_id VARCHAR(128) DEFAULT '' COMMENT '最近一次通知的event_id',
+            acked INT DEFAULT 0 COMMENT '回执是否已发出: 1是 0否',
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='推理服务(按unit_key upsert, 来自MQ inference.ready)'""",
         """CREATE TABLE IF NOT EXISTS integration_config(
             id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
             cfg_key VARCHAR(64) NOT NULL COMMENT '配置项键',
             cfg_value TEXT COMMENT '配置项值',
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
             UNIQUE KEY uq_cfg_key (cfg_key)
-        ) DEFAULT CHARSET=utf8mb4 COMMENT='外部系统集成配置表(Label Studio/推理服务/CubeStudio)'""",
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='外部系统集成配置表(CubeStudio/RabbitMQ)'""",
     ]
     for stmt in ddl:
         db.execute(stmt)
@@ -679,10 +718,9 @@ def init_db():
                       "无商标", "无封签", "烟支外漏", "缺封签", "顶部内衬破损"]
         for c in xb_classes:
             db.execute("INSERT INTO label_classes(name) VALUES(?)", (c,))
-        # 不灌模型版本 / 标注进度 / 历史采集的种子数据：
-        # 这些表只应由真实动作写入 —— 模型版本来自「发布样本集」，标注进度来自
-        # Label Studio 回写，历史采集来自实际扫描数据源。编造的演示数据混在里面
-        # 分不清真假，比空表更糟。
+        # 不灌模型版本 / 历史采集的种子数据：这些表只应由真实动作写入 ——
+        # 模型版本来自「发布样本集」，历史采集来自实际扫描数据源。编造的演示数据
+        # 混在里面分不清真假，比空表更糟。
         db.commit()
     db.close()
 
@@ -734,7 +772,7 @@ def inject_globals():
     try:
         db = get_db()
         items = [dict(r) for r in db.execute(
-            "SELECT id,name,short_name,src_prefix FROM detect_items WHERE status=1 ORDER BY id").fetchall()]
+            "SELECT id,name,short_name,path_alias FROM detect_items WHERE status=1 ORDER BY id").fetchall()]
         if items:
             _, cur_id = detect_item_ctx(db)
             row = next((i for i in items if i["id"] == cur_id), None)
@@ -866,7 +904,7 @@ def config(tab):
             "SELECT * FROM detect_items WHERE status=1 ORDER BY id").fetchall()]
         cur_det = request.args.get("det", type=int) or (det_items[0]["id"] if det_items else 0)
         frows, pg = paginate(db, "SELECT * FROM camera_faces WHERE item_id=? "
-                             "ORDER BY machine_model, sort_order, id", (cur_det,),
+                             "ORDER BY sort_order, id", (cur_det,),
                              page=request.args.get("page"))
         return render_template("config_faces.html", tab=tab, tabs=CONFIG_TABS,
                                rows=[dict(r) for r in frows], pg=pg,
@@ -882,49 +920,56 @@ def config(tab):
     }[tab]
     rows, pg = paginate(db, base_sql, page=request.args.get("page"))
     data = [dict(r) for r in rows]
-    if tab == "items":  # 补每个检测项目已采图片数
-        for r in data:
-            r["img_count"] = db.execute("SELECT COUNT(*) AS c FROM label_images WHERE item_id=?",
-                                        (r["id"],)).fetchone()["c"]
     workshops = [dict(w) for w in db.execute("SELECT * FROM workshops WHERE status=1 ORDER BY id").fetchall()]
     areas = [dict(a) for a in db.execute("SELECT * FROM areas WHERE status=1 ORDER BY id").fetchall()]
     sched_brands = [dict(b) for b in db.execute("SELECT * FROM brands WHERE status=1 ORDER BY id").fetchall()]
+    extra = {}
+    if tab == "schedule":
+        # 机台下拉给排程用：值是路径别名(现场目录名)，避免手打错和产线编码混用
+        extra["sched_lines"] = [{"alias": sched_machine_of(l), "name": l["name"]}
+                                for l in db.execute(
+                                    "SELECT * FROM prod_lines WHERE status=1 ORDER BY id").fetchall()]
+        # datetime 交给 tojson 会变成 HTTP 日期串(datetime-local 认不了、修改弹窗回显不出来)，
+        # 统一转成 "YYYY-MM-DD HH:MM:SS" 字符串，列表展示和回填都用它
+        for r in data:
+            r["start_at"] = str(r["start_at"])[:19] if r["start_at"] else ""
+            r["end_at"] = str(r["end_at"])[:19] if r["end_at"] else ""
+    if tab == "lines":
+        # 机台行上直接展示：实时目录（当前检测项目下的完整前缀）、工作状态、当前运行工单
+        det_items, cur_det = detect_item_ctx(db)
+        # 变量名不能叫 cur_item —— inject_globals 里那个是顶栏项目名(字符串)，面包屑在用
+        cur_det_item = next((i for i in det_items if i["id"] == cur_det), None)
+        today, shift = datetime.now().strftime("%Y%m%d"), cur_shift()
+        now = datetime.now()
+        for r in data:
+            r["ws_alias"] = next((w["path_alias"] or w["name"] for w in workshops
+                                  if w["name"] == r["workshop"]), r["workshop"])
+            r["line_alias"] = (r["path_alias"] or r["code"] or "").strip()
+            # 本机台装了哪些检测项目 → 每个项目一行「目录 + 开关 + 进度」
+            bound = [i["item_id"] for i in db.execute(
+                "SELECT item_id FROM line_items WHERE line_id=?", (r["id"],)).fetchall()]
+            r["item_ids"] = bound
+            r["items"] = []
+            for it in det_items:
+                if it["id"] not in bound:
+                    continue
+                job = db.execute("SELECT * FROM analysis_jobs WHERE line_id=? AND item_id=?",
+                                 (r["id"], it["id"])).fetchone()
+                r["items"].append({"id": it["id"], "name": it["short_name"] or it["name"],
+                                   "rt_full": line_rt_prefix(r, it),
+                                   "job": dict(job) if job else None})
+            wo = db.execute(
+                "SELECT * FROM machine_schedule WHERE machine=? AND status=1 "
+                "AND start_at IS NOT NULL AND end_at IS NOT NULL AND start_at<=? AND end_at>? "
+                "ORDER BY start_at DESC LIMIT 1",
+                (sched_machine_of(r), now, now)).fetchone()
+            r["cur_wo"] = dict(wo) if wo else None
+            r["cur_brand"] = wo["brand"] if wo else resolve_brand(db, sched_machine_of(r), today, shift)
+        extra = {"det_items": det_items, "cur_det": cur_det, "cur_det_item": cur_det_item,
+                 "today": today, "cur_shift_name": shift}
     return render_template("config.html", tab=tab, tabs=CONFIG_TABS, rows=data, pg=pg,
-                           workshops=workshops, areas=areas, sched_brands=sched_brands, active="config")
-
-
-@app.route("/config/items/sources")
-@login_required
-def config_item_sources():
-    """探测各产线数据源里实际存在的顶层目录，供「数据源目录」下拉选择。
-    手填字符串打错一个字就静默采不到图，且完全看不出哪里错了。"""
-    db = get_db()
-    found, errs = {}, []
-    for l in db.execute("SELECT * FROM prod_lines WHERE status=1 ORDER BY id").fetchall():
-        scfg = db.execute("SELECT * FROM storage_config WHERE line_id=?", (l["id"],)).fetchone()
-        tcfg = db.execute("SELECT * FROM terminal_config WHERE line_id=?", (l["id"],)).fetchone()
-        try:
-            if scfg and scfg["server_addr"]:
-                s3, cfg = get_s3(scfg)
-                r = s3.list_objects_v2(Bucket=cfg["in_bucket"], Delimiter="/", MaxKeys=1000)
-                for cp in r.get("CommonPrefixes", []):
-                    found.setdefault(cp["Prefix"].rstrip("/"), []).append(l["name"])
-            elif tcfg and tcfg["sys_addr"]:
-                import stat as _st
-                t, sftp = _ws_sftp(tcfg)
-                try:
-                    for e in sftp.listdir_attr((tcfg["ng_dir"] or "").rstrip("/")):
-                        if _st.S_ISDIR(e.st_mode):
-                            found.setdefault(e.filename, []).append(l["name"])
-                finally:
-                    t.close()
-        except Exception as e:
-            errs.append("%s: %s" % (l["name"], str(e)[:60]))
-            app.logger.warning("探测数据源目录失败（产线 %s）：%s", l["name"], e)
-    used = {r["src_prefix"]: (r["short_name"] or r["name"]) for r in
-            db.execute("SELECT * FROM detect_items WHERE src_prefix<>''").fetchall()}
-    return jsonify({"dirs": [{"name": d, "lines": ls, "used_by": used.get(d, "")}
-                             for d, ls in sorted(found.items())], "errors": errs})
+                           workshops=workshops, areas=areas, sched_brands=sched_brands,
+                           active="config", **extra)
 
 
 @app.route("/config/integration/save", methods=["POST"])
@@ -949,21 +994,6 @@ def config_integration_save():
 def config_integration_test(what):
     """用表单里的当前值测连通性，不依赖已保存的配置。"""
     import urllib.request
-    if what == "ls":
-        url = request.form.get("ls_url", "").strip().rstrip("/")
-        token = request.form.get("ls_token", "").strip()
-        try:
-            req = urllib.request.Request(url + "/api/projects?page_size=1",
-                                         headers={"Authorization": "Token " + token})
-            with urllib.request.urlopen(req, timeout=8) as r:
-                n = json.loads(r.read().decode()).get("count", 0)
-            ver = (_ls_get("/api/version") or {}).get("release", "")
-            return jsonify({"ok": True, "msg": "连接成功，Label Studio %s，%d 个项目" % (ver or "?", n)})
-        except Exception as e:
-            hint = ""
-            if "401" in str(e):
-                hint = "（Token 无效，或 LS 1.23+ 未开启 legacy token）"
-            return jsonify({"ok": False, "msg": "连接失败：%s%s" % (str(e)[:100], hint)})
     if what == "cs":
         url = request.form.get("cs_url", "").strip()
         if not url:
@@ -984,22 +1014,34 @@ def config_save(tab):
     rid = f.get("id")
     if tab == "items":
         if rid:
-            db.execute("UPDATE detect_items SET code=?,name=?,short_name=?,src_prefix=? WHERE id=?",
+            db.execute("UPDATE detect_items SET code=?,name=?,short_name=?,path_alias=? WHERE id=?",
                        (f["code"], f["name"], f.get("short_name", ""),
-                        f.get("src_prefix", "").strip().strip("/"), rid))
+                        f.get("path_alias", "").strip().strip("/"), rid))
         else:
-            db.execute("INSERT INTO detect_items(code,name,short_name,src_prefix) VALUES(?,?,?,?)",
+            db.execute("INSERT INTO detect_items(code,name,short_name,path_alias) VALUES(?,?,?,?)",
                        (f["code"], f["name"], f.get("short_name", ""),
-                        f.get("src_prefix", "").strip().strip("/")))
+                        f.get("path_alias", "").strip().strip("/")))
     elif tab == "lines":
         if rid:
             db.execute("UPDATE prod_lines SET code=?,name=?,workshop=?,area=?,path_alias=? WHERE id=?",
                        (f["code"], f["name"], f.get("workshop", ""), f.get("area", ""),
                         f.get("path_alias", "").strip(), rid))
         else:
-            db.execute("INSERT INTO prod_lines(code,name,workshop,area,path_alias) VALUES(?,?,?,?,?)",
-                       (f["code"], f["name"], f.get("workshop", ""), f.get("area", ""),
-                        f.get("path_alias", "").strip()))
+            rid = db.execute("INSERT INTO prod_lines(code,name,workshop,area,path_alias) "
+                             "VALUES(?,?,?,?,?)",
+                             (f["code"], f["name"], f.get("workshop", ""), f.get("area", ""),
+                              f.get("path_alias", "").strip())).lastrowid
+        # 本机台装了哪些检测项目（一对多）。取消勾选的解绑，同时停掉它的分析任务
+        picked = set(request.form.getlist("items", type=int))
+        db.execute("DELETE FROM line_items WHERE line_id=?", (rid,))
+        for iid in picked:
+            db.execute("INSERT INTO line_items(line_id,item_id) VALUES(?,?)", (rid, iid))
+        if picked:
+            ph = ",".join(["?"] * len(picked))
+            db.execute("UPDATE analysis_jobs SET enabled=0 WHERE line_id=? AND item_id NOT IN (%s)"
+                       % ph, [rid] + list(picked))
+        else:
+            db.execute("UPDATE analysis_jobs SET enabled=0 WHERE line_id=?", (rid,))
     elif tab == "brands":
         if rid:
             db.execute("UPDATE brands SET code=?,spec=? WHERE id=?", (f["code"], f["spec"], rid))
@@ -1023,26 +1065,35 @@ def config_save(tab):
         else:
             db.execute("INSERT INTO label_classes(name) VALUES(?)", (f["name"],))
     elif tab == "schedule":
-        vals = (f["machine"].strip(), f["sched_date"].strip(), f.get("shift", "").strip(), f["brand"].strip())
+        # 起止时间用 <input type="datetime-local">，值形如 2026-07-21T06:00
+        start = (f.get("start_at", "") or "").strip().replace("T", " ")
+        end = (f.get("end_at", "") or "").strip().replace("T", " ")
+        date = f.get("sched_date", "").strip()
+        if not date and start:      # 填了开始时间就不必再手填日期
+            date = start[:10].replace("-", "")
+        vals = (f["machine"].strip(), date, f.get("shift", "").strip(), f["brand"].strip(),
+                f.get("order_no", "").strip(), start or None, end or None)
         if rid:
-            db.execute("UPDATE machine_schedule SET machine=?,sched_date=?,shift=?,brand=? WHERE id=?",
-                       vals + (rid,))
+            db.execute("UPDATE machine_schedule SET machine=?,sched_date=?,shift=?,brand=?,"
+                       "order_no=?,start_at=?,end_at=? WHERE id=?", vals + (rid,))
         else:
-            db.execute("INSERT INTO machine_schedule(machine,sched_date,shift,brand) VALUES(?,?,?,?) "
-                       "ON DUPLICATE KEY UPDATE brand=VALUES(brand)", vals)
+            db.execute("INSERT INTO machine_schedule(machine,sched_date,shift,brand,order_no,"
+                       "start_at,end_at) VALUES(?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE "
+                       "brand=VALUES(brand),order_no=VALUES(order_no),"
+                       "start_at=VALUES(start_at),end_at=VALUES(end_at)", vals)
     elif tab == "faces":
         det = f.get("item_id", type=int) or 0
-        vals = (det, f["raw_name"].strip(), f["face_name"].strip(), f.get("face_code", "").strip(),
-                f.get("machine_model", "").strip(), f.get("sort_order", 0) or 0)
+        vals = (det, f["raw_name"].strip().strip("/"), f["face_name"].strip(),
+                f.get("face_code", "").strip(), f.get("sort_order", 0) or 0)
         if rid:
             db.execute("UPDATE camera_faces SET item_id=?,raw_name=?,face_name=?,face_code=?,"
-                       "machine_model=?,sort_order=? WHERE id=?", vals + (rid,))
+                       "sort_order=? WHERE id=?", vals + (rid,))
         else:
             # 自动发现里「一键映射」也走这里，同项目同名目录已存在则更新，避免唯一键冲突
-            db.execute("INSERT INTO camera_faces(item_id,raw_name,face_name,face_code,machine_model,sort_order) "
-                       "VALUES(?,?,?,?,?,?) ON DUPLICATE KEY UPDATE "
+            db.execute("INSERT INTO camera_faces(item_id,raw_name,face_name,face_code,"
+                       "sort_order) VALUES(?,?,?,?,?) ON DUPLICATE KEY UPDATE "
                        "face_name=VALUES(face_name),face_code=VALUES(face_code),"
-                       "machine_model=VALUES(machine_model),sort_order=VALUES(sort_order)", vals)
+                       "sort_order=VALUES(sort_order)", vals)
         db.commit()
         flash("保存成功", "success")
         return redirect(url_for("config", tab="faces", det=det))
@@ -1182,9 +1233,63 @@ def sftp_list_images(tcfg, max_n=500):
 
 
 def face_display_map():
-    """{原始相机面目录名: 标准面名}，用于把 is7600C_D 这类技术码显示成「正面」。"""
+    """{路径别名(现场目录名): 标准面名}，用于把 is7600C_D 这类技术码显示成「正面」。"""
     return {r["raw_name"]: r["face_name"] for r in
             get_db().execute("SELECT raw_name,face_name FROM camera_faces WHERE status=1").fetchall()}
+
+
+SHIFT_NAMES = ("早班", "中班", "晚班")
+
+
+def key_date_shift(key):
+    """从图片 key 里取 (日期, 班次)。现场是 …/日期/班组/班次/相机面/文件，而工控机上的
+    老数据是 项目/日期/班次/缺陷类型/文件 —— 不按下标数，认「8 位数字段」和「班次名」。"""
+    date, shift = "", ""
+    for seg in key.split("/"):
+        if not date and len(seg) == 8 and seg.isdigit():
+            date = seg
+        elif date and seg in SHIFT_NAMES:
+            shift = seg
+            break
+    return date, shift
+
+
+def collect_shift_stats(db, item_id, lines):
+    """按 (机台, 日期, 班次) 归集：采集张数 collected、已判别张数 infer、缺陷张数 defect、牌号。
+
+    采集量来自 label_images（路径倒数第 5/3 段就是 日期/班次，与前缀多深无关）；
+    判别量来自 inference_results（worker 入库时已写好 机台/日期/班次）。两边按机台名对齐。"""
+    alias2line = {sched_machine_of(l): l["name"] for l in lines}
+    stats = {}
+
+    def cell(line_name, date, shift):
+        return stats.setdefault((line_name, date, shift),
+                                {"collected": 0, "infer": 0, "defect": 0, "brand": ""})
+
+    for im in db.execute("SELECT line_name, src_key FROM label_images WHERE item_id=?",
+                         (item_id,)).fetchall():
+        date, shift = key_date_shift(im["src_key"])
+        if not date:
+            continue
+        cell(im["line_name"], date, shift)["collected"] += 1
+    for r in db.execute(
+            "SELECT machine, line_name, img_date, shift, brand, COUNT(*) AS c, "
+            "SUM(is_defect) AS d FROM inference_results WHERE unit_id IN "
+            "(SELECT mu.id FROM model_units mu JOIN camera_faces cf ON cf.id=mu.face_id "
+            "WHERE cf.item_id=?) GROUP BY machine, line_name, img_date, shift, brand",
+            (item_id,)).fetchall():
+        name = r["line_name"] or alias2line.get(r["machine"], r["machine"])
+        c = cell(name, r["img_date"] or "", r["shift"] or "")
+        c["infer"] += r["c"]
+        c["defect"] += int(r["d"] or 0)
+        c["brand"] = c["brand"] or (r["brand"] or "")
+    # 没推理过的班次也把牌号补上，让历史表能看出当时在生产什么
+    for (name, date, shift), c in stats.items():
+        if c["brand"]:
+            continue
+        alias = next((a for a, n in alias2line.items() if n == name), name)
+        c["brand"] = resolve_brand(db, alias, date, shift)
+    return stats
 
 
 @app.route("/collect/<tab>", methods=["GET", "POST"])
@@ -1206,16 +1311,17 @@ def collect(tab):
             act = f.get("action", "")
             if act == "save_source":
                 sid = f.get("source_id", type=int)
+                # 只维护输入桶；out_bucket 是遗留列，界面已去掉，更新时不动它
                 vals = (f.get("name", "").strip(), f.get("type", "minio"),
                         f.get("server_addr", "").strip(), f.get("username", "").strip(),
                         f.get("password", "").strip(), f.get("in_bucket", "").strip(),
-                        f.get("out_bucket", "").strip(), f.get("ng_dir", "").strip())
+                        f.get("ng_dir", "").strip())
                 if sid:
                     db.execute("UPDATE data_sources SET name=?,type=?,server_addr=?,username=?,"
-                               "password=?,in_bucket=?,out_bucket=?,ng_dir=? WHERE id=?", vals + (sid,))
+                               "password=?,in_bucket=?,ng_dir=? WHERE id=?", vals + (sid,))
                 else:
                     sid = db.execute("INSERT INTO data_sources(name,type,server_addr,username,password,"
-                                     "in_bucket,out_bucket,ng_dir) VALUES(?,?,?,?,?,?,?,?)", vals).lastrowid
+                                     "in_bucket,ng_dir) VALUES(?,?,?,?,?,?,?)", vals).lastrowid
                 # 弹窗里勾选的产线绑到本数据源；原绑它但这次没勾的解绑
                 picked = set(request.form.getlist("lines", type=int))
                 db.execute("UPDATE prod_lines SET source_id=0 WHERE source_id=?", (sid,))
@@ -1254,47 +1360,41 @@ def collect(tab):
         ctx["bind_groups"] = [{"workshop": ws, "areas": [{"area": ar, "lines": ls}
                                for ar, ls in areas.items()]} for ws, areas in grouped.items()]
     elif tab == "monitor":
-        sync_label_images()
-        ctx["cams"] = []; ctx["err"] = None
-        ctx["by_line"] = (cur_line == "all")
+        # 采集监控 = 当前班次的实时情况，按机台一张卡：采了多少、判了多少、多少缺陷
         iid = cur_item_row["id"] if cur_item_row else 0
-        if cur_line == "all":
-            for l in lines:
-                c = db.execute("SELECT COUNT(*) AS c FROM label_images WHERE line_name=? AND item_id=?",
-                               (l["name"], iid)).fetchone()["c"]
-                ctx["cams"].append({"name": l["name"], "count": c})
-        else:
-            from collections import Counter
-            cnt = Counter()
-            for im in db.execute("SELECT src_key FROM label_images WHERE line_name=? AND item_id=?",
-                                 (cur_line, iid)).fetchall():
-                parts = im["src_key"].split("/")
-                cnt[parts[-2] if len(parts) >= 2 else "?"] += 1
-            ctx["cams"] = [{"name": k, "count": v} for k, v in sorted(cnt.items())]
-    elif tab == "history":
-        sync_label_images()
-        from collections import defaultdict
-        # 按检测项目聚合，不按牌号：图片路径里只有检测项目，没有牌号信息
-        # （此前显示的牌号是 BRAND_MAP 硬编码映射出来的，并非真实数据）
-        items = {r["id"]: (r["short_name"] or r["name"]) for r in
-                 db.execute("SELECT id,name,short_name FROM detect_items").fetchall()}
-        agg = defaultdict(int)
-        q = "SELECT item_id, src_key, line_name FROM label_images WHERE item_id=?"
-        params = (cur_item_row["id"] if cur_item_row else 0,)
-        if cur_line != "all":
-            q += " AND line_name=?"
-            params += (cur_line,)
-        for im in db.execute(q, params).fetchall():
-            parts = im["src_key"].split("/")
-            if len(parts) < 4:
+        sync_label_images(iid)
+        today, shift = datetime.now().strftime("%Y%m%d"), cur_shift()
+        stats = collect_shift_stats(db, iid, lines)
+        ctx["cams"] = []
+        for l in lines:
+            if cur_line != "all" and l["name"] != cur_line:
                 continue
-            agg[(im["line_name"], parts[-4], parts[-3],
-                 items.get(im["item_id"], ""))] += 1  # (产线, 日期, 班次, 检测项目)
+            s = stats.get((l["name"], today, shift), {})
+            wo = db.execute(
+                "SELECT * FROM machine_schedule WHERE machine=? AND sched_date=? AND shift=? "
+                "AND status=1", (sched_machine_of(l), today, shift)).fetchone()
+            ctx["cams"].append({"name": l["name"], "brand": wo["brand"] if wo else "",
+                                "order_no": (wo["order_no"] if wo else "") or "",
+                                "count": s.get("collected", 0), "infer": s.get("infer", 0),
+                                "defect": s.get("defect", 0)})
+        ctx["cur_date"], ctx["cur_shift_name"], ctx["err"] = today, shift, None
+    elif tab == "history":
+        # 历史采集 = 每机台每班次的采集量，以及其中经模型判别的量（含缺陷数）
+        iid = cur_item_row["id"] if cur_item_row else 0
+        sync_label_images(iid)
+        stats = collect_shift_stats(db, iid, lines)
 
         def _fmt(d):
             return d[:4] + "/" + d[4:6] + "/" + d[6:8] if len(d) == 8 and d.isdigit() else d
-        all_recs = [{"line": ln, "date": _fmt(d), "shift": s, "brand": b, "img_count": c}
-                    for (ln, d, s, b), c in sorted(agg.items(), reverse=True)]
+        all_recs = []
+        for (line_name, d, sh), s in sorted(stats.items(), reverse=True):
+            if cur_line != "all" and line_name != cur_line:
+                continue
+            col, inf = s.get("collected", 0), s.get("infer", 0)
+            all_recs.append({"line": line_name, "date": _fmt(d), "shift": sh,
+                             "brand": s.get("brand", ""), "img_count": col, "infer": inf,
+                             "defect": s.get("defect", 0),
+                             "pct": round(inf * 100.0 / col) if col else 0})
         ctx["records"], ctx["pg"] = paginate_list(all_recs, request.args.get("page"))
         ctx["show_line"] = (cur_line == "all")
     elif tab == "images" and cur_line == "all":
@@ -1482,6 +1582,24 @@ def collect_test_source():
         return jsonify({"ok": False, "msg": "连接失败：%s" % str(e)[:150]})
 
 
+@app.route("/collect/buckets", methods=["POST"])
+@login_required
+def collect_buckets():
+    """列对象存储上的桶名，供「编辑数据源」的输入桶下拉选择。
+    手打桶名错一个字符就静默采不到图，下拉能避免。用表单当前值，不依赖已保存。"""
+    f = request.form
+    cfg = {"server_addr": f.get("server_addr", "").strip(),
+           "username": f.get("username", "").strip(), "password": f.get("password", "").strip()}
+    if not cfg["server_addr"]:
+        return jsonify({"ok": False, "msg": "请先填写服务地址", "buckets": []})
+    try:
+        s3, _ = get_s3(cfg)
+        names = [b["Name"] for b in s3.list_buckets().get("Buckets", [])]
+        return jsonify({"ok": True, "msg": "读到 %d 个桶" % len(names), "buckets": sorted(names)})
+    except Exception as e:
+        return jsonify({"ok": False, "msg": "读取桶列表失败：%s" % str(e)[:140], "buckets": []})
+
+
 @app.route("/collect/test/terminal", methods=["POST"])
 @login_required
 def collect_test_terminal():
@@ -1569,159 +1687,16 @@ def cs_project_models(pid):
         return []
 
 
-# ---------------------------------------------------------------- Label Studio 对接
-def _ls_headers():
-    return {"Authorization": "Token " + get_cfg("ls_token"),
-            "Content-Type": "application/json"}
-
-
-def _ls_get(path):
-    """GET Label Studio API，失败返回空 dict（调用方据此降级）。"""
-    import urllib.request
-    try:
-        req = urllib.request.Request(get_cfg("ls_url").rstrip("/") + path, headers=_ls_headers())
-        req.get_method = lambda: "GET"
-        with urllib.request.urlopen(req, timeout=12) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except Exception:
-        return {}
-
-
-def _ls_post(path, data, method="POST"):
-    import urllib.request
-    body = json.dumps(data).encode("utf-8")
-    req = urllib.request.Request(get_cfg("ls_url").rstrip("/") + path, data=body,
-                                 headers=_ls_headers())
-    req.get_method = lambda: method
-    with urllib.request.urlopen(req, timeout=30) as r:
-        txt = r.read().decode("utf-8")
-        return json.loads(txt) if txt else {}
-
-
-def ls_label_config(classes):
-    """按缺陷类别字典生成 LS 的标注界面配置。"""
-    cfg = ['<View>', '  <Image name="image" value="$image"/>',
-           '  <RectangleLabels name="tag" toName="image">']
-    for c in classes:
-        bg = "#%02x%02x%02x" % tuple((int(c["id"]) * 47 * (i + 1) + 40) % 200 + 30 for i in range(3))
-        cfg.append('    <Label value="%s" background="%s"/>' % (c["name"], bg))
-    cfg += ['  </RectangleLabels>', '</View>']
-    return "\n".join(cfg)
-
-
-def ls_ensure_project(item, classes):
-    """为某检测项目确保 Label Studio 标注项目存在且缺陷类别是最新的，返回 project_id。
-    优先用 detect_items.ls_project_id 直接命中，避免改名后重复建项目。"""
-    db = get_db()
-    brand = item["short_name"] or item["name"]
-    want = ls_label_config(classes)
-    pid = item["ls_project_id"] or 0
-    p = _ls_get("/api/projects/%d" % pid) if pid else {}
-    if not (p or {}).get("id"):
-        pid, p = None, {}
-        r = _ls_get("/api/projects?page_size=200") or {}
-        for x in r.get("results", []):
-            if x.get("title") == brand:
-                pid, p = x["id"], x
-                break
-    if not pid:
-        p = _ls_post("/api/projects", {"title": brand, "label_config": want,
-                     "description": "卷烟厂缺陷标注 · %s · %d类缺陷" % (brand, len(classes))})
-        pid = p.get("id")
-        if not pid:
-            return None
-    elif classes and (p.get("label_config") or "").strip() != want.strip():
-        # 类别字典改过就把 LS 的标注界面同步过去 —— 否则平台里新增的缺陷类型
-        # 在 LS 标注时根本选不到，删掉的还一直留着。
-        try:
-            _ls_post("/api/projects/%d" % pid, {"label_config": want}, method="PATCH")
-            app.logger.info("已同步「%s」的缺陷类别到 Label Studio（%d 类）", brand, len(classes))
-        except Exception as e:
-            # 已有标注用到了将被删除的类别时 LS 会拒绝，属预期，保留旧配置
-            app.logger.warning("同步缺陷类别到 Label Studio 失败（%s）：%s", brand, e)
-    db.execute("UPDATE detect_items SET ls_project_id=? WHERE id=?", (pid, item["id"]))
-    db.commit()
-    return pid
-
-
-def ls_ensure_s3_storage(pid, scfg, prefix=""):
-    """给 LS 项目挂 MinIO 源存储（幂等）。LS 自己列桶建任务、每次访问现签 URL，
-    平台不再枚举图片。新建时触发一次同步，返回 (storage_id, 是否新建)。
-    prefix 限定只同步本检测项目自己的目录，否则多个项目会互相灌入对方的图。"""
-    r = _ls_get("/api/storages/s3?project=%d" % pid)
-    for s in (r if isinstance(r, list) else r.get("results", []) if isinstance(r, dict) else []):
-        if s.get("bucket") == scfg["in_bucket"] and (s.get("prefix") or "") == prefix:
-            return s.get("id"), False
-    s = _ls_post("/api/storages/s3", {
-        "project": pid,
-        "title": "MinIO %s/%s" % (scfg["in_bucket"], prefix or "*"),
-        "bucket": scfg["in_bucket"],
-        "prefix": prefix,
-        "s3_endpoint": "http://" + scfg["server_addr"],
-        "aws_access_key_id": scfg["username"],
-        "aws_secret_access_key": scfg["password"],
-        "region_name": "us-east-1",
-        "use_blob_urls": True,   # 每个对象=一个任务，data.image=s3://…
-        "recursive_scan": True,  # key 是 检测项目/日期/班次/缺陷类型/文件名 多级嵌套
-        "presign": True,         # LS 按需现签，URL 不会过期
-        "presign_ttl": 60,
-    })
-    sid = s.get("id")
-    if sid:
-        _ls_post("/api/storages/s3/%d/sync" % sid, {})
-    return sid, True
-
-
-def ls_webhook_url():
-    """LS 回调本平台的地址。优先用集成配置里手填的；没填则按当前请求推算。
-    注意这个地址是 LS 容器去访问的，不能是 127.0.0.1。"""
-    u = get_cfg("ls_webhook_url")
-    if u:
-        return u
-    try:
-        return url_for("label_webhook", _external=True)
-    except Exception:
-        return ""
-
-
-def ls_ensure_webhook(pid):
-    """把本平台的回调地址注册进 Label Studio（幂等）。
-    没有这一步，标注完不会回写平台 —— 端点白写。"""
-    url = ls_webhook_url()
-    if not url or "127.0.0.1" in url or "localhost" in url:
-        return False  # LS 容器访问不到，注册了也是死链
-    existing = _ls_get("/api/webhooks/")
-    for w in (existing if isinstance(existing, list) else []):
-        if w.get("url") == url:
-            return True
-    _ls_post("/api/webhooks/", {
-        "url": url,
-        "project": pid,
-        "send_payload": True,
-        "send_for_all_actions": False,
-        "actions": ["ANNOTATION_CREATED", "ANNOTATION_UPDATED", "ANNOTATIONS_DELETED",
-                    "TASKS_CREATED", "TASKS_DELETED"],
-        "headers": {"Authorization": "Token " + get_cfg("ls_token")},
-        "is_active": True,
-    })
-    return True
-
-
-def ls_task_counts(pid):
-    """读 LS 项目的标注进度。"""
-    p = _ls_get("/api/projects/%d" % pid) or {}
-    total = p.get("task_number") or 0
-    done = p.get("finished_task_number") or 0
-    return {"total": total, "done": done, "unlabeled": max(0, total - done)}
-
-
 # ---------------------------------------------------------------- 缺陷标注
 _last_sync_ts = [0.0]
 
 
-def sync_label_images(force=False):
-    """扫描所有数据源，把 NG 图按顶层目录(牌号)登记进 label_images（幂等）。
-    带 60 秒节流，避免每次切换页面都重连数据源导致卡顿。"""
+def sync_label_images(item_id=0, force=False):
+    """按各机台配的实时图像目录扫描 NG 图，登记进 label_images（幂等）。
+    带 60 秒节流，避免每次切换页面都重连数据源导致卡顿。
+
+    目录来自「基础配置 → 机组/产线 → 配置目录」(prod_lines.rt_*)，再拼上检测项目的
+    路径别名 —— 只扫当前检测项目那一段，不会把别的项目的图混进来。"""
     import time
     import stat
     now = time.time()
@@ -1729,40 +1704,45 @@ def sync_label_images(force=False):
         return
     _last_sync_ts[0] = now
     db = get_db()
+    item = db.execute("SELECT * FROM detect_items WHERE id=?", (item_id,)).fetchone()
+    if not item:
+        return
     existing = {r["src_key"] for r in db.execute("SELECT src_key FROM label_images").fetchall()}
-    # 数据源顶层目录 → 检测项目。此前是硬编码 BRAND_MAP={"小包外观":"玉溪（硬）"}，
-    # 既写死了映射、又把检测项目冒充成牌号；现在由 detect_items.src_prefix 配置驱动。
-    prefix_map = {r["src_prefix"]: r["id"] for r in db.execute(
-        "SELECT id, src_prefix FROM detect_items WHERE src_prefix<>''").fetchall()}
     rows = []
-    for l in db.execute("SELECT * FROM prod_lines").fetchall():
-        scfg = db.execute("SELECT * FROM storage_config WHERE line_id=?", (l["id"],)).fetchone()
-        tcfg = db.execute("SELECT * FROM terminal_config WHERE line_id=?", (l["id"],)).fetchone()
-        if scfg and scfg["server_addr"]:
-            # 对象存储产线：分页列全部对象，顶层目录=检测项目
+    for l in db.execute("SELECT * FROM prod_lines WHERE rt_type<>'' AND status=1").fetchall():
+        rt_type = l["rt_type"]
+        line_id = l["id"]
+        bucket = l["rt_bucket"] or ""
+        path = line_rt_prefix(l, item)
+        if rt_type == "minio":
+            scfg = db.execute("SELECT * FROM storage_config WHERE line_id=?", (line_id,)).fetchone()
+            if not scfg or not scfg["server_addr"]:
+                continue
             try:
                 s3, _ = get_s3(scfg)
                 tok = None
                 while True:
-                    kw = {"Bucket": scfg["in_bucket"], "MaxKeys": 1000}
+                    kw = {"Bucket": bucket or scfg["in_bucket"], "MaxKeys": 1000,
+                          "Prefix": (path + "/") if path else ""}
                     if tok:
                         kw["ContinuationToken"] = tok
                     r = s3.list_objects_v2(**kw)
                     for o in r.get("Contents", []):
                         k = o["Key"]
-                        if "/" in k and k.lower().endswith((".jpg", ".jpeg", ".png", ".bmp")):
-                            iid = prefix_map.get(k.split("/")[0])
-                            if iid:
-                                rows.append(("minio", k, iid, l["name"]))
+                        if k.lower().endswith((".jpg", ".jpeg", ".png", ".bmp")):
+                            rows.append(("minio", k, item_id, l["name"]))
                     if r.get("IsTruncated"):
                         tok = r.get("NextContinuationToken")
                     else:
                         break
             except Exception as e:
-                app.logger.warning("扫描对象存储失败（产线 %s）：%s", l["name"], e)
-        elif tcfg:
-            # 工控机产线：SFTP 全量 walk，相对路径顶层=检测项目
-            root = (tcfg["ng_dir"] or "").rstrip("/")
+                app.logger.warning("扫描对象存储失败（产线 %s，目录 %s）：%s", l["name"], path, e)
+        else:
+            # 工控机：从 ng_dir + 配置目录起 SFTP walk
+            tcfg = db.execute("SELECT * FROM terminal_config WHERE line_id=?", (line_id,)).fetchone()
+            if not tcfg or not tcfg["sys_addr"]:
+                continue
+            root = (tcfg["ng_dir"] or "").rstrip("/") + (("/" + path) if path else "")
             try:
                 t, sftp = _ws_sftp(tcfg)
 
@@ -1776,22 +1756,19 @@ def sync_label_images(force=False):
                         if stat.S_ISDIR(e.st_mode):
                             walk(full)
                         elif e.filename.lower().endswith((".jpg", ".jpeg", ".png", ".bmp")):
-                            rel = full[len(root):].lstrip("/")
-                            iid = prefix_map.get(rel.split("/")[0]) if "/" in rel else None
-                            if iid:
-                                rows.append(("terminal", full, iid, l["name"]))
+                            rows.append(("terminal", full, item_id, l["name"]))
                 try:
                     walk(root)
                 finally:
                     t.close()
             except Exception as e:
-                app.logger.warning("扫描工控机失败（产线 %s）：%s", l["name"], e)
+                app.logger.warning("扫描工控机失败（产线 %s，目录 %s）：%s", l["name"], path, e)
     added = False
-    for source, key, item_id, line in rows:
+    for source, key, iid, line in rows:
         if key not in existing:
             try:
                 db.execute("INSERT INTO label_images(item_id,brand,source,src_key,line_name) "
-                           "VALUES(?,?,?,?,?)", (item_id, "", source, key, line))
+                           "VALUES(?,?,?,?,?)", (iid, "", source, key, line))
                 added = True
             except IntegrityError:
                 pass
@@ -2048,6 +2025,9 @@ def label_workflow():
 MQ_EXCHANGE = "defect.sample"
 MQ_RK_REQ = "sample.upload"
 MQ_RK_REPLY = "sample.upload.reply"
+# v1.1：CubeStudio 一键部署推理成功后发 inference.ready，平台落库后必须回执
+MQ_RK_INFER = "inference.ready"
+MQ_RK_INFER_ACK = "inference.ready.reply"
 
 
 def _mq_conn():
@@ -2075,6 +2055,96 @@ def mq_publish_upload(payload):
     except Exception as e:
         app.logger.warning("发送 MQ 上传请求失败：%s", e)
         return False, str(e)[:150]
+
+
+def mq_publish(routing_key, payload):
+    """往指定 routing key 发一条持久化消息。返回 (ok, err)。"""
+    import pika
+    try:
+        conn = _mq_conn()
+        ch = conn.channel()
+        ch.exchange_declare(exchange=MQ_EXCHANGE, exchange_type="direct", durable=True)
+        body = json.dumps(payload, ensure_ascii=False)
+        ch.basic_publish(exchange=MQ_EXCHANGE, routing_key=routing_key,
+                         body=body.encode("utf-8"),
+                         properties=pika.BasicProperties(delivery_mode=2))
+        conn.close()
+        app.logger.info("MQ 发布 %s body=%s", routing_key, body)
+        return True, ""
+    except Exception as e:
+        app.logger.warning("MQ 发布 %s 失败：%s", routing_key, e)
+        return False, str(e)[:150]
+
+
+def unit_by_unit_key(db, unit_key):
+    """按 unit_key 反查建模单元。unit_key 是算出来的不入库，这里逐个单元算一遍比对。"""
+    if not unit_key:
+        return None
+    want = unit_key.strip().upper()
+    for u in db.execute(
+            "SELECT mu.*, cf.item_id, cf.face_code, cf.face_name FROM model_units mu "
+            "JOIN camera_faces cf ON cf.id=mu.face_id").fetchall():
+        if unit_key_of(db, u["brand"], u) == want:
+            return dict(u)
+    return None
+
+
+def _handle_inference_ready(raw):
+    """处理 inference.ready：按 unit_key upsert 推理配置，顺手把地址绑到建模单元上，
+    然后**必须**回执 inference.ready.reply（对方页面的「信息接收状态」等着它）。"""
+    d = json.loads(raw)
+    uk = (d.get("unit_key") or "").strip().upper()
+    pid = str(d.get("project_id", "") or "")
+    predict = d.get("predict_url", "") or d.get("endpoint", "")
+    dbc = _DB(_connect())
+    try:
+        dbc.execute(
+            "INSERT INTO inference_services(unit_key,project_id,project_label,service_id,"
+            "service_name,model_name,model_version,model_path,model_status,endpoint,health_url,"
+            "predict_url,task_type,class_names,event_id,acked) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0) ON DUPLICATE KEY UPDATE "
+            "project_id=VALUES(project_id),project_label=VALUES(project_label),"
+            "service_id=VALUES(service_id),service_name=VALUES(service_name),"
+            "model_name=VALUES(model_name),model_version=VALUES(model_version),"
+            "model_path=VALUES(model_path),model_status=VALUES(model_status),"
+            "endpoint=VALUES(endpoint),health_url=VALUES(health_url),"
+            "predict_url=VALUES(predict_url),task_type=VALUES(task_type),"
+            "class_names=VALUES(class_names),event_id=VALUES(event_id),acked=0",
+            (uk, pid, d.get("project_label", ""), str(d.get("inference_service_id", "") or ""),
+             d.get("service_name", ""), d.get("model_name", ""), d.get("model_version", ""),
+             d.get("model_path", ""), d.get("model_status", ""), d.get("endpoint", ""),
+             d.get("health_url", ""), d.get("predict_url", ""), d.get("task_type", ""),
+             ",".join(d.get("class_names") or [])[:1024], d.get("event_id", "")))
+        dbc.commit()
+        # 绑到建模单元：推理走 predict_url，模型版本/项目号一并回填
+        u = unit_by_unit_key(dbc, uk)
+        if u:
+            dbc.execute("UPDATE model_units SET model_endpoint=?,model_version=?,model_id=?,"
+                        "cs_project_id=? WHERE id=?",
+                        (predict, d.get("model_version", ""), d.get("model_name", ""),
+                         pid or u["cs_project_id"], u["id"]))
+            dbc.commit()
+            app.logger.info("推理服务就绪并已绑定 unit_key=%s unit=%s endpoint=%s",
+                            uk, u["id"], predict)
+        else:
+            app.logger.warning("推理就绪通知的 unit_key=%s 在平台没有对应建模单元，仅落库", uk)
+        # 对方消息里带了回执 routing key 就按它发，没带才用契约默认值
+        ok, err = mq_publish(d.get("reply_routing_key") or MQ_RK_INFER_ACK, {
+            "event": "inference.ready.ack",
+            "event_id": d.get("event_id", ""),
+            "unit_key": uk,
+            "project_id": pid,
+            "status": "ok",
+            "message": "已接收" if u else "已接收（平台暂无对应建模单元）",
+            "ts": int(time.time()),
+        })
+        if ok:
+            dbc.execute("UPDATE inference_services SET acked=1 WHERE unit_key=?", (uk,))
+            dbc.commit()
+        else:
+            app.logger.warning("推理就绪回执发送失败 unit_key=%s：%s", uk, err)
+    finally:
+        dbc.close()
 
 
 def _mq_reply_consumer():
@@ -2114,8 +2184,22 @@ def _mq_reply_consumer():
                     app.logger.warning("处理 MQ 回执失败：%s", e)
                 chan.basic_ack(delivery_tag=method.delivery_tag)
 
+            # v1.1：同一条连接上再消费推理就绪通知
+            ch.queue_declare(queue=MQ_RK_INFER, durable=True)
+            ch.queue_bind(exchange=MQ_EXCHANGE, queue=MQ_RK_INFER, routing_key=MQ_RK_INFER)
+
+            def on_infer_ready(chan, method, props, body):
+                raw = body.decode("utf-8")
+                app.logger.info("MQ 收到 inference.ready body=%s", raw)
+                try:
+                    _handle_inference_ready(raw)
+                except Exception as e:
+                    app.logger.warning("处理推理就绪通知失败：%s", e)
+                chan.basic_ack(delivery_tag=method.delivery_tag)
+
             ch.basic_consume(queue=MQ_RK_REPLY, on_message_callback=on_reply)
-            app.logger.info("MQ 回执消费者已启动")
+            ch.basic_consume(queue=MQ_RK_INFER, on_message_callback=on_infer_ready)
+            app.logger.info("MQ 消费者已启动（%s + %s）", MQ_RK_REPLY, MQ_RK_INFER)
             ch.start_consuming()
         except Exception as e:
             app.logger.warning("MQ 回执消费者断线，5秒后重连：%s", e)
@@ -2276,174 +2360,6 @@ def api_label_unit_stats(unit_id):
     return jsonify({"total": total, "annotated": annotated})
 
 
-# LS 实际发出的动作名。曾错写成 ANNOTATION_DELETED / TASK_CREATED / TASK_DELETED
-# （少了复数 S），这三种事件会被静默忽略。以 /api/webhooks/info/ 返回的为准。
-LS_WEBHOOK_ACTIONS = ["ANNOTATION_CREATED", "ANNOTATIONS_CREATED", "ANNOTATION_UPDATED",
-                      "ANNOTATIONS_DELETED", "TASKS_CREATED", "TASKS_DELETED"]
-
-
-def cache_label_progress(db, item_id, name, cnt):
-    """把标注进度写进 label_tasks 当缓存，首页据此免去逐个项目调 LS。"""
-    n = db.execute("SELECT COUNT(*) AS c FROM label_tasks WHERE item_id=?", (item_id,)).fetchone()["c"]
-    if n:
-        db.execute("UPDATE label_tasks SET brand=?,total=?,labeling=?,unlabeled=? WHERE item_id=?",
-                   (name, cnt["total"], cnt["done"], cnt["unlabeled"], item_id))
-    else:
-        db.execute("INSERT INTO label_tasks(item_id,brand,total,labeling,unlabeled) VALUES(?,?,?,?,?)",
-                   (item_id, name, cnt["total"], cnt["done"], cnt["unlabeled"]))
-    db.commit()
-
-
-@app.route("/label/reset/<int:item_id>", methods=["POST"])
-@login_required
-def label_reset(item_id):
-    """删除该检测项目的 Label Studio 标注项目，下次打开标注页会重建。
-    LS 里的标注会一并没掉，故前端需二次确认。原图在 MinIO，不受影响。"""
-    db = get_db()
-    item = db.execute("SELECT * FROM detect_items WHERE id=?", (item_id,)).fetchone()
-    if not item:
-        abort(404)
-    name = item["short_name"] or item["name"]
-    pid = item["ls_project_id"] or 0
-    if not pid:
-        flash("检测项目「%s」没有关联的 Label Studio 项目" % name, "error")
-        return redirect(url_for("label", item=name))
-    try:
-        cnt = ls_task_counts(pid)
-        _ls_post("/api/projects/%d" % pid, {}, method="DELETE")
-        db.execute("UPDATE detect_items SET ls_project_id=0 WHERE id=?", (item_id,))
-        db.execute("DELETE FROM label_tasks WHERE item_id=?", (item_id,))
-        db.commit()
-        flash("已删除「%s」的标注项目（含 %d 条标注）。再次打开标注页会重新建立并同步图片。"
-              % (name, cnt["done"]), "success")
-    except Exception as e:
-        flash("删除失败：%s" % str(e)[:120], "error")
-    return redirect(url_for("label", item=name))
-
-
-@app.route("/label/webhook", methods=["POST"])
-def label_webhook():
-    """Label Studio 标注事件回调 —— 刷新平台侧的标注进度缓存。
-    LS 侧的注册见 ls_ensure_webhook()；鉴权靠注册时带上的 Authorization 头。"""
-    if request.headers.get("Authorization", "") != "Token " + get_cfg("ls_token"):
-        return jsonify({"error": "unauthorized"}), 403
-    try:
-        data = request.get_json(force=True) or {}
-        if data.get("action", "") in LS_WEBHOOK_ACTIONS:
-            pid = (data.get("project") or {}).get("id")
-            if pid:
-                db = get_db()
-                # 按 ls_project_id 反查检测项目，比拿 LS 项目标题去匹配可靠（改名不会断）
-                it = db.execute("SELECT id,name,short_name FROM detect_items WHERE ls_project_id=?",
-                                (pid,)).fetchone()
-                if it:
-                    cache_label_progress(db, it["id"], it["short_name"] or it["name"],
-                                         ls_task_counts(pid))
-    except Exception as e:
-        app.logger.warning("Label Studio webhook 处理失败：%s", e)
-    return jsonify({"ok": True})
-
-
-def ls_export_coco(pid, classes):
-    """从 Label Studio 拉已标注任务并转成 COCO，返回 (coco, 图片key列表)。
-    注意 LS 的 x/y/width/height 是相对原图的百分比，必须按 original_width/height
-    换算成像素，COCO 的 bbox 要的是绝对像素。"""
-    tasks = _ls_get("/api/projects/%d/export?exportType=JSON&download_all_tasks=false" % pid)
-    if not isinstance(tasks, list):
-        return None, []
-    cat_id = {c["name"]: c["id"] for c in classes}
-    coco = {"images": [], "annotations": [],
-            "categories": [{"id": c["id"], "name": c["name"]} for c in classes]}
-    keys, aid = [], 1
-    for t in tasks:
-        uri = ((t.get("data") or {}).get("image") or "")
-        if not uri:
-            continue
-        key = uri.split("/", 3)[-1] if uri.startswith("s3://") else uri  # s3://桶/键 → 键
-        boxes, W, H = [], 0, 0
-        for a in (t.get("annotations") or []):
-            for r in (a.get("result") or []):
-                if r.get("type") != "rectanglelabels":
-                    continue
-                W = r.get("original_width") or W
-                H = r.get("original_height") or H
-                v = r.get("value") or {}
-                names = v.get("rectanglelabels") or []
-                if names:
-                    boxes.append((names[0], v))
-        if not boxes or not W or not H:
-            continue
-        img_id = len(coco["images"]) + 1
-        coco["images"].append({"id": img_id, "file_name": key, "width": W, "height": H})
-        keys.append(key)
-        for name, v in boxes:
-            x, y = v.get("x", 0) / 100.0 * W, v.get("y", 0) / 100.0 * H
-            w, h = v.get("width", 0) / 100.0 * W, v.get("height", 0) / 100.0 * H
-            coco["annotations"].append({
-                "id": aid, "image_id": img_id, "category_id": cat_id.get(name),
-                "bbox": [round(x, 2), round(y, 2), round(w, 2), round(h, 2)],
-                "area": round(w * h, 2), "iscrowd": 0, "segmentation": []})
-            aid += 1
-    return coco, keys
-
-
-@app.route("/label/export/<int:item_id>", methods=["POST"])
-@login_required
-def label_export(item_id):
-    """把 Label Studio 里的标注导出为 COCO 样本集，发布到 defect-datasets 桶。
-    标注数据在 LS 里，不再读平台自带标注器的 annotations 表（那张表已不再写入）。"""
-    db = get_db()
-    item = db.execute("SELECT * FROM detect_items WHERE id=?", (item_id,)).fetchone()
-    if not item:
-        abort(404)
-    item = dict(item)
-    name = item["short_name"] or item["name"]
-    pid = item["ls_project_id"] or 0
-    if not pid:
-        flash("检测项目「%s」尚未建立 Label Studio 项目" % name, "error")
-        return redirect(url_for("label"))
-    classes = [dict(c) for c in db.execute(
-        "SELECT * FROM label_classes WHERE item_id=? ORDER BY id", (item_id,)).fetchall()]
-    try:
-        coco, keys = ls_export_coco(pid, classes)
-    except Exception as e:
-        flash("从 Label Studio 拉取标注失败：%s" % str(e)[:120], "error")
-        return redirect(url_for("label"))
-    if not coco or not coco["images"]:
-        flash("检测项目「%s」在 Label Studio 中暂无已标注样本" % name, "error")
-        return redirect(url_for("label"))
-
-    ver_n = db.execute("SELECT COUNT(*) c FROM model_versions WHERE brand=?", (name,)).fetchone()["c"] + 1
-    version = "v%d" % ver_n
-    prefix = "%s/%s/" % (name, version)
-    try:
-        scfg = db.execute("SELECT * FROM storage_config LIMIT 1").fetchone()
-        if not scfg:
-            flash("未找到对象存储配置", "error")
-            return redirect(url_for("label"))
-        s3, _ = get_s3(scfg)
-        dst = "defect-datasets"
-        body = json.dumps(coco, ensure_ascii=False, indent=2).encode("utf-8")
-        s3.put_object(Bucket=dst, Key=prefix + "coco.json", Body=body, ContentType="application/json")
-        for k in keys:
-            s3.copy_object(Bucket=dst, Key=prefix + k,
-                           CopySource={"Bucket": scfg["in_bucket"], "Key": k})
-        db.execute("INSERT INTO model_versions(item_id,brand,version,pub_date,note,status) "
-                   "VALUES(?,?,?,?,?,?)",
-                   (item_id, name, version, datetime.now().strftime("%Y-%m-%d"),
-                    "从 Label Studio 导出 %d 张标注图 / %d 个标注框" % (
-                        len(coco["images"]), len(coco["annotations"])), "测试"))
-        db.commit()
-        app.logger.info("样本集已发布 project=%s version=%s images=%d boxes=%d dst=%s by=%s",
-                        name, version, len(coco["images"]), len(coco["annotations"]),
-                        dst + "/" + prefix, session.get("username", ""))
-        flash("样本集 %s%s 已发布到 defect-datasets：%d 张图、%d 个标注框" % (
-            name, version, len(coco["images"]), len(coco["annotations"])), "success")
-    except Exception as e:
-        app.logger.error("样本集导出发布失败 project=%s：%s", name, e)
-        flash("导出失败: %s" % str(e)[:120], "error")
-    return redirect(url_for("label"))
-
 
 # ---------------------------------------------------------------- 模型版本
 @app.route("/model")
@@ -2459,7 +2375,8 @@ def model():
     cs_online = cs_ok()
     # 只列当前检测项目(由相机面 item_id 隐含)下、该牌号的建模单元
     all_units = [dict(u) for u in db.execute(
-        """SELECT mu.*, cf.face_name, cf.face_code, cf.item_id, cf.sort_order FROM model_units mu
+        """SELECT mu.*, cf.face_name, cf.face_code, cf.raw_name, cf.item_id, cf.sort_order
+           FROM model_units mu
            JOIN camera_faces cf ON cf.id=mu.face_id
            WHERE mu.brand=? AND cf.item_id=? ORDER BY cf.sort_order, cf.id""",
         (cur_brand, cur_det)).fetchall()]
@@ -2468,47 +2385,31 @@ def model():
     rows = []
     for u in page_units:
         models = cs_project_models(u["cs_project_id"]) if (cs_online and u["cs_project_id"]) else []
-        job = db.execute("SELECT * FROM analysis_jobs WHERE unit_id=?", (u["id"],)).fetchone()
-        rows.append({"unit_id": u["id"], "face_name": u["face_name"],
+        n_infer = db.execute("SELECT COUNT(*) AS c FROM inference_results WHERE unit_id=?",
+                             (u["id"],)).fetchone()["c"]
+        uk = unit_key_of(db, cur_brand, dict(u))
+        svc = db.execute("SELECT * FROM inference_services WHERE unit_key=?", (uk,)).fetchone()
+        svc_d = dict(svc) if svc else None
+        if svc_d and svc_d.get("updated_at") is not None:
+            svc_d["updated_at"] = str(svc_d["updated_at"])[:19]  # datetime → 可 JSON 序列化
+        rows.append({"unit_key_str": uk, "svc": svc_d,
+                     "unit_id": u["id"], "face_name": u["face_name"],
+                     "face_raw": u["raw_name"],   # 相机面路径别名，实时目录末段用它
                      "unit_key": unit_key_of(db, cur_brand, dict(u)),
                      "bound_model": u["model_id"], "bound_version": u["model_version"],
                      "bound_endpoint": u["model_endpoint"], "models": models,
-                     "rt_type": u.get("rt_type", ""), "rt_line_id": u.get("rt_line_id", 0),
-                     "rt_bucket": u.get("rt_bucket", ""), "rt_path": u.get("rt_path", ""),
-                     "job": dict(job) if job else None})
-    # 机台→数据源映射（选机台自动确定数据源和桶，不给用户额外选择）
-    lines_source = {}
-    for l in db.execute("SELECT pl.*, sc.server_addr, sc.in_bucket, "
-                         "tc.sys_addr AS ftp_addr, tc.ng_dir "
-                         "FROM prod_lines pl "
-                         "LEFT JOIN storage_config sc ON sc.line_id=pl.id "
-                         "LEFT JOIN terminal_config tc ON tc.line_id=pl.id "
-                         "WHERE pl.status=1 ORDER BY pl.workshop, pl.name").fetchall():
-        if l["server_addr"]:
-            lines_source[l["id"]] = {"line_id": l["id"], "code": l["code"], "name": l["name"],
-                                     "workshop": l["workshop"], "type": "minio",
-                                     "addr": l["server_addr"],
-                                     "bucket": l["in_bucket"] or "defect-raw",
-                                     "path_alias": l.get("path_alias") or l["code"].strip()}
-        elif l["ftp_addr"]:
-            lines_source[l["id"]] = {"line_id": l["id"], "code": l["code"], "name": l["name"],
-                                     "workshop": l["workshop"], "type": "ftp",
-                                     "addr": l["ftp_addr"],
-                                     "path_alias": l.get("path_alias") or l["code"].strip()}
-        else:
-            lines_source[l["id"]] = {"line_id": l["id"], "code": l["code"], "name": l["name"],
-                                     "workshop": l["workshop"], "type": "",
-                                     "addr": "",
-                                     "path_alias": l.get("path_alias") or l["code"].strip()}
-    # 车间（含路径别名），供级联选择
-    workshops_list = [dict(w) for w in db.execute(
-        "SELECT * FROM workshops WHERE status=1 ORDER BY id").fetchall()]
+                     "infer_cnt": n_infer})
     return render_template("model.html", det_items=det_items, cur_det=cur_det,
                            brands=brands, cur_brand=cur_brand,
-                           rows=rows, pg=pg, cs_online=cs_online,
-                           workshops_list=workshops_list,
-                           lines_source=json.dumps(lines_source, ensure_ascii=False),
-                           active="model")
+                           rows=rows, pg=pg, cs_online=cs_online, active="model")
+
+
+@app.route("/api/infer/health")
+@login_required
+def api_infer_health():
+    """探对方推理服务在线情况（用 inference.ready 带来的 health_url）。"""
+    ok, msg = infer_health((request.args.get("key") or "").strip().upper())
+    return jsonify({"ok": ok, "msg": msg})
 
 
 @app.route("/model/bind", methods=["POST"])
@@ -2561,6 +2462,30 @@ def model_train():
     return redirect(url_for("model", det=unit_det_id(db, u), brand=u["brand"]))
 
 
+def line_rt_prefix(line, item):
+    """机台 × 检测项目的实时目录前缀 = 机台上配的前缀(车间别名/机台别名) + 检测项目路径别名。
+    检测项目那一段不入库，运行时按当前上下文拼，这样一台机可服务多个检测项目。"""
+    base = (line["rt_path"] or "").strip("/")
+    seg = ((item["path_alias"] or item["code"]) if item else "").strip("/")
+    return "/".join(x for x in (base, seg) if x)
+
+
+def sched_machine_of(line):
+    """排程表里的机台标识：优先路径别名(现场就是用它建目录)，否则产线编码。"""
+    return ((line["path_alias"] or "") or (line["code"] or "")).strip()
+
+
+def cur_shift(hour=None):
+    """按小时判当前班次：早班 6-14，中班 14-22，其余晚班。"""
+    if hour is None:
+        hour = datetime.now().hour
+    if 6 <= hour < 14:
+        return "早班"
+    if 14 <= hour < 22:
+        return "中班"
+    return "晚班"
+
+
 def _rtdir_check(db, rt_type, line_id, bucket, path):
     """校验实时图像目录是否可达、有无图片。返回 (ok, msg)。"""
     line = db.execute("SELECT * FROM prod_lines WHERE id=?", (line_id,)).fetchone()
@@ -2599,41 +2524,104 @@ def _rtdir_check(db, rt_type, line_id, bucket, path):
             return False, "连接失败：%s" % str(e)[:110]
 
 
-@app.route("/model/rtdir/test", methods=["POST"])
+@app.route("/config/schedule/mock", methods=["POST"])
 @login_required
-def model_rtdir_test():
-    ok, msg = _rtdir_check(get_db(), request.form.get("rt_type", ""),
-                           request.form.get("rt_line_id", type=int) or 0,
-                           request.form.get("rt_bucket", ""), request.form.get("rt_path", ""))
-    return jsonify({"ok": ok, "msg": msg})
-
-
-@app.route("/model/rtdir/save", methods=["POST"])
-@login_required
-def model_rtdir_save():
+def schedule_mock():
+    """一键生成今天的工单：每台启用机组按 早/中/晚 三班各一张，牌号从牌号字典轮取。
+    重复点击先清掉当天同机台的行再生成，不会越点越多。晚班跨零点，结束时间落到明天。"""
     db = get_db()
-    unit_id = request.form.get("unit_id", type=int)
-    u = db.execute("SELECT * FROM model_units WHERE id=?", (unit_id,)).fetchone()
-    if not u:
-        abort(404)
-    db.execute("UPDATE model_units SET rt_type=?,rt_line_id=?,rt_bucket=?,rt_path=? WHERE id=?",
-               (request.form.get("rt_type", ""), request.form.get("rt_line_id", type=int) or 0,
-                request.form.get("rt_bucket", "").strip(),
-                request.form.get("rt_path", "").strip().strip("/"), unit_id))
+    lines = db.execute("SELECT * FROM prod_lines WHERE status=1 ORDER BY id").fetchall()
+    brands = [b["spec"] for b in db.execute(
+        "SELECT spec FROM brands WHERE status=1 ORDER BY id").fetchall()]
+    if not lines or not brands:
+        flash("请先维护机组/产线和牌号", "error")
+        return redirect(url_for("config", tab="schedule"))
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    date = today.strftime("%Y%m%d")
+    plan = [("早班", 6, 8), ("中班", 14, 8), ("晚班", 22, 8)]
+    n, k = 0, 0
+    for l in lines:
+        machine = sched_machine_of(l)
+        db.execute("DELETE FROM machine_schedule WHERE machine=? AND sched_date=?", (machine, date))
+        for i, (shift, hour, span) in enumerate(plan):
+            start = today + timedelta(hours=hour)
+            end = start + timedelta(hours=span)
+            brand = brands[k % len(brands)]
+            k += 1
+            db.execute("INSERT INTO machine_schedule(machine,sched_date,shift,brand,order_no,"
+                       "start_at,end_at) VALUES(?,?,?,?,?,?,?)",
+                       (machine, date, shift, brand,
+                        "WO%s%s%d" % (date, machine.upper(), i + 1),
+                        start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S")))
+            n += 1
     db.commit()
+    app.logger.info("一键生成今日工单 %d 条 by=%s", n, session.get("username", ""))
+    flash("已生成今日工单 %d 条（%d 台机组 × 3 班）" % (n, len(lines)), "success")
+    return redirect(url_for("config", tab="schedule"))
+
+
+@app.route("/config/lines/buckets/<int:line_id>")
+@login_required
+def line_buckets(line_id):
+    """列该机台数据源上的桶，供实时目录弹窗选桶。凭据在服务端取，不下发到页面。"""
+    db = get_db()
+    scfg = db.execute("SELECT * FROM storage_config WHERE line_id=?", (line_id,)).fetchone()
+    if not scfg or not scfg["server_addr"]:
+        return jsonify({"ok": False, "msg": "该机台未绑定对象存储数据源", "buckets": [],
+                        "default": ""})
+    try:
+        s3, _ = get_s3(scfg)
+        names = sorted(b["Name"] for b in s3.list_buckets().get("Buckets", []))
+        return jsonify({"ok": True, "msg": "%s 上 %d 个桶" % (scfg["server_addr"], len(names)),
+                        "buckets": names, "default": scfg["in_bucket"] or ""})
+    except Exception as e:
+        return jsonify({"ok": False, "msg": "读取桶列表失败：%s" % str(e)[:130],
+                        "buckets": [], "default": scfg["in_bucket"] or ""})
+
+
+@app.route("/config/lines/rtdir/test", methods=["POST"])
+@login_required
+def line_rtdir_test():
+    """测试机台实时目录：路径按 前缀 + 当前检测项目别名 拼全，测的就是真实要读的目录。"""
+    db = get_db()
+    item = db.execute("SELECT * FROM detect_items WHERE id=?",
+                      (request.form.get("item_id", type=int) or 0,)).fetchone()
+    path = request.form.get("rt_path", "").strip().strip("/")
+    seg = ((item["path_alias"] or item["code"]).strip("/")) if item else ""
+    full = "/".join(x for x in (path, seg) if x)
+    ok, msg = _rtdir_check(db, request.form.get("rt_type", ""),
+                           request.form.get("line_id", type=int) or 0,
+                           request.form.get("rt_bucket", ""), full)
+    return jsonify({"ok": ok, "msg": msg, "path": full})
+
+
+@app.route("/config/lines/rtdir/save", methods=["POST"])
+@login_required
+def line_rtdir_save():
+    db = get_db()
+    line_id = request.form.get("line_id", type=int)
+    l = db.execute("SELECT * FROM prod_lines WHERE id=?", (line_id,)).fetchone()
+    if not l:
+        abort(404)
+    db.execute("UPDATE prod_lines SET rt_type=?,rt_bucket=?,rt_path=? WHERE id=?",
+               (request.form.get("rt_type", "minio"), request.form.get("rt_bucket", "").strip(),
+                request.form.get("rt_path", "").strip().strip("/"), line_id))
+    db.commit()
+    app.logger.info("机台实时目录已保存 line=%s path=%s by=%s", l["name"],
+                    request.form.get("rt_path", ""), session.get("username", ""))
     flash("实时图像目录已保存", "success")
-    return redirect(url_for("model", det=unit_det_id(db, u), brand=u["brand"]))
+    return redirect(url_for("config", tab="lines"))
 
 
-def _rtdir_list_images(db, u):
-    """列出单元实时目录下的全部图片 key。返回 (keys列表, s3客户端或None, bucket, ftp信息)。
+def _rtdir_list_images(db, rt_type, line_id, bucket, path):
+    """列出实时目录下的全部图片 key。返回 (keys列表, s3客户端或None, bucket, ftp信息)。
     minio 返回 (keys, s3, bucket, None)；ftp 返回 (keys, None, None, tcfg)。"""
-    line_id, path = u["rt_line_id"], (u["rt_path"] or "").strip("/")
-    if u["rt_type"] == "minio":
+    path = (path or "").strip("/")
+    if rt_type == "minio":
         scfg = db.execute("SELECT * FROM storage_config WHERE line_id=?", (line_id,)).fetchone()
         if not scfg:
             raise Exception("数据源未配置对象存储")
-        bucket = u["rt_bucket"] or scfg["in_bucket"]
+        bucket = bucket or scfg["in_bucket"]
         s3, _ = get_s3(scfg)
         keys, tok = [], None
         while True:
@@ -2669,40 +2657,52 @@ def _rtdir_list_images(db, u):
         return keys, None, None, tcfg
 
 
-def _analysis_worker(unit_id):
-    """后台线程：从单元实时目录抓图，逐张送绑定模型推理入库，更新进度。
+def _analysis_worker(line_id, item_id):
+    """后台线程：按「机台 × 检测项目」扫实时目录，逐张定位建模单元后送推理入库。
+
+    一张图的归属全部从路径和排程反查，而不是靠人配：
+      目录 前缀/日期/班组/班次/相机面/文件 → 相机面查 camera_faces，
+      牌号查 machine_schedule(机台+日期+班次) → 单元 = (牌号, 相机面) → 它绑的模型。
     增量：已在 inference_results 的 src_key 跳过。用独立 DB 连接（不能用 g.db）。"""
     db = _DB(_connect())
 
     def upd(**kw):
         cols = ",".join("%s=%%s" % k for k in kw)
-        db.execute("UPDATE analysis_jobs SET " + cols.replace("%%s", "?") + " WHERE unit_id=?",
-                   tuple(kw.values()) + (unit_id,))
+        db.execute("UPDATE analysis_jobs SET " + cols.replace("%%s", "?") +
+                   " WHERE line_id=? AND item_id=?", tuple(kw.values()) + (line_id, item_id))
         db.commit()
 
     def log(level, detail, src_key=""):
-        db.execute("INSERT INTO analysis_logs(unit_id,level,src_key,detail) VALUES(?,?,?,?)",
-                   (unit_id, level, src_key, detail[:500]))
+        db.execute("INSERT INTO analysis_logs(line_id,item_id,level,src_key,detail) VALUES(?,?,?,?,?)",
+                   (line_id, item_id, level, src_key, detail[:500]))
         db.commit()
 
     def is_on():
-        r = db.execute("SELECT enabled FROM analysis_jobs WHERE unit_id=?", (unit_id,)).fetchone()
+        r = db.execute("SELECT enabled FROM analysis_jobs WHERE line_id=? AND item_id=?",
+                       (line_id, item_id)).fetchone()
         return bool(r and r["enabled"])
 
     try:
-        u = dict(db.execute("SELECT * FROM model_units WHERE id=?", (unit_id,)).fetchone())
-        face = db.execute("SELECT face_name FROM camera_faces WHERE id=?", (u["face_id"],)).fetchone()
-        face_name = face["face_name"] if face else ""
-        endpoint = u["model_endpoint"]
-        log("info", "工作开启，推理服务 %s" % endpoint)
+        line = dict(db.execute("SELECT * FROM prod_lines WHERE id=?", (line_id,)).fetchone())
+        item = dict(db.execute("SELECT * FROM detect_items WHERE id=?", (item_id,)).fetchone())
+        prefix = line_rt_prefix(line, item)
+        machine = sched_machine_of(line)
+        log("info", "工作开启：%s / %s，目录 %s/%s" % (
+            line["name"], item["short_name"] or item["name"], line["rt_bucket"] or "(默认桶)", prefix))
         # 开关式：开启后持续工作 —— 每轮扫目录处理新图，处理完歇 15 秒再扫；关闭则退出
         total_an = 0
         while is_on():
-            keys, _, _, _ = _rtdir_list_images(db, u)
+            keys, s3, bucket, _ = _rtdir_list_images(db, line["rt_type"], line_id,
+                                                     line["rt_bucket"], prefix)
+            # 每轮重载：中途绑了模型/改了相机面，下一轮就生效
+            faces = {f["raw_name"]: dict(f) for f in db.execute(
+                "SELECT * FROM camera_faces WHERE item_id=? AND status=1", (item_id,)).fetchall()}
+            units = {(u["brand"], u["face_id"]): dict(u) for u in db.execute(
+                "SELECT * FROM model_units WHERE model_endpoint<>''").fetchall()}
             done = {r["src_key"] for r in db.execute(
-                "SELECT src_key FROM inference_results WHERE unit_id=? AND src_key<>''", (unit_id,)).fetchall()}
+                "SELECT src_key FROM inference_results WHERE src_key<>''").fetchall()}
             upd(status="running", total=len(keys), read_cnt=0, analyzed=0, skipped=0, msg="扫描目录…")
-            read = an = sk = 0
+            read = an = sk = no_face = no_sched = no_model = 0
             for key in keys:
                 if not is_on():
                     break
@@ -2710,21 +2710,48 @@ def _analysis_worker(unit_id):
                 if key in done:
                     sk += 1
                 else:
-                    res = infer_call(endpoint, key)
+                    # 相对前缀的路径：日期/班组/班次/相机面/文件
+                    rel = key[len(prefix):].strip("/") if prefix else key.strip("/")
+                    p = rel.split("/")
+                    if len(p) < 5:
+                        no_face += 1
+                        continue
+                    date, shift, raw_face = p[0], p[2], p[3]
+                    face = faces.get(raw_face)
+                    if not face:
+                        no_face += 1
+                        continue
+                    brand = resolve_brand(db, machine, date, shift, key_shot_time(key))
+                    if not brand:
+                        no_sched += 1
+                        continue
+                    unit = units.get((brand, face["id"]))
+                    if not unit:
+                        no_model += 1
+                        continue
+                    # 对方推理服务在别的机器上，进不来平台的 /media 代理，给它临时直链
+                    img_url = ""
+                    if s3 is not None:
+                        try:
+                            img_url = s3.generate_presigned_url(
+                                "get_object", Params={"Bucket": bucket, "Key": key},
+                                ExpiresIn=1800)
+                        except Exception:
+                            img_url = ""
+                    res = infer_call(unit["model_endpoint"], key, img_url)
                     if res:
-                        p = key.split("/")
-                        date = p[-4] if len(p) >= 4 else ""
-                        shift = p[-3] if len(p) >= 3 else ""
                         db.execute("INSERT INTO inference_results(src_key,unit_id,machine,line_name,brand,"
                                    "face_name,img_date,shift,is_defect,class_name,confidence,model_version) "
                                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                                   (key, unit_id, "", "", u["brand"], face_name, date, shift,
-                                    res["is_defect"], res["class_name"], res["confidence"], res["model_version"]))
+                                   (key, unit["id"], machine, line["name"], brand,
+                                    face["face_name"], date, shift, res["is_defect"],
+                                    res["class_name"], res["confidence"], res["model_version"]))
                         db.commit()
                         an += 1
                         total_an += 1
-                        log("ok", "%s → %s (置信 %.2f)" % (
-                            "正常" if res["is_defect"] == 0 else res["class_name"], res["class_name"],
+                        log("ok", "%s · %s → %s (置信 %.2f)" % (
+                            brand, face["face_name"],
+                            "正常" if res["is_defect"] == 0 else res["class_name"],
                             res["confidence"]), key)
                     else:
                         log("error", "推理调用失败，跳过", key)
@@ -2732,8 +2759,17 @@ def _analysis_worker(unit_id):
                     upd(read_cnt=read, analyzed=an, skipped=sk, msg="分析中 %d/%d" % (read, len(keys)))
             if not is_on():
                 break
-            upd(status="running", read_cnt=read, analyzed=an, skipped=sk,
-                msg="本轮完成(新%d/跳%d)，累计%d，等待新图…" % (an, sk, total_an))
+            tip = "本轮完成(新%d/跳%d" % (an, sk)
+            if no_sched:
+                tip += "/无排程%d" % no_sched
+            if no_model:
+                tip += "/无模型%d" % no_model
+            if no_face:
+                tip += "/面未映射%d" % no_face
+            tip += ")，累计%d，等待新图…" % total_an
+            upd(status="running", read_cnt=read, analyzed=an, skipped=sk, msg=tip)
+            if no_sched or no_model or no_face:
+                log("warn", tip)
             # 歇一会再扫新图；期间每秒检查开关，关了立刻退
             for _ in range(15):
                 if not is_on():
@@ -2742,7 +2778,7 @@ def _analysis_worker(unit_id):
         upd(status="stopped", msg="已关闭，累计新分析 %d 张" % total_an)
         log("info", "工作关闭，累计新分析 %d 张" % total_an)
     except Exception as e:
-        app.logger.exception("实时目录分析失败 unit=%s", unit_id)
+        app.logger.exception("实时目录分析失败 line=%s item=%s", line_id, item_id)
         upd(status="error", enabled=0, msg="失败：%s" % str(e)[:180])
         try:
             log("error", "任务异常：%s" % str(e)[:400])
@@ -2752,65 +2788,112 @@ def _analysis_worker(unit_id):
         db.close()
 
 
-@app.route("/model/analyze/toggle", methods=["POST"])
+@app.route("/config/lines/analyze/toggle", methods=["POST"])
 @login_required
-def model_analyze_toggle():
-    """工作状态开关：开=启动后台分析线程持续工作；关=置 enabled=0，worker 自行退出。"""
+def line_analyze_toggle():
+    """工作状态开关（按 机台 × 检测项目）：开=起后台线程持续工作；关=置 enabled=0 自行退出。"""
     db = get_db()
-    unit_id = request.form.get("unit_id", type=int)
+    line_id = request.form.get("line_id", type=int)
+    item_id = request.form.get("item_id", type=int) or 0
     on = request.form.get("on") == "1"
-    u = db.execute("SELECT * FROM model_units WHERE id=?", (unit_id,)).fetchone()
-    if not u:
+    l = db.execute("SELECT * FROM prod_lines WHERE id=?", (line_id,)).fetchone()
+    if not l or not item_id:
         abort(404)
     if on:
-        if not u["model_endpoint"]:
-            flash("该单元未绑定推理模型，无法开启", "error")
-            return redirect(url_for("model", det=unit_det_id(db, u), brand=u["brand"]))
-        if not (u["rt_type"] and (u["rt_bucket"] or u["rt_path"] or u["rt_type"] == "ftp")):
-            flash("该单元未配置实时图像目录", "error")
-            return redirect(url_for("model", det=unit_det_id(db, u), brand=u["brand"]))
-        db.execute("INSERT INTO analysis_jobs(unit_id,status,enabled,msg) VALUES(?,?,1,?) "
+        if not (l["rt_type"] and (l["rt_bucket"] or l["rt_path"] or l["rt_type"] == "ftp")):
+            flash("该机台未配置实时图像目录", "error")
+            return redirect(url_for("config", tab="lines"))
+        db.execute("INSERT INTO analysis_jobs(line_id,item_id,status,enabled,msg) VALUES(?,?,?,1,?) "
                    "ON DUPLICATE KEY UPDATE enabled=1,status='running',msg=VALUES(msg)",
-                   (unit_id, "running", "启动中…"))
+                   (line_id, item_id, "running", "启动中…"))
         db.commit()
         import threading
-        threading.Thread(target=_analysis_worker, args=(unit_id,), daemon=True).start()
-        flash("已开启工作", "success")
+        threading.Thread(target=_analysis_worker, args=(line_id, item_id), daemon=True).start()
+        app.logger.info("开启实时分析 line=%s item=%s by=%s", l["name"], item_id,
+                        session.get("username", ""))
+        flash("已开启工作：%s" % l["name"], "success")
     else:
-        db.execute("UPDATE analysis_jobs SET enabled=0 WHERE unit_id=?", (unit_id,))
+        db.execute("UPDATE analysis_jobs SET enabled=0 WHERE line_id=? AND item_id=?",
+                   (line_id, item_id))
         db.commit()
         flash("已关闭工作（正在停止当前轮次）", "success")
-    return redirect(url_for("model", det=unit_det_id(db, u), brand=u["brand"]))
+    return redirect(url_for("config", tab="lines"))
 
 
-@app.route("/api/model/analyze/status")
+@app.route("/api/lines/analyze/status")
 @login_required
-def api_model_analyze_status():
-    """轮询：返回各单元的工作状态与分析进度。"""
-    ids = request.args.get("units", "")
-    unit_ids = [int(x) for x in ids.split(",") if x.strip().isdigit()]
-    if not unit_ids:
+def api_line_analyze_status():
+    """轮询：返回当前检测项目下各机台的工作状态与分析进度。"""
+    ids = request.args.get("lines", "")
+    item_id = request.args.get("item", type=int) or 0
+    line_ids = [int(x) for x in ids.split(",") if x.strip().isdigit()]
+    if not line_ids or not item_id:
         return jsonify({})
-    ph = ",".join(["?"] * len(unit_ids))
-    rows = get_db().execute("SELECT * FROM analysis_jobs WHERE unit_id IN (%s)" % ph, unit_ids).fetchall()
-    return jsonify({str(r["unit_id"]): {"status": r["status"], "enabled": r["enabled"],
+    ph = ",".join(["?"] * len(line_ids))
+    rows = get_db().execute("SELECT * FROM analysis_jobs WHERE item_id=? AND line_id IN (%s)" % ph,
+                            [item_id] + line_ids).fetchall()
+    return jsonify({str(r["line_id"]): {"status": r["status"], "enabled": r["enabled"],
                     "total": r["total"], "read": r["read_cnt"], "analyzed": r["analyzed"],
                     "skipped": r["skipped"], "msg": r["msg"]} for r in rows})
 
 
-@app.route("/model/analyze/logs/<int:unit_id>")
+@app.route("/config/lines/logs/<int:line_id>")
 @login_required
-def model_analyze_logs(unit_id):
-    """审计日志：某单元的分析调用过程/结果。"""
+def line_analyze_logs(line_id):
+    """审计日志：某机台在当前检测项目下的分析调用过程/结果。"""
     db = get_db()
-    u = db.execute("SELECT mu.*, cf.face_name FROM model_units mu JOIN camera_faces cf ON cf.id=mu.face_id "
-                   "WHERE mu.id=?", (unit_id,)).fetchone()
-    if not u:
+    _, cur_det = detect_item_ctx(db)
+    item_id = request.args.get("item", type=int) or cur_det
+    l = db.execute("SELECT * FROM prod_lines WHERE id=?", (line_id,)).fetchone()
+    if not l:
         abort(404)
-    logs, pg = paginate(db, "SELECT * FROM analysis_logs WHERE unit_id=%d ORDER BY id DESC" % unit_id,
+    item = db.execute("SELECT * FROM detect_items WHERE id=?", (item_id,)).fetchone()
+    logs, pg = paginate(db, "SELECT * FROM analysis_logs WHERE line_id=%d AND item_id=%d "
+                        "ORDER BY id DESC" % (line_id, item_id),
                         page=request.args.get("page"), size=30)
-    return render_template("analyze_logs.html", u=dict(u), logs=[dict(r) for r in logs], pg=pg,
-                           active="model")
+    return render_template("analyze_logs.html", line=dict(l),
+                           item=dict(item) if item else None,
+                           logs=[dict(r) for r in logs], pg=pg, active="config")
+
+
+@app.route("/config/lines/schedule/<int:line_id>")
+@login_required
+def line_schedule(line_id):
+    """当前运行工单：该机台今天的排程 + 当前班次牌号 + 该牌号各相机面的模型绑定情况。
+    把「排程 → 牌号 → 单元 → 模型」这条链一次性摊开，一眼看出现在能不能出结果。"""
+    db = get_db()
+    _, cur_det = detect_item_ctx(db)
+    item_id = request.args.get("item", type=int) or cur_det
+    l = db.execute("SELECT * FROM prod_lines WHERE id=?", (line_id,)).fetchone()
+    if not l:
+        abort(404)
+    machine = sched_machine_of(l)
+    now = datetime.now()
+    today = now.strftime("%Y%m%d")
+    shift = cur_shift()
+    day = [{"shift": r["shift"], "brand": r["brand"], "order_no": r["order_no"] or "",
+            "start": str(r["start_at"])[:16] if r["start_at"] else "",
+            "end": str(r["end_at"])[:16] if r["end_at"] else "",
+            "now": bool(r["start_at"] and r["end_at"] and r["start_at"] <= now < r["end_at"])}
+           for r in db.execute(
+        "SELECT * FROM machine_schedule WHERE machine=? AND sched_date=? AND status=1 "
+        "ORDER BY FIELD(shift,'早班','中班','晚班',''), id", (machine, today)).fetchall()]
+    cur_wo = next((d for d in day if d["now"]), None)
+    brand = (cur_wo["brand"] if cur_wo else "") or resolve_brand(db, machine, today, shift)
+    faces = []
+    if brand:
+        for f in db.execute("SELECT * FROM camera_faces WHERE item_id=? AND status=1 "
+                            "ORDER BY sort_order, id", (item_id,)).fetchall():
+            u = db.execute("SELECT * FROM model_units WHERE brand=? AND face_id=?",
+                           (brand, f["id"])).fetchone()
+            faces.append({"face_name": f["face_name"], "raw_name": f["raw_name"],
+                          "version": (u["model_version"] if u else "") or "",
+                          "online": bool(u and u["model_endpoint"])})
+    return jsonify({"machine": machine, "line_name": l["name"], "date": today, "shift": shift,
+                    "brand": brand, "day": day, "faces": faces,
+                    "order_no": (cur_wo or {}).get("order_no", ""),
+                    "start": (cur_wo or {}).get("start", ""), "end": (cur_wo or {}).get("end", ""),
+                    "bound": len([f for f in faces if f["online"]]), "total_faces": len(faces)})
 
 
 # ---------------------------------------------------------------- 分析结果
@@ -2850,15 +2933,40 @@ def analysis(tab):
                            today=datetime.now().strftime("%Y/%m/%d"))
 
 
-def infer_call(endpoint, src_key):
-    """调建模单元绑定的推理服务；失败返回 None（跳过，不编造）。"""
+def _parse_ls_predict(d):
+    """解析 Label Studio ML Backend 的预测响应（CubeStudio 部署的推理服务用这个协议）。
+    没有任何标注框 = 没检出缺陷，记为正常，而不是丢弃。"""
+    res = (d.get("results") or [{}])[0]
+    items = res.get("result") or []
+    ver = d.get("model_version") or res.get("model_version") or ""
+    if not items:
+        return {"is_defect": 0, "class_name": "正常",
+                "confidence": float(res.get("score") or 0), "model_version": ver}
+    top = items[0]
+    val = top.get("value") or {}
+    labels = (val.get("rectanglelabels") or val.get("polygonlabels")
+              or val.get("choices") or val.get("labels") or [])
+    return {"is_defect": 1, "class_name": labels[0] if labels else "",
+            "confidence": float(top.get("score") or res.get("score") or 0),
+            "model_version": ver}
+
+
+def infer_call(endpoint, src_key, image_url=""):
+    """调建模单元绑定的推理服务；失败返回 None（跳过，不编造）。
+
+    endpoint 由 inference.ready 下发绑定。predict_url(含 /predict)走 Label Studio ML
+    Backend 协议(图片以 URL 传给对方，对方自己拉图)；其它 endpoint 走 {src_key} 简易协议。"""
     try:
         import urllib.request
-        body = json.dumps({"src_key": src_key}).encode("utf-8")
-        req = urllib.request.Request(endpoint, data=body,
+        is_ls = "/predict" in (endpoint or "")
+        payload = ({"tasks": [{"id": 1, "data": {"image": image_url or src_key}}]}
+                   if is_ls else {"src_key": src_key})
+        req = urllib.request.Request(endpoint, data=json.dumps(payload).encode("utf-8"),
                                      headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=30) as r:
             d = json.loads(r.read().decode("utf-8"))
+        if is_ls or (isinstance(d, dict) and "results" in d):
+            return _parse_ls_predict(d)
         # 兼容对方 {status,result,message} 包裹
         if isinstance(d, dict) and "result" in d and "status" in d:
             d = d["result"]
@@ -2869,8 +2977,42 @@ def infer_call(endpoint, src_key):
         return None
 
 
-def resolve_brand(db, machine, date, shift):
-    """机台排程反查牌号：先精确(机台+日期+班次)，再退到全天(班次为空)。"""
+def infer_health(unit_key):
+    """调用前探一下推理服务是否在线（契约建议行为 3）。返回 (ok, msg)。"""
+    import urllib.request
+    r = get_db().execute("SELECT * FROM inference_services WHERE unit_key=?",
+                         (unit_key,)).fetchone()
+    if not r or not r["health_url"]:
+        return False, "尚未收到该单元的推理就绪通知"
+    try:
+        with urllib.request.urlopen(r["health_url"], timeout=6) as resp:
+            return resp.status == 200, "HTTP %d" % resp.status
+    except Exception as e:
+        return False, str(e)[:120]
+
+
+def key_shot_time(key):
+    """从图片文件名取拍摄时刻。现场文件名就是毫秒时间戳(如 1784200000024.BMP)，
+    有它就能把图精确落到某张工单上；名字不是时间戳则返回 None，退回按班次匹配。"""
+    name = key.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+    if not (name.isdigit() and len(name) in (10, 13)):
+        return None
+    try:
+        return datetime.fromtimestamp(int(name) / (1000.0 if len(name) == 13 else 1.0))
+    except Exception:
+        return None
+
+
+def resolve_brand(db, machine, date, shift, shot_at=None):
+    """工单反查牌号：优先按拍摄时刻落在哪张工单的起止区间内（能处理跨班/临时换牌号），
+    没有时刻或工单没填时间时，退回 机台+日期+班次，再退到全天(班次为空)。"""
+    if shot_at is not None:
+        r = db.execute("SELECT brand FROM machine_schedule WHERE machine=? AND status=1 "
+                       "AND start_at IS NOT NULL AND end_at IS NOT NULL "
+                       "AND start_at<=? AND end_at>? ORDER BY start_at DESC LIMIT 1",
+                       (machine, shot_at, shot_at)).fetchone()
+        if r:
+            return r["brand"]
     r = db.execute("SELECT brand FROM machine_schedule WHERE machine=? AND sched_date=? "
                    "AND shift=? AND status=1", (machine, date, shift)).fetchone()
     if not r:
@@ -2916,7 +3058,7 @@ def analysis_infer():
             face = face_by_raw.get(raw_face)
             if not face:
                 continue  # 相机面未映射，跳过
-            brand = resolve_brand(db, machine, date, shift)
+            brand = resolve_brand(db, machine, date, shift, key_shot_time(key))
             if not brand:
                 no_sched += 1
                 continue
@@ -2924,7 +3066,12 @@ def analysis_infer():
             if not unit:
                 no_model += 1
                 continue
-            res = infer_call(unit["model_endpoint"], key)
+            try:
+                img_url = s3.generate_presigned_url(
+                    "get_object", Params={"Bucket": cfg["in_bucket"], "Key": key}, ExpiresIn=1800)
+            except Exception:
+                img_url = ""
+            res = infer_call(unit["model_endpoint"], key, img_url)
             if res is None:
                 skipped += 1
                 continue

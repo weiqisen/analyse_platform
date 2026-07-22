@@ -8,3 +8,9 @@ venv/
 *.bmp
 logs/
 *.log
+# 部署产物：镜像 tar 与数据库 dump 太大、不入库
+deploy/images/
+deploy/mysql-init/*.sql
+deploy/.env
+# 编辑器备份
+*.bak

@@ -37,21 +37,21 @@
   <button class="btn btn-primary" onclick="editRow()">+ 新增</button>
 </div>
 <div style="font-size:12.5px;color:var(--text-secondary);margin-bottom:10px">
-  每个检测项目在左侧单独配置有哪些相机面（图像分类）。<b>面编码</b>是传给对方模型接口的稳定英文码，不随中文名变。
+  每个检测项目在左侧单独配置有哪些相机面（图像分类）。<b>面编码</b>是传给对方模型接口的稳定英文码，不随中文名变；
+  <b>路径别名</b>是现场目录里相机面那一段的实际目录名。
 </div>
 
 <div class="card tbl-card"><div class="card-body" style="padding:0">
 <table class="table">
-  <thead><tr><th>序号</th><th>原始目录名</th><th>标准面名</th><th>面编码</th><th>机型</th><th>序号</th><th>状态</th><th>操作</th></tr></thead>
+  <thead><tr><th>序号</th><th>标准面名</th><th>面编码</th><th>排序</th><th>路径别名</th><th>状态</th><th>操作</th></tr></thead>
   <tbody>
   {% for r in rows %}
   <tr>
     <td>{{ '%02d' % loop.index }}</td>
-    <td><code>{{ r.raw_name }}</code></td>
     <td>{{ r.face_name }}</td>
     <td><code>{{ r.face_code }}</code></td>
-    <td>{{ r.machine_model or '—' }}</td>
     <td>{{ r.sort_order }}</td>
+    <td><code>{{ r.raw_name }}</code></td>
     <td>{% if r.status %}<span class="tag">启用</span>{% else %}<span class="tag tag-gray">停用</span>{% endif %}</td>
     <td>
       <button class="btn-link" onclick='editRow({{ r|tojson }})'>修改</button>
@@ -65,7 +65,7 @@
     </td>
   </tr>
   {% else %}
-  <tr><td colspan="8" class="empty">暂无映射</td></tr>
+  <tr><td colspan="7" class="empty">暂无映射</td></tr>
   {% endfor %}
   </tbody>
 </table>
@@ -80,16 +80,16 @@
       <div class="modal-body">
         <input type="hidden" name="id" id="c_id">
         <input type="hidden" name="item_id" value="{{ cur_det }}">
-        <div class="form-item"><label><span class="req">*</span>原始目录名</label>
-          <input class="input" name="raw_name" id="c_raw_name" placeholder="如 is7600C_D" required></div>
         <div class="form-item"><label><span class="req">*</span>标准面名</label>
           <input class="input" name="face_name" id="c_face_name" placeholder="如 正面" required></div>
         <div class="form-item"><label>面编码</label>
           <input class="input" name="face_code" id="c_face_code" placeholder="如 front（传对方模型接口用）"></div>
-        <div class="form-item"><label>机型</label>
-          <input class="input" name="machine_model" id="c_machine_model" placeholder="如 is7600C"></div>
-        <div class="form-item"><label>序号</label>
+        <div class="form-item"><label>排序</label>
           <input class="input" name="sort_order" id="c_sort_order" type="number" placeholder="1-6"></div>
+        <div class="form-item"><label><span class="req">*</span>MinIO 路径别名</label>
+          <input class="input" name="raw_name" id="c_raw_name" placeholder="如 is7600C_D" required>
+          <div style="font-size:11.5px;color:var(--text-secondary);margin-top:3px">实时目录路径里相机面那一段的目录名，须与现场一致。</div>
+        </div>
       </div>
       <div class="modal-foot">
         <button class="btn" type="button" onclick="closeModal('rowModal')">取消</button>
@@ -103,7 +103,7 @@
 function editRow(r){
   r = r || {};
   document.getElementById('rowModalTitle').textContent = (r.id ? '修改' : '新增') + '相机面映射';
-  ['id','raw_name','face_name','face_code','machine_model','sort_order'].forEach(function(k){
+  ['id','raw_name','face_name','face_code','sort_order'].forEach(function(k){
     var el = document.getElementById('c_' + k);
     if (el) el.value = (r[k] === undefined || r[k] === null) ? '' : r[k];
   });

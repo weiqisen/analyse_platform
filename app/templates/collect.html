@@ -99,11 +99,16 @@
         </div>
         <div id="ds_minio">
           <div class="form-grid">
-            <div class="form-item"><label>服务地址</label><input class="input" name="server_addr" id="ds_addr_m" placeholder="10.10.96.65:9000"></div>
-            <div class="form-item"><label>输入桶</label><input class="input" name="in_bucket" id="ds_in" placeholder="defect-images"></div>
-            <div class="form-item"><label>Access Key</label><input class="input" name="username" id="ds_ak"></div>
-            <div class="form-item"><label>Secret Key</label><input class="input" type="password" name="password" id="ds_sk"></div>
-            <div class="form-item"><label>输出桶</label><input class="input" name="out_bucket" id="ds_out" placeholder="defect-outputs"></div>
+            <div class="form-item"><label>服务地址</label>
+              <input class="input" name="server_addr" id="ds_addr_m" placeholder="10.10.96.65:9000" onchange="dsLoadBuckets()"></div>
+            <div class="form-item"><label>Access Key</label><input class="input" name="username" id="ds_ak" onchange="dsLoadBuckets()"></div>
+            <div class="form-item"><label>Secret Key</label><input class="input" type="password" name="password" id="ds_sk" onchange="dsLoadBuckets()"></div>
+            <div class="form-item"><label>输入桶</label>
+              <div style="display:flex;gap:6px">
+                <select class="select input" name="in_bucket" id="ds_in" style="flex:1"><option value="">先填服务地址</option></select>
+                <button class="btn btn-sm" type="button" onclick="dsLoadBuckets()" title="重新读取桶列表">刷新</button>
+              </div>
+              <div style="font-size:11.5px;color:var(--text-secondary);margin-top:3px" id="ds_bkt_msg"></div></div>
           </div>
         </div>
         <div id="ds_ftp" style="display:none">
@@ -168,6 +173,50 @@ document.querySelectorAll('#dsModal .ws-all').forEach(function(wsCb){
     });
   });
 });
+// 输入桶下拉：用弹窗里当前填的地址/AK/SK 去列桶，不依赖已保存的配置
+function dsLoadBuckets(keep){
+  var sel = document.getElementById('ds_in');
+  var msg = document.getElementById('ds_bkt_msg');
+  if(!sel) return;
+  // keep 只在打开弹窗回显时传入；平时刷新保留当前选中值
+  var want = (typeof keep === 'string') ? keep : sel.value;
+  var addr = document.getElementById('ds_addr_m').value;
+  function only(v, text){
+    sel.innerHTML = '';
+    var o = document.createElement('option');
+    o.value = v; o.textContent = v || text; o.selected = true;
+    sel.appendChild(o);
+  }
+  if(!addr){ only(want, '先填服务地址'); msg.textContent = ''; return; }
+  only(want, '读取中…'); msg.textContent = '读取桶列表…'; msg.style.color = 'var(--text-secondary)';
+  var data = {server_addr: addr,
+              username: document.getElementById('ds_ak').value,
+              password: document.getElementById('ds_sk').value};
+  fetch('{{ url_for("collect_buckets") }}', {method:'POST',
+        headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:new URLSearchParams(data)})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      sel.innerHTML = '';
+      var none = document.createElement('option');
+      none.value = ''; none.textContent = '（未选择）';
+      sel.appendChild(none);
+      var hit = false;
+      (d.buckets||[]).forEach(function(b){
+        var o = document.createElement('option');
+        o.value = b; o.textContent = b;
+        if(b === want){ o.selected = true; hit = true; }
+        sel.appendChild(o);
+      });
+      // 已保存的桶在列表里没有时也留着，否则一保存就把配置改没了
+      if(want && !hit){
+        var o = document.createElement('option');
+        o.value = want; o.textContent = want + '  · ⚠ 服务器上未找到';
+        o.selected = true; sel.appendChild(o);
+      }
+      msg.textContent = d.msg || ''; msg.style.color = d.ok ? 'var(--text-secondary)' : '#ff4d4f';
+    })
+    .catch(function(){ only(want, ''); msg.textContent = '读取桶列表失败'; msg.style.color = '#ff4d4f'; });
+}
 function openDs(s){
   s = s || {};
   document.getElementById('dsTitle').textContent = (s.id ? '编辑' : '新增') + '数据源';
@@ -178,10 +227,9 @@ function openDs(s){
   document.getElementById('ds_t_ftp').checked = ftp;
   // minio 字段
   document.getElementById('ds_addr_m').value = ftp ? '' : (s.server_addr||'');
-  document.getElementById('ds_in').value = s.in_bucket||'';
   document.getElementById('ds_ak').value = ftp ? '' : (s.username||'');
   document.getElementById('ds_sk').value = ftp ? '' : (s.password||'');
-  document.getElementById('ds_out').value = s.out_bucket||'';
+  dsLoadBuckets(s.in_bucket || '');
   // ftp 字段
   document.getElementById('ds_addr_f').value = ftp ? (s.server_addr||'') : '';
   document.getElementById('ds_ngd').value = s.ng_dir||'';
@@ -227,12 +275,36 @@ function dsTest(){
 
 {# ---------------- 采集监控 ---------------- #}
 {% elif tab == 'monitor' %}
-<div class="page-title">采集监控</div>
+<div class="page-title">采集监控
+  <span style="font-size:13px;font-weight:400;color:var(--text-secondary);margin-left:8px">
+    当班实时 · {{ cur_date[:4] }}-{{ cur_date[4:6] }}-{{ cur_date[6:] }} {{ cur_shift_name }}</span>
+  <span class="hint-icon" title="只统计当前班次：采集=数据源实时目录里本班已落盘的图片；已判别=其中经模型推理入库的张数；缺陷=判定为真缺陷的张数。开启机台的工作状态后判别数才会增长。">?</span>
+</div>
+<style>
+  .mon-card{background:#fff;border:1px solid var(--split,#eee);border-radius:8px;padding:14px 16px;
+    box-shadow:var(--shadow)}
+  .mon-card .mc-head{display:flex;align-items:baseline;gap:8px;margin-bottom:10px}
+  .mon-card .mc-name{font-size:15px;font-weight:600}
+  .mon-card .mc-wo{font-size:12px;color:var(--text-secondary)}
+  .mon-card .mc-nums{display:flex;gap:18px}
+  .mon-card .mc-n{font-size:22px;font-weight:600;line-height:1.2}
+  .mon-card .mc-l{font-size:11.5px;color:var(--text-secondary)}
+</style>
 <div class="stat-grid">
   {% for c in cams %}
-  <div class="cam-card">
-    <div class="num">{{ c.count }}</div>
-    <div class="label">{{ c.name }}{{ ' 产线' if by_line else ' 相机' }} · 采集图片（张）</div>
+  <div class="mon-card">
+    <div class="mc-head">
+      <span class="mc-name">{{ c.name }}</span>
+      {% if c.brand %}<span class="mc-wo">{{ c.brand }}{% if c.order_no %} · {{ c.order_no }}{% endif %}</span>
+      {% else %}<span class="mc-wo" style="color:#faad14">本班无工单</span>{% endif %}
+    </div>
+    <div class="mc-nums">
+      <div><div class="mc-n">{{ c.count }}</div><div class="mc-l">本班采集（张）</div></div>
+      <div><div class="mc-n" style="color:{{ '#52c41a' if c.infer else 'var(--text-secondary)' }}">{{ c.infer }}</div>
+        <div class="mc-l">已判别</div></div>
+      <div><div class="mc-n" style="color:{{ '#ff4d4f' if c.defect else 'var(--text-secondary)' }}">{{ c.defect }}</div>
+        <div class="mc-l">真缺陷</div></div>
+    </div>
   </div>
   {% else %}
   <div class="empty">暂无数据</div>
@@ -241,19 +313,27 @@ function dsTest(){
 
 {# ---------------- 历史采集 ---------------- #}
 {% elif tab == 'history' %}
-<div class="page-title">历史采集记录</div>
+<div class="page-title">历史采集记录
+  <span class="hint-icon" title="按 机台 × 日期 × 班次 归集：采集是数据源里该班次的图片总数，已判别是其中经模型推理入库的张数，真缺陷是判定为缺陷的张数。">?</span>
+</div>
 <div class="card tbl-card"><div class="card-body" style="padding:0">
 <table class="table">
-  <thead><tr>{% if show_line %}<th>产线</th>{% endif %}<th>日期</th><th>班次</th><th>检测项目</th><th>图片数量（张）</th><th>操作</th></tr></thead>
+  <thead><tr>{% if show_line %}<th>机台</th>{% endif %}<th>日期</th><th>班次</th><th>牌号</th>
+    <th>采集（张）</th><th>已判别</th><th>判别率</th><th>真缺陷</th><th>操作</th></tr></thead>
   <tbody>
   {% for r in records %}
   <tr>
     {% if show_line %}<td>{{ r.line }}</td>{% endif %}
-    <td>{{ r.date }}</td><td>{{ r.shift }}</td><td>{{ r.brand }}</td><td>{{ r.img_count }}</td>
+    <td>{{ r.date }}</td><td>{{ r.shift }}</td>
+    <td>{{ r.brand or '—' }}</td>
+    <td>{{ r.img_count }}</td>
+    <td style="color:{{ '#52c41a' if r.infer else 'var(--text-secondary)' }}">{{ r.infer }}</td>
+    <td style="font-size:12px;color:var(--text-secondary)">{{ r.pct }}%</td>
+    <td style="color:{{ '#ff4d4f' if r.defect else 'var(--text-secondary)' }}">{{ r.defect }}</td>
     <td><a href="{{ url_for('collect', tab='images', line=r.line, item=cur_item) }}">浏览图片</a></td>
   </tr>
   {% else %}
-  <tr><td colspan="6" class="empty">暂无采集记录</td></tr>
+  <tr><td colspan="9" class="empty">暂无采集记录</td></tr>
   {% endfor %}
   </tbody>
 </table>

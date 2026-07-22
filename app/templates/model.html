@@ -17,38 +17,84 @@
   <div class="page-title" style="margin:0">模型管理 — {{ cur_brand or '（未选牌号）' }}
     {% if cs_online %}<span style="font-size:12px;font-weight:400;color:#52c41a;margin-left:10px">● CubeStudio 已连接</span>
     {% else %}<span style="font-size:12px;font-weight:400;color:#ff4d4f;margin-left:10px">● CubeStudio 离线</span>{% endif %}
-    <span class="hint-icon" title="每个「牌号 × 相机面」单元的模型由 CubeStudio 训练产出。绑定训好的版本即上线推理服务。开启「工作状态」后，后台持续从实时图像目录抓新图送推理并入库；点「日志」看调用审计。">?</span>
+    <span class="hint-icon" title="每个「牌号 × 相机面」单元的模型由 CubeStudio 训练产出，这里只管绑定训好的版本并上线推理服务。实时图像目录与工作状态开关已挪到「基础配置 → 机组/产线」，按机台统一配置和启停。">?</span>
   </div>
 </div>
-<style>
-  .switch{position:relative;width:38px;height:20px;border:0;border-radius:11px;background:#ccc;cursor:pointer;padding:0;vertical-align:middle}
-  .switch.on{background:var(--primary,#00923f)}
-  .switch:disabled{opacity:.4;cursor:not-allowed}
-  .switch .switch-dot{position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:left .18s}
-  .switch.on .switch-dot{left:20px}
-  .switch-label{margin:0 6px 0 4px}
-</style>
+<div style="font-size:12.5px;color:var(--text-secondary);margin-bottom:10px">
+  实时目录与工作开关在 <a href="{{ url_for('config', tab='lines') }}">基础配置 → 机组/产线</a> 按机台配置；
+  机台开工后，每张图按 排程→牌号、目录→相机面 自动落到下面对应的单元上推理。
+</div>
 
-<div class="card tbl-card"><div class="card-body" style="padding:0">
-<table class="table">
-  <thead><tr><th>相机面</th><th>单元标识</th><th>已绑定模型</th><th>CubeStudio 可用模型</th><th>实时图像目录</th><th>工作状态</th></tr></thead>
-  <tbody>
+<style>
+  .unit-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:14px}
+  .unit-card{background:#fff;border:1px solid var(--split,#eee);border-radius:10px;
+    box-shadow:var(--shadow);display:flex;flex-direction:column;overflow:hidden}
+  .uc-head{display:flex;align-items:center;justify-content:space-between;
+    padding:12px 15px;border-bottom:1px solid var(--split,#eee)}
+  .uc-face{font-size:15px;font-weight:600}
+  .uc-key{font-size:11px;color:var(--text-secondary);font-family:monospace;margin-top:2px;word-break:break-all}
+  .uc-infer{text-align:right;white-space:nowrap}
+  .uc-infer b{font-size:18px;font-weight:600}
+  .uc-infer span{display:block;font-size:11px;color:var(--text-secondary)}
+  .uc-sec{padding:11px 15px}
+  .uc-sec + .uc-sec{border-top:1px dashed var(--split,#eee)}
+  .uc-label{font-size:11.5px;color:var(--text-secondary);margin-bottom:6px;letter-spacing:.02em}
+  .uc-kv{display:flex;font-size:12.5px;line-height:1.9}
+  .uc-kv .k{width:64px;color:var(--text-secondary);flex-shrink:0}
+  .uc-kv .v{flex:1;word-break:break-all}
+  .uc-kv .v code{font-size:11.5px}
+  .svc-online{border-left:3px solid #52c41a}
+  .svc-off{border-left:3px solid #faad14}
+</style>
+<div class="unit-grid">
   {% for r in rows %}
-  <tr>
-    <td><b>{{ r.face_name }}</b></td>
-    <td><code style="font-size:11.5px">{{ r.unit_key }}</code></td>
-    <td>
-      {% if r.bound_version %}<span style="color:#52c41a">● {{ r.bound_version }}</span>
-        {% if r.bound_endpoint %}<div style="font-size:11px;color:var(--text-secondary)">已上线</div>{% endif %}
-      {% else %}<span style="color:var(--text-secondary)">未绑定</span>{% endif %}
-    </td>
-    <td>
+  <div class="unit-card {{ 'svc-online' if r.svc and r.svc.model_status=='online' else ('svc-off' if r.svc else '') }}">
+    <div class="uc-head">
+      <div>
+        <div class="uc-face">{{ r.face_name }}</div>
+        <div class="uc-key">{{ r.unit_key }}</div>
+      </div>
+      <div class="uc-infer"><b style="color:{{ '#00923f' if r.infer_cnt else 'var(--text-secondary)' }}">{{ r.infer_cnt }}</b>
+        <span>推理结果</span></div>
+    </div>
+
+    {# —— 已绑定模型 / 推理服务 —— #}
+    <div class="uc-sec">
+      <div class="uc-label">已绑定模型</div>
+      {% if r.bound_version %}
+      <div style="font-size:14px"><span style="color:#52c41a">●</span> <b>{{ r.bound_version }}</b>
+        {% if r.bound_endpoint %}<span class="tag" style="margin-left:4px">已上线</span>{% endif %}</div>
+      {% else %}<div style="color:var(--text-secondary);font-size:13px">未绑定</div>{% endif %}
+
+      {% if r.svc %}
+      <div style="margin-top:8px">
+        <div style="margin-bottom:5px">
+          <span class="tag {{ '' if r.svc.model_status=='online' else 'tag-orange' }}">{{ r.svc.model_status or '未知' }}</span>
+          <span style="font-size:11.5px;color:var(--text-secondary)">{{ r.svc.task_type or '—' }} · CubeStudio 下发</span>
+          {% if not r.svc.acked %}<span class="tag tag-orange">回执未送达</span>{% endif %}
+        </div>
+        <div class="uc-kv"><span class="k">服务</span><span class="v">{{ r.svc.service_name or r.svc.model_name }}
+          <span style="color:var(--text-secondary)">· 项目 {{ r.svc.project_id }}{% if r.svc.service_id %} · svc#{{ r.svc.service_id }}{% endif %}</span></span></div>
+        <div class="uc-kv"><span class="k">推理地址</span><span class="v"><code>{{ r.svc.endpoint }}</code></span></div>
+        <div style="margin-top:6px">
+          <a class="btn-link" href="javascript:;" onclick="chkHealth('{{ r.unit_key_str }}', this)">测在线</a>
+          <span class="hl-msg" style="font-size:12px;color:var(--text-secondary)"></span>
+          <a class="btn-link" href="javascript:;" onclick='svcDetail({{ r.svc|tojson }})' style="margin-left:10px">全部字段 ›</a>
+        </div>
+      </div>
+      {% endif %}
+    </div>
+
+    {# —— CubeStudio 可用模型（可绑定） —— #}
+    <div class="uc-sec">
+      <div class="uc-label">CubeStudio 可用模型</div>
       {% if r.models %}
         {% for m in r.models %}
-        <div style="margin:2px 0;font-size:13px">
+        <div style="display:flex;align-items:center;gap:6px;margin:3px 0;font-size:13px">
           <b>{{ m.model_version }}</b>
           <span class="tag {{ 'tag-orange' if m.model_status in ('test','debug') else '' }} {{ 'tag-gray' if m.model_status=='offline' }}">{{ m.model_status }}</span>
           {% if m.metrics %}<span style="color:var(--text-secondary);font-size:12px">mAP {{ m.metrics.map }}</span>{% endif %}
+          <span style="margin-left:auto">
           {% if m.model_id != r.bound_model %}
           <form method="post" action="{{ url_for('model_bind') }}" style="display:inline">
             <input type="hidden" name="unit_id" value="{{ r.unit_id }}">
@@ -56,276 +102,78 @@
             <input type="hidden" name="version" value="{{ m.model_version }}">
             <button class="btn-link" type="submit">绑定</button>
           </form>
-          {% else %}<span style="color:#52c41a;font-size:12px">当前</span>{% endif %}
+          {% else %}<span style="color:#52c41a;font-size:12px">● 当前</span>{% endif %}
+          </span>
         </div>
         {% endfor %}
       {% else %}
         <span style="color:var(--text-secondary);font-size:12.5px">暂无 —— 需在标注页训练</span>
       {% endif %}
-    </td>
-    <td>
-      {% if r.rt_path or r.rt_bucket or r.rt_type %}
-        <div style="font-size:12px"><span class="tag {{ 'tag-orange' if r.rt_type=='ftp' else '' }}">{{ 'FTP' if r.rt_type=='ftp' else 'MinIO' }}</span></div>
-        <code style="font-size:11.5px;color:var(--text-secondary)">{{ (r.rt_bucket + '/' if r.rt_bucket else '') ~ r.rt_path }}</code>
-      {% else %}<span style="color:var(--text-secondary)">未配置</span>{% endif %}
-      {# 分析进度 #}
-      <div class="job-box" data-unit="{{ r.unit_id }}" style="margin-top:6px;font-size:12px;{{ '' if r.job else 'display:none' }}">
-        <div class="job-bar" style="height:6px;background:#eee;border-radius:3px;overflow:hidden;margin:3px 0">
-          <i class="job-fill" style="display:block;height:100%;background:var(--primary);width:{{ ((r.job.read_cnt/r.job.total*100) if r.job and r.job.total else 0)|round }}%"></i>
-        </div>
-        <span class="job-txt" style="color:var(--text-secondary)">{% if r.job %}{{ r.job.msg }}{% endif %}</span>
-      </div>
-    </td>
-    <td style="white-space:nowrap">
-      {% set on = r.job and r.job.enabled %}
-      {% set ready = r.bound_endpoint and (r.rt_path or r.rt_bucket or r.rt_type) %}
-      <form method="post" action="{{ url_for('model_analyze_toggle') }}" style="display:inline">
-        <input type="hidden" name="unit_id" value="{{ r.unit_id }}">
-        <input type="hidden" name="on" value="{{ '0' if on else '1' }}">
-        <button class="switch {{ 'on' if on else '' }}" type="submit" data-unit="{{ r.unit_id }}"
-          {{ 'disabled' if not ready }} title="{{ '需先绑定模型并配置实时目录' if not ready else ('点击关闭' if on else '点击开启') }}">
-          <span class="switch-dot"></span></button>
-      </form>
-      <span class="switch-label" data-unit="{{ r.unit_id }}" style="font-size:12px;color:{{ '#52c41a' if on else 'var(--text-secondary)' }}">{{ '工作中' if on else '已关闭' }}</span>
-      <a class="btn-link" href="javascript:;" onclick='openRt({{ r|tojson }})'>配置目录</a>
-      <a class="btn-link" href="{{ url_for('model_analyze_logs', unit_id=r.unit_id) }}">日志</a>
-    </td>
-  </tr>
+    </div>
+  </div>
   {% else %}
-  <tr><td colspan="6" class="empty">该牌号暂无建模单元，请先到「缺陷标注」为相机面建模</td></tr>
+  <div class="empty" style="grid-column:1/-1">该牌号暂无建模单元，请先到「缺陷标注」为相机面建模</div>
   {% endfor %}
-  </tbody>
-</table>
+</div>
 {% if pg %}<div class="pager" data-page="{{ pg.page }}" data-pages="{{ pg.pages }}" data-total="{{ pg.total }}"></div>{% endif %}
-</div></div>
 
-<div class="modal-mask" id="rtModal">
+<div class="modal-mask" id="svcModal">
   <div class="modal" style="width:640px;max-width:94vw">
-    <div class="modal-head"><span id="rtTitle">配置实时图像目录</span><span class="close" onclick="closeModal('rtModal')">×</span></div>
-    <form method="post" action="{{ url_for('model_rtdir_save') }}" id="rtForm">
-      <input type="hidden" name="unit_id" id="rt_unit_id">
-      <input type="hidden" name="rt_path" id="rt_path">
-      <input type="hidden" name="rt_type" id="rt_type_hidden" value="minio">
-      <input type="hidden" name="rt_line_id" id="rt_line_id" value="0">
-      <input type="hidden" name="rt_bucket" id="rt_bucket" value="">
-      <div class="modal-body">
-        <div style="font-size:12.5px;color:var(--text-secondary);margin-bottom:14px">
-          选择以下三段自动生成目录前缀，系统会在下级按「日期/班组/班次/相机面」自动查找待推理图片。
-          数据源和桶从机台自动匹配（已在采集配置中绑定）。
-        </div>
-
-        <div style="display:flex;gap:10px;flex-wrap:wrap">
-          <div class="form-item" style="flex:1;min-width:150px">
-            <label>车间 <span style="color:#ff4d4f">*</span></label>
-            <select class="select input" id="rt_workshop" onchange="rtBuildPath()">
-              <option value="">—</option>
-              {% for w in workshops_list %}
-              <option value="{{ w.name }}" data-alias="{{ w.path_alias or w.name }}">{{ w.name }}</option>
-              {% endfor %}
-            </select>
-          </div>
-          <div class="form-item" style="flex:1;min-width:150px">
-            <label>机台 <span style="color:#ff4d4f">*</span></label>
-            <select class="select input" id="rt_line" onchange="rtBuildPath()">
-              <option value="">先选车间</option>
-            </select>
-          </div>
-          <div class="form-item" style="flex:1;min-width:150px">
-            <label>检测项目 <span style="color:#ff4d4f">*</span></label>
-            <select class="select input" id="rt_det" onchange="rtBuildPath()">
-              {% for d in det_items %}
-              <option value="{{ d.code }}" {{ 'selected' if cur_det==d.id }}>{{ d.code }} {{ d.short_name or d.name }}</option>
-              {% endfor %}
-            </select>
-          </div>
-        </div>
-
-        <div style="margin:6px 0 14px;padding:10px 14px;background:#fafafa;border:1px solid #e8e8e8;border-radius:6px;font-size:13px">
-          <div><span id="rt_path_text" style="color:var(--text);font-family:monospace;font-weight:600">尚未选择</span>
-          <span style="color:#999">/日期/班组/班次/相机面/文件</span></div>
-          <div id="rt_source_info" style="font-size:12px;color:#666;margin-top:6px;display:none;
-               padding:6px 10px;background:#fff;border-radius:4px"></div>
-        </div>
-
-        <div style="margin-top:4px">
-          <label style="font-size:12.5px;color:var(--text-secondary);cursor:pointer">
-            <input type="checkbox" id="rt_override_bucket" onchange="rtToggleBucket()" style="margin-right:4px;vertical-align:middle">
-            自定义桶（默认从机台自动匹配）
-          </label>
-          <div id="rt_bucket_custom" style="display:none;margin-top:6px">
-            <input class="input" id="rt_bucket_input" placeholder="手动输入桶名" style="width:100%">
-          </div>
-        </div>
-
-        <div style="margin-top:10px">
-          <button class="btn btn-sm" type="button" onclick="rtTest()">测试目录可读</button>
-          <span class="test-msg" id="rt_msg" style="font-size:12.5px;margin-left:10px"></span>
-        </div>
-      </div>
-      <div class="modal-foot">
-        <button type="button" class="btn" onclick="closeModal('rtModal')">取消</button>
-        <button type="submit" class="btn btn-primary">保存</button>
-      </div>
-    </form>
+    <div class="modal-head"><span id="svcTitle">推理服务详情</span>
+      <span class="close" onclick="closeModal('svcModal')">×</span></div>
+    <div class="modal-body">
+      <div style="font-size:12px;color:var(--text-secondary);margin-bottom:10px">
+        由 CubeStudio 经 MQ <code>inference.ready</code> 下发，按 <code>unit_key</code> upsert，以最新一条为准。</div>
+      <table class="svc-tbl" id="svcTbl"></table>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn-primary" onclick="closeModal('svcModal')">关闭</button>
+    </div>
   </div>
 </div>
+<style>
+  .svc-tbl{width:100%;border-collapse:collapse;font-size:13px}
+  .svc-tbl th,.svc-tbl td{padding:6px 10px;border-bottom:1px solid var(--split,#eee);text-align:left;vertical-align:top}
+  .svc-tbl th{width:120px;color:var(--text-secondary);font-weight:500;white-space:nowrap}
+  .svc-tbl td code{font-size:12px;word-break:break-all}
+  .svc-tags span{display:inline-block;margin:2px 4px 2px 0;padding:1px 8px;background:var(--primary-bg,#e8f5ee);
+    color:var(--primary,#00923f);border-radius:9px;font-size:12px}
+</style>
 
 <script>
-/* 机台数据源映射（选机台自动确定桶+类型） */
-var linesSource = {{ lines_source | safe }};
-
-function openRt(r){
-  document.getElementById('rt_unit_id').value = r.unit_id;
-  document.getElementById('rt_msg').textContent = '';
-  document.getElementById('rt_source_info').style.display = 'none';
-  document.getElementById('rt_override_bucket').checked = false;
-  rtToggleBucket();
-  // 解析已有 rt_path：回填级联
-  var p = (r.rt_path || '').split('/');
-  // 车间反查：用 path_alias 匹配
-  var wsSel = document.getElementById('rt_workshop');
-  for(var i=0;i<wsSel.options.length;i++){
-    if(wsSel.options[i].getAttribute('data-alias') === p[0]){
-      wsSel.value = wsSel.options[i].value; break;
-    }
-  }
-  rtRebuildLines();
-  var lineSel = document.getElementById('rt_line');
-  for(var i=0;i<lineSel.options.length;i++){
-    var opt = lineSel.options[i];
-    if(opt.value === p[1] || opt.getAttribute('data-alias') === p[1]){ lineSel.value = opt.value; break; }
-  }
-  var detSel = document.getElementById('rt_det');
-  detSel.value = p[2] || '';
-  // 自动匹配数据源
-  if(lineSel.value) rtApplyLine(lineSel.value);
-  openModal('rtModal');
+function svcDetail(s){
+  document.getElementById('svcTitle').textContent = '推理服务详情 — ' + (s.service_name || s.model_name || s.unit_key);
+  var rows = [
+    ['unit_key', '<code>' + (s.unit_key || '') + '</code>'],
+    ['模型状态', (s.model_status || '—') + (s.acked ? '' : ' · <span style="color:#faad14">回执未送达</span>')],
+    ['模型版本', s.model_version || '—'],
+    ['模型名', s.model_name || '—'],
+    ['任务类型', s.task_type || '—'],
+    ['CubeStudio 项目', (s.project_label || '') + ' (ID ' + (s.project_id || '—') + ')'],
+    ['推理服务ID', s.service_id || '—'],
+    ['服务根地址', s.endpoint ? '<code>' + s.endpoint + '</code>' : '—'],
+    ['预测接口', s.predict_url ? '<code>' + s.predict_url + '</code>' : '—'],
+    ['健康检查', s.health_url ? '<code>' + s.health_url + '</code>' : '—'],
+    ['模型路径', s.model_path ? '<code>' + s.model_path + '</code>' : '—'],
+    ['最近通知', s.event_id ? '<code>' + s.event_id + '</code>' : '—'],
+    ['更新时间', s.updated_at || '—']
+  ];
+  var cls = (s.class_names || '').split(',').filter(function(x){ return x; });
+  var clsHtml = cls.length ? '<div class="svc-tags">' + cls.map(function(c){ return '<span>' + c + '</span>'; }).join('') + '</div>' : '—';
+  rows.push(['缺陷标签 (' + cls.length + ')', clsHtml]);
+  document.getElementById('svcTbl').innerHTML = rows.map(function(r){
+    return '<tr><th>' + r[0] + '</th><td>' + r[1] + '</td></tr>';
+  }).join('');
+  openModal('svcModal');
 }
-function rtRebuildLines(){
-  var ws = document.getElementById('rt_workshop').value;
-  var sel = document.getElementById('rt_line');
-  sel.innerHTML = '<option value="">' + (ws ? '选择机台' : '先选车间') + '</option>';
-  if(!ws) return;
-  for(var id in linesSource){
-    var l = linesSource[id];
-    if(l.workshop !== ws) continue;
-    var o = document.createElement('option');
-    o.value = l.code; o.dataset.lineId = id;
-    o.dataset.alias = l.path_alias || l.code;
-    o.textContent = l.code + ' · ' + l.name;
-    sel.appendChild(o);
-  }
-}
-function rtBuildPath(){
-  rtRebuildLines();
-  var wsAlias = '', ws = document.getElementById('rt_workshop');
-  var wsOpt = ws.options[ws.selectedIndex];
-  if(wsOpt) wsAlias = wsOpt.getAttribute('data-alias') || ws.value;
-  var line = document.getElementById('rt_line');
-  var lineOpt = line.options[line.selectedIndex];
-  var lineCode = line.value, lineAlias = lineCode;
-  // 选机台 → 自动确定数据源和桶，并用机台路径别名
-  if(lineCode && lineOpt && lineOpt.dataset.lineId){
-    rtApplyLine(lineCode, lineOpt.dataset.lineId);
-    lineAlias = lineOpt.getAttribute('data-alias') || lineCode;
-  }
-  var det = document.getElementById('rt_det').value;
-  var parts = [wsAlias, lineAlias, det].filter(function(x){ return x; });
-  document.getElementById('rt_path_text').textContent = parts.length ? parts.join('/') + '/' : '尚未选择';
-  document.getElementById('rt_path').value = parts.join('/');
-}
-function rtApplyLine(lineCode, lineId){
-  var lineSrc = null;
-  if(lineId){
-    lineSrc = linesSource[lineId];
-  } else {
-    for(var id in linesSource){
-      if(linesSource[id].code === lineCode){ lineSrc = linesSource[id]; lineId = id; break; }
-    }
-  }
-  if(!lineSrc || !lineSrc.type) return;
-  document.getElementById('rt_type_hidden').value = lineSrc.type;
-  document.getElementById('rt_line_id').value = lineId;
-  // 桶自动填充
-  var bucket = lineSrc.bucket || '';
-  document.getElementById('rt_bucket').value = bucket;
-  document.getElementById('rt_bucket_input').value = bucket;
-  // 显示完整数据源信息
-  var info = document.getElementById('rt_source_info');
-  info.style.display = 'block';
-  if(lineSrc.type === 'minio'){
-    var addr = lineSrc.addr || '?';
-    info.innerHTML = '<b>数据源</b> ' + lineSrc.code + ' · ' + lineSrc.name
-      + '<br>类型 对象存储 · 地址 ' + addr + ' · 桶 <b>' + (bucket || '?') + '</b>';
-  } else if(lineSrc.type === 'ftp'){
-    var addr = lineSrc.addr || '?';
-    info.innerHTML = '<b>数据源</b> ' + lineSrc.code + ' · ' + lineSrc.name
-      + '<br>类型 FTP 工控机 · 地址 ' + addr;
-  } else {
-    info.style.display = 'none';
-  }
-}
-function rtToggleBucket(){
-  var cb = document.getElementById('rt_override_bucket');
-  var box = document.getElementById('rt_bucket_custom');
-  box.style.display = cb.checked ? 'block' : 'none';
-  if(!cb.checked){
-    // 恢复自动匹配的桶
-    var bucket = document.getElementById('rt_bucket').value;
-    document.getElementById('rt_bucket_input').value = bucket;
-  }
-}
-// 保存前同步自定义桶→隐藏域
-document.getElementById('rtForm').addEventListener('submit', function(){
-  if(document.getElementById('rt_override_bucket').checked){
-    document.getElementById('rt_bucket').value = document.getElementById('rt_bucket_input').value;
-  }
-});
-function rtTest(){
-  var msg = document.getElementById('rt_msg');
-  msg.textContent = '测试中…'; msg.style.color = 'var(--text-secondary)';
-  // 保存前刷新路径
-  rtBuildPath();
-  if(document.getElementById('rt_override_bucket').checked){
-    document.getElementById('rt_bucket').value = document.getElementById('rt_bucket_input').value;
-  }
-  var fd = new FormData(document.getElementById('rtForm'));
-  fetch('{{ url_for("model_rtdir_test") }}', {method:'POST', body: fd})
+function chkHealth(unitKey, el){
+  var msg = el.parentNode.querySelector('.hl-msg');
+  msg.textContent = ' 检测中…'; msg.style.color = 'var(--text-secondary)';
+  fetch('/api/infer/health?key=' + encodeURIComponent(unitKey))
     .then(function(r){ return r.json(); })
-    .then(function(d){ msg.textContent = d.msg; msg.style.color = d.ok ? '#52c41a' : '#ff4d4f'; })
-    .catch(function(e){ msg.textContent = '请求失败'; msg.style.color = '#ff4d4f'; });
+    .then(function(d){ msg.textContent = ' ' + (d.ok ? '在线' : '离线') + '（' + d.msg + '）';
+                       msg.style.color = d.ok ? '#52c41a' : '#ff4d4f'; })
+    .catch(function(){ msg.textContent = ' 请求失败'; msg.style.color = '#ff4d4f'; });
 }
-
-// 实时目录分析进度轮询：有 running 的就每 3 秒刷新
-(function(){
-  var boxes = Array.prototype.slice.call(document.querySelectorAll('.job-box'));
-  if(!boxes.length) return;
-  var units = boxes.map(function(b){ return b.dataset.unit; }).join(',');
-  function tick(){
-    fetch('{{ url_for("api_model_analyze_status") }}?units=' + units)
-      .then(function(r){ return r.json(); })
-      .then(function(d){
-        var anyRunning = false;
-        boxes.forEach(function(b){
-          var j = d[b.dataset.unit];
-          if(!j) return;
-          b.style.display = '';
-          var pct = j.total ? Math.round(j.read / j.total * 100) : 0;
-          b.querySelector('.job-fill').style.width = pct + '%';
-          b.querySelector('.job-txt').textContent = j.msg || '';
-          b.querySelector('.job-fill').style.background = j.status==='error' ? '#ff4d4f' : 'var(--primary)';
-          // 同步开关外观与标签
-          var sw = document.querySelector('.switch[data-unit="'+b.dataset.unit+'"]');
-          var lb = document.querySelector('.switch-label[data-unit="'+b.dataset.unit+'"]');
-          if(sw){ sw.classList.toggle('on', !!j.enabled); }
-          if(lb){ lb.textContent = j.enabled ? '工作中' : '已关闭'; lb.style.color = j.enabled ? '#52c41a' : 'var(--text-secondary)'; }
-          if(j.enabled) anyRunning = true;
-        });
-        if(anyRunning) setTimeout(tick, 3000);
-      })
-      .catch(function(){});
-  }
-  tick();
-})();
 </script>
 {% endblock %}
