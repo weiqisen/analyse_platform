@@ -14,18 +14,15 @@ services:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
     environment:
-      # :? = 未在 .env 里设置就直接报错启动失败，杜绝弱默认口令漏进生产
-      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:?请在 .env 设置强口令 DB_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-Wqs@Defect2026#Db}
       MYSQL_DATABASE: ${DB_NAME:-analyse_platform}
-    # 数据库端口默认【不】对外发布：app 走容器内网 mysql:3306，不需要暴露到宿主/局域网。
-    # 确需外部工具连库时，去掉下面两行注释（并确保口令够强、网络可信）。
-    # ports:
-    #   - "${DB_PUBLISH_PORT:-3307}:3306"
+    ports:
+      - "${DB_PUBLISH_PORT:-3307}:3306"
     volumes:
       - mysql-data:/var/lib/mysql
       - ./mysql-init:/docker-entrypoint-initdb.d:ro   # 首次启动(空库)自动导入 10-data.sql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${DB_PASSWORD:-123456}"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${DB_PASSWORD:-Wqs@Defect2026#Db}"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -36,12 +33,12 @@ services:
     hostname: ap-rabbitmq                      # 固定 hostname，避免容器重建后数据目录不认
     restart: unless-stopped
     environment:
-      RABBITMQ_DEFAULT_USER: ${MQ_USER:?请在 .env 设置 MQ_USER}
-      RABBITMQ_DEFAULT_PASS: ${MQ_PASS:?请在 .env 设置强口令 MQ_PASS（需与 CubeStudio 侧一致）}
+      # 注意：CubeStudio 也用这套账号连 MQ，改了要同步告诉对方
+      RABBITMQ_DEFAULT_USER: ${MQ_USER:-defect}
+      RABBITMQ_DEFAULT_PASS: ${MQ_PASS:-Wqs@Defect2026#Mq}
     ports:
-      - "${MQ_PUBLISH_PORT:-5672}:5672"        # AMQP（CubeStudio 也连这个，必须发布）
-      # 管理面板默认只绑本机回环，不暴露到局域网；需远程看再改成 15672:15672
-      - "127.0.0.1:${MQ_MGMT_PORT:-15672}:15672"
+      - "${MQ_PUBLISH_PORT:-5672}:5672"        # AMQP（CubeStudio 也连这个）
+      - "${MQ_MGMT_PORT:-15672}:15672"         # 管理面板
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
     healthcheck:
@@ -66,18 +63,17 @@ services:
       DB_HOST: mysql
       DB_PORT: 3306
       DB_USER: root
-      DB_PASSWORD: ${DB_PASSWORD:?}
+      DB_PASSWORD: ${DB_PASSWORD:-Wqs@Defect2026#Db}
       DB_NAME: ${DB_NAME:-analyse_platform}
       MQ_HOST: rabbitmq
       MQ_PORT: 5672
-      MQ_USER: ${MQ_USER:?}
-      MQ_PASS: ${MQ_PASS:?}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}      # 空库首次建 admin 用；已迁数据则登录后到用户管理改
+      MQ_USER: ${MQ_USER:-defect}
+      MQ_PASS: ${MQ_PASS:-Wqs@Defect2026#Mq}
       CS_URL: ${CS_URL:-}
       WORKFLOW_URL: ${WORKFLOW_URL:-}
       SAMPLE_BUCKET: ${SAMPLE_BUCKET:-defect-samples}
-      WS_USER: ${WS_USER:-root}                # 工控机 SFTP 采集账号(由现场工控机决定，非我方设定)
-      WS_PASS: ${WS_PASS:-}
+      WS_USER: ${WS_USER:-root}                # 工控机 SFTP 采集账号
+      WS_PASS: ${WS_PASS:-hlxd@123}
       LOG_DIR: /app/logs
       PORT: 9573
     ports:

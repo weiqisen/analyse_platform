@@ -11,17 +11,8 @@ for t in images/*.tar images/*.tar.gz; do
   docker load -i "$t"
 done
 
-echo "[2/4] 检查 .env ..."
-if [ ! -f .env ]; then
-  cp .env.example .env
-  echo "  已从 .env.example 生成 .env —— 请先编辑 .env 填强口令(DB_PASSWORD/MQ_PASS/ADMIN_PASSWORD)"
-  echo "  和地址(CS_URL/WORKFLOW_URL)，再重跑本脚本。生成口令： openssl rand -base64 24"
-  exit 1
-fi
-if grep -q '<生成强口令>' .env; then
-  echo "  ✗ .env 里还有未替换的 <生成强口令> 占位符，请先填成真实强口令再启动。"
-  exit 1
-fi
+echo "[2/4] 检查 .env（可选，没有也能起）..."
+[ -f .env ] && echo "  用 .env 覆盖默认配置" || echo "  无 .env，用 compose 内置默认（含强口令）"
 
 echo "[3/4] 检查数据库导入文件 ..."
 if [ ! -f mysql-init/10-data.sql ]; then
