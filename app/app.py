@@ -2934,7 +2934,7 @@ def _analysis_worker(line_id, item_id, face_id):
                 "SELECT src_key FROM inference_results WHERE src_key<>''").fetchall()}
             upd(status="running", total=len(keys), read_cnt=0, analyzed=0, skipped=0,
                 msg="扫描 %s · %s (%s)" % (brand, face["face_name"], prefix[-30:]))
-            read = an = sk = no_unit = no_model = 0
+            read = an = sk = no_unit = 0
             for key in keys:
                 if not is_on():
                     break
@@ -2987,7 +2987,7 @@ def _analysis_worker(line_id, item_id, face_id):
                 tip += "/无模型单元%d" % no_unit
             tip += ")，累计%d，等待…" % total_an
             upd(status="running", read_cnt=read, analyzed=an, skipped=sk, msg=tip)
-            if no_sched or no_model or no_face:
+            if no_unit:
                 log("warn", tip)
             # 歇一会再扫新图；期间每秒检查开关，关了立刻退
             for _ in range(15):
