@@ -18,7 +18,7 @@
 <div class="toolbar">
   <div class="page-title" style="margin:0">{{ tabname }}
     {% if tab == 'lines' %}
-    <span class="hint-icon" title="实时图像目录按机台配一次；「本机台检测项目」勾了哪些，工作状态列就有哪些开关（一台机可同时跑多个检测项目）。当前运行工单来自机台排程，按图片时刻落到对应工单反查牌号。">?</span>
+    <span class="hint-icon" title="点击牌号链接 → 弹窗按项目→相机面展示完整目录路径。每个相机面有独立开关和日志，开启后后台持续扫该面实时目录送推理。">?</span>
     {% elif tab == 'schedule' %}
     <span class="hint-icon" title="工单决定「这台机这段时间生产什么牌号」。图片文件名是毫秒时间戳，优先按时刻落到工单区间；没有起止时间时退回按日期+班次匹配。">?</span>
     {% endif %}
@@ -38,7 +38,7 @@
     <tr><th>序号</th><th>项目编码</th><th>名称</th><th>简称</th><th>路径别名</th><th>状态</th><th>操作</th></tr>
   {% elif tab == 'lines' %}
     <tr><th>序号</th><th>产线编码</th><th>名称</th><th>路径别名</th><th>车间/区域</th>
-        <th>实时图像目录</th><th>工作状态</th><th>当前运行工单</th><th>状态</th><th>操作</th></tr>
+        <th>实时图像目录</th><th>当前运行工单</th><th>状态</th><th>操作</th></tr>
   {% elif tab == 'brands' %}
     <tr><th>序号</th><th>产品代码</th><th>产品规格</th><th>状态</th><th>操作</th></tr>
   {% elif tab == 'workshops' %}
@@ -79,32 +79,6 @@
             <div style="margin-top:4px;font-size:12px;color:var(--text-secondary)">当前无运行工单</div>
           {% endif %}
         {% else %}<span style="color:var(--text-secondary)">未配置</span>{% endif %}
-      </td>
-      {# 工作状态：本机台每个检测项目一行开关（一对多） #}
-      <td style="white-space:nowrap">
-        {% for it in r['items'] %}
-        {% set on = it.job and it.job.enabled %}
-        <div style="margin:2px 0;display:flex;align-items:center;gap:4px">
-          <form method="post" action="{{ url_for('line_analyze_toggle') }}" style="display:inline">
-            <input type="hidden" name="line_id" value="{{ r.id }}">
-            <input type="hidden" name="item_id" value="{{ it.id }}">
-            <input type="hidden" name="on" value="{{ '0' if on else '1' }}">
-            <button class="switch {{ 'on' if on else '' }}" type="submit" data-job="{{ r.id }}_{{ it.id }}"
-              {{ 'disabled' if not r.rt_type }} title="{{ '需先配置实时图像目录' if not r.rt_type else ('点击关闭' if on else '点击开启') }}">
-              <span class="switch-dot"></span></button>
-          </form>
-          <span style="font-size:12px">{{ it.name }}</span>
-          <a class="btn-link" style="font-size:12px" href="{{ url_for('line_analyze_logs', line_id=r.id, item=it.id) }}">日志</a>
-        </div>
-        <div class="job-box" data-job="{{ r.id }}_{{ it.id }}" style="font-size:11.5px;margin:0 0 6px;{{ '' if it.job else 'display:none' }}">
-          <div style="height:5px;background:#eee;border-radius:3px;overflow:hidden;margin:2px 0">
-            <i class="job-fill" style="display:block;height:100%;background:var(--primary);width:{{ ((it.job.read_cnt/it.job.total*100) if it.job and it.job.total else 0)|round }}%"></i>
-          </div>
-          <span class="job-txt" style="color:var(--text-secondary)">{% if it.job %}{{ it.job.msg }}{% endif %}</span>
-        </div>
-        {% else %}
-        <span style="font-size:12px;color:var(--text-secondary)">未装检测项目</span>
-        {% endfor %}
       </td>
       {# 当前运行工单：按当前时刻落在哪张工单区间内 #}
       <td>
@@ -238,10 +212,10 @@
   </div>
 </div>
 
-{# 相机面目录列表：当前工单牌号下每个相机面的完整路径与模型状态 #}
+{# 相机面目录 + 工作状态：项目→相机面两级，每个相机面有独立开关 #}
 <div class="modal-mask" id="wfModal">
-  <div class="modal" style="width:640px;max-width:94vw">
-    <div class="modal-head"><span id="wfTitle">相机面目录</span>
+  <div class="modal" style="width:780px;max-width:96vw">
+    <div class="modal-head"><span id="wfTitle">工单运行详情</span>
       <span class="close" onclick="closeModal('wfModal')">×</span></div>
     <div class="modal-body" id="wfBody"></div>
     <div class="modal-foot">
@@ -291,7 +265,7 @@
             {% endfor %}
           </div>
           <div style="font-size:11.5px;color:var(--text-secondary);margin-top:3px">
-            这台机装了哪些检测设备。勾几个，工作状态列就有几个开关；取消勾选会同时停掉它的分析任务。</div>
+            这台机装了哪些检测设备。勾选的项目会在实时目录弹窗中展示对应相机面的开关。</div>
         </div>
         {% elif tab == 'brands' %}
         <div class="form-item"><label><span class="req">*</span>产品代码</label><input class="input" name="code" id="c_code" required></div>
@@ -529,62 +503,97 @@ function openWo(lineId){
     .catch(function(){ body.textContent = '加载失败'; });
 }
 
-/* 各机台当前工单牌号下的相机面目录（后端拼好，前端渲染弹窗） */
+/* 各机台当前工单牌号下的相机面目录 + 工作状态（按项目→相机面，每面独立开关） */
 var WOFACES = {{ wo_faces_json|safe }};
+var WFLINE = 0;                    // 当前打开弹窗的机台 id
+
 function openWoFaces(lineId){
   var fs = WOFACES[String(lineId)] || [];
+  WFLINE = lineId;
   var body = document.getElementById('wfBody');
-  document.getElementById('wfTitle').textContent = '相机面目录 — 当前工单牌号';
-  var h = '<table class="wo-tbl"><tr><th>相机面</th><th>目录名</th><th>模型</th><th>读取路径</th></tr>';
-  fs.forEach(function(f){
-    h += '<tr><td>' + f.face_name + '</td><td><code>' + f.raw_name + '</code></td><td>' +
-         (f.online ? '<span style="color:#52c41a">● ' + (f.version || '已上线') + '</span>'
-                   : '<span style="color:var(--text-secondary)">未上线</span>') + '</td>' +
-         '<td><code style="font-size:11.5px;word-break:break-all">' + f.path + '</code></td></tr>';
+  var lineInfo = '';
+  // 取第一个面的项目名做标题
+  var itemName = fs.length ? fs[0].item_name : '';
+  document.getElementById('wfTitle').textContent = '工单运行详情 — ' + (itemName || '当前检测项目');
+
+  var h = '<div style="font-size:12.5px;color:var(--text-secondary);margin-bottom:10px">' +
+          '每个相机面独立开关。开启后后台持续扫该面的实时目录，送该面绑定的模型推理。</div>';
+  // 按项目分组
+  var groups = {};
+  fs.forEach(function(f){ (groups[f.item_id] = groups[f.item_id] || []).push(f); });
+  Object.keys(groups).forEach(function(itemId){
+    var g = groups[itemId];
+    h += '<div style="font-size:14px;font-weight:600;margin:12px 0 6px;padding:6px 0;border-bottom:1px solid var(--split)">' +
+         (g[0].item_name || '检测项目') + ' · ' + g.length + ' 相机面</div>';
+    h += '<table class="wo-tbl" data-line="' + lineId + '"><tr>' +
+         '<th>相机面</th><th>目录名</th><th>模型</th><th style="width:80px">工作</th><th>日志</th></tr>';
+    g.forEach(function(f){
+      h += '<tr data-job="' + lineId + '_' + f.item_id + '_' + f.face_id + '">' +
+           '<td>' + f.face_name + '</td><td><code>' + f.raw_name + '</code></td>' +
+           '<td>' + (f.online ? '<span style="color:#52c41a">● ' + (f.version || '已上线') + '</span>'
+                              : '<span style="color:var(--text-secondary)">未上线</span>') + '</td>' +
+           '<td><form method="post" action="{{ url_for("line_analyze_toggle") }}" style="display:inline">' +
+           '<input type="hidden" name="line_id" value="' + lineId + '">' +
+           '<input type="hidden" name="item_id" value="' + f.item_id + '">' +
+           '<input type="hidden" name="face_id" value="' + f.face_id + '">' +
+           '<input type="hidden" name="on" value="">' +
+           '<button class="switch" type="submit" data-job="' + lineId + '_' + f.item_id + '_' + f.face_id + '">' +
+           '<span class="switch-dot"></span></button></form></td>' +
+           '<td><a class="btn-link" style="font-size:12px" href="{{ url_for("line_analyze_logs", line_id=0) }}'.replace('0',''+lineId) +
+           '?item=' + f.item_id + '&face=' + f.face_id + '">日志</a></td></tr>';
+      h += '<tr data-jobbox="' + lineId + '_' + f.item_id + '_' + f.face_id +
+           '" style="display:none"><td colspan="5"><div class="job-bar" style="height:5px;background:#eee;border-radius:3px;overflow:hidden;margin:0 0 3px">' +
+           '<i class="job-fill" style="display:block;height:100%;background:var(--primary);width:0%"></i></div>' +
+           '<span class="job-txt" style="font-size:11.5px;color:var(--text-secondary)"></span></td></tr>';
+    });
+    h += '</table>';
   });
-  h += '</table>';
-  if(!fs.length) h = '<div style="color:var(--text-secondary)">暂无相机面数据</div>';
+  if(!fs.length) h = '<div style="color:var(--text-secondary)">暂无相机面数据 — 该机台可能未装检测项目，或当前无运行工单</div>';
   body.innerHTML = h;
   openModal('wfModal');
+  // 重新挂载开关点击事件（表格内 form submit 在 modal 里不会被覆盖）
+  body.querySelectorAll('.switch').forEach(function(sw){
+    sw.addEventListener('click', function(e){
+      e.preventDefault();
+      var form = sw.closest('form');
+      form.querySelector('[name=on]').value = sw.classList.contains('on') ? '0' : '1';
+      form.submit();
+    });
+  });
+  // 启动进轮询
+  pollJobs();
 }
 
-/* ---------------- 工作进度轮询（每个 机台×检测项目 一条） ---------------- */
-(function(){
-  var boxes = Array.prototype.slice.call(document.querySelectorAll('.job-box'));
-  if(!boxes.length) return;
-  // data-job = "机台id_项目id"，按项目分组查，一个项目一次请求
-  var byItem = {};
-  boxes.forEach(function(b){
-    var p = b.dataset.job.split('_');
-    (byItem[p[1]] = byItem[p[1]] || []).push(p[0]);
+/* 工作进度轮询（按 face key = line_id_item_id_face_id） */
+function pollJobs(){
+  var keys = [];
+  document.querySelectorAll('#wfBody [data-job]').forEach(function(el){
+    keys.push(el.dataset.job);
   });
+  if(!keys.length) return;
   function tick(){
-    var pending = Object.keys(byItem).length, anyRunning = false;
-    Object.keys(byItem).forEach(function(itemId){
-      fetch('{{ url_for("api_line_analyze_status") }}?item=' + itemId + '&lines=' + byItem[itemId].join(','))
-        .then(function(r){ return r.json(); })
-        .then(function(d){
-          Object.keys(d).forEach(function(lineId){
-            var j = d[lineId], key = lineId + '_' + itemId;
-            var b = document.querySelector('.job-box[data-job="' + key + '"]');
-            if(b){
-              b.style.display = '';
-              var pct = j.total ? Math.round(j.read / j.total * 100) : 0;
-              b.querySelector('.job-fill').style.width = pct + '%';
-              b.querySelector('.job-fill').style.background = j.status==='error' ? '#ff4d4f' : 'var(--primary)';
-              b.querySelector('.job-txt').textContent = j.msg || '';
-            }
-            var sw = document.querySelector('.switch[data-job="' + key + '"]');
-            if(sw){ sw.classList.toggle('on', !!j.enabled); }
-            if(j.enabled) anyRunning = true;
-          });
-        })
-        .catch(function(){})
-        .then(function(){ if(--pending === 0 && anyRunning) setTimeout(tick, 3000); });
-    });
+    fetch('{{ url_for("api_line_analyze_status") }}?keys=' + keys.join(','))
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        var anyRunning = false;
+        Object.keys(d).forEach(function(k){
+          var j = d[k], sw = document.querySelector('[data-job="' + k + '"]');
+          if(sw) sw.classList.toggle('on', !!j.enabled);
+          var box = document.querySelector('[data-jobbox="' + k + '"]');
+          if(box){
+            if(j.total || j.enabled) box.style.display = '';
+            var pct = j.total ? Math.round((j.read||0) / j.total * 100) : 0;
+            box.querySelector('.job-fill').style.width = pct + '%';
+            box.querySelector('.job-fill').style.background = j.status==='error' ? '#ff4d4f' : 'var(--primary)';
+            box.querySelector('.job-txt').textContent = j.msg || '';
+          }
+          if(j.enabled) anyRunning = true;
+        });
+        if(anyRunning) setTimeout(tick, 3000);
+      }).catch(function(){});
   }
   tick();
-})();
+}
 {% endif %}
 </script>
 {% endblock %}

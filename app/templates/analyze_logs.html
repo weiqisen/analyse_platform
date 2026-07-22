@@ -2,7 +2,7 @@
 {% block title %}分析日志 · 缺陷图片分析平台{% endblock %}
 {% block content %}
 <div class="toolbar">
-  <div class="page-title" style="margin:0">分析审计日志 — {{ line.name }}{% if item %} · {{ item.short_name or item.name }}{% endif %}
+  <div class="page-title" style="margin:0">分析审计日志 — {{ line.name }}{% if item %} · {{ item.short_name or item.name }}{% endif %}{% if face %} · {{ face.face_name }}{% endif %}
     <span class="hint-icon" title="记录每次从实时目录抓图送推理的调用过程与结果，按时间倒序。">?</span>
   </div>
   <div class="form-inline">

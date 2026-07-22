@@ -340,6 +340,28 @@ def migrate_db(db):
                            (u["rt_type"], u["rt_bucket"] or "", prefix, u["rt_line_id"]))
             db.commit()
 
+    # 工作状态从项目级细化到相机面级：analysis_jobs / analysis_logs 加 face_id。
+    # 两张表都是纯运行态，直接重建不迁移。
+    if not _has_column(db, "analysis_jobs", "face_id"):
+        db.execute("DROP TABLE IF EXISTS analysis_jobs")
+        db.execute("DROP TABLE IF EXISTS analysis_logs")
+        db.execute("""CREATE TABLE analysis_jobs(
+            line_id INT NOT NULL, item_id INT NOT NULL, face_id INT NOT NULL,
+            status VARCHAR(16) DEFAULT 'idle', enabled INT DEFAULT 0,
+            total INT DEFAULT 0, read_cnt INT DEFAULT 0, analyzed INT DEFAULT 0,
+            skipped INT DEFAULT 0, msg VARCHAR(255) DEFAULT '',
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (line_id, item_id, face_id)
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='分析任务(机台×检测项目×相机面)'""")
+        db.execute("""CREATE TABLE analysis_logs(
+            id BIGINT PRIMARY KEY AUTO_INCREMENT, line_id INT NOT NULL,
+            item_id INT NOT NULL, face_id INT NOT NULL,
+            ts DATETIME DEFAULT CURRENT_TIMESTAMP, level VARCHAR(8) DEFAULT 'info',
+            src_key VARCHAR(512) DEFAULT '', detail VARCHAR(512) DEFAULT '',
+            KEY idx_job_ts (line_id, item_id, face_id, id)
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='分析审计日志'""")
+        db.commit()
+
     # 工单表按现场 MES(work_order)结构重建：旧的 machine_schedule 结构不同，直接丢弃。
     # 排程是可重导的运行数据，不迁移(现场对接后由 MES 灌真实工单，或用一键 mock 生成)。
     if _table_exists(db, "machine_schedule"):
@@ -504,6 +526,7 @@ def init_db():
         """CREATE TABLE IF NOT EXISTS analysis_jobs(
             line_id INT NOT NULL COMMENT '机台(prod_lines.id)',
             item_id INT NOT NULL COMMENT '检测项目(detect_items.id)',
+            face_id INT NOT NULL COMMENT '相机面(camera_faces.id)',
             status VARCHAR(16) DEFAULT 'idle' COMMENT 'idle/running/done/error/stopped',
             enabled INT DEFAULT 0 COMMENT '工作状态开关: 1开启 0关闭',
             total INT DEFAULT 0 COMMENT '目录总张数',
@@ -512,8 +535,8 @@ def init_db():
             skipped INT DEFAULT 0 COMMENT '已跳过(之前分析过)',
             msg VARCHAR(255) DEFAULT '' COMMENT '最新消息',
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-            PRIMARY KEY (line_id, item_id)
-        ) DEFAULT CHARSET=utf8mb4 COMMENT='实时目录分析任务(按 机台×检测项目)'""",
+            PRIMARY KEY (line_id, item_id, face_id)
+        ) DEFAULT CHARSET=utf8mb4 COMMENT='实时目录分析任务(按 机台×检测项目×相机面)'""",
         """CREATE TABLE IF NOT EXISTS sample_uploads(
             id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
             msg_id VARCHAR(64) NOT NULL COMMENT '消息ID(与MQ回执关联)',
@@ -553,11 +576,12 @@ def init_db():
             id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
             line_id INT NOT NULL COMMENT '机台(prod_lines.id)',
             item_id INT NOT NULL COMMENT '检测项目(detect_items.id)',
+            face_id INT NOT NULL COMMENT '相机面(camera_faces.id)',
             ts DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '时间',
             level VARCHAR(8) DEFAULT 'info' COMMENT 'info/ok/warn/error',
             src_key VARCHAR(512) DEFAULT '' COMMENT '图片key',
             detail VARCHAR(512) DEFAULT '' COMMENT '调用过程/结果',
-            KEY idx_job_ts (line_id, item_id, id)
+            KEY idx_job_ts (line_id, item_id, face_id, id)
         ) DEFAULT CHARSET=utf8mb4 COMMENT='分析调用审计日志'""",
         # 工单表，字段与现场 MES(yx_statistic.work_order)对齐，便于接口直接对接。
         # 平台按 equipment_self_code 匹配机台(=prod_lines.path_alias)、按图片时刻落到
@@ -1025,7 +1049,10 @@ def config(tab):
                                                  (cur_det_item["path_alias"] or cur_det_item["code"]).strip("/") if cur_det_item else "",
                                                  wo_seg["date"], wo_seg["team"],
                                                  wo_seg["shift"], f["raw_name"], ""] if x)
-                        wo_faces.append({"face_name": f["face_name"],
+                        wo_faces.append({"item_id": cur_det,
+                                         "item_name": (cur_det_item["short_name"] or cur_det_item["name"]) if cur_det_item else "",
+                                         "face_id": f["id"],
+                                         "face_name": f["face_name"],
                                          "raw_name": f["raw_name"],
                                          "path": q,
                                          "version": f["model_version"] or "",
@@ -2831,38 +2858,40 @@ def _rtdir_list_images(db, rt_type, line_id, bucket, path):
         return keys, None, None, tcfg
 
 
-def _analysis_worker(line_id, item_id):
-    """后台线程：按「机台 × 检测项目」扫实时目录，逐张定位建模单元后送推理入库。
+def _analysis_worker(line_id, item_id, face_id):
+    """后台线程：按「机台 × 检测项目 × 相机面」扫图送推理。
 
-    一张图的归属全部从路径和排程反查，而不是靠人配：
-      目录 前缀/日期/班组/班次/相机面/文件 → 相机面查 camera_faces，
-      牌号查 machine_schedule(机台+日期+班次) → 单元 = (牌号, 相机面) → 它绑的模型。
-    增量：已在 inference_results 的 src_key 跳过。用独立 DB 连接（不能用 g.db）。"""
+    只处理匹配本相机面（raw_name）的图片，其余面跳过。多面各起一线程并行。
+    增量：已在 inference_results 的 src_key 跳过。独立 DB 连接。"""
     db = _DB(_connect())
 
     def upd(**kw):
         cols = ",".join("%s=%%s" % k for k in kw)
         db.execute("UPDATE analysis_jobs SET " + cols.replace("%%s", "?") +
-                   " WHERE line_id=? AND item_id=?", tuple(kw.values()) + (line_id, item_id))
+                   " WHERE line_id=? AND item_id=? AND face_id=?",
+                   tuple(kw.values()) + (line_id, item_id, face_id))
         db.commit()
 
     def log(level, detail, src_key=""):
-        db.execute("INSERT INTO analysis_logs(line_id,item_id,level,src_key,detail) VALUES(?,?,?,?,?)",
-                   (line_id, item_id, level, src_key, detail[:500]))
+        db.execute("INSERT INTO analysis_logs(line_id,item_id,face_id,level,src_key,detail) "
+                   "VALUES(?,?,?,?,?,?)",
+                   (line_id, item_id, face_id, level, src_key, detail[:500]))
         db.commit()
 
     def is_on():
-        r = db.execute("SELECT enabled FROM analysis_jobs WHERE line_id=? AND item_id=?",
-                       (line_id, item_id)).fetchone()
+        r = db.execute("SELECT enabled FROM analysis_jobs WHERE line_id=? AND item_id=? "
+                       "AND face_id=?", (line_id, item_id, face_id)).fetchone()
         return bool(r and r["enabled"])
 
     try:
         line = dict(db.execute("SELECT * FROM prod_lines WHERE id=?", (line_id,)).fetchone())
         item = dict(db.execute("SELECT * FROM detect_items WHERE id=?", (item_id,)).fetchone())
+        face = dict(db.execute("SELECT * FROM camera_faces WHERE id=?", (face_id,)).fetchone())
         prefix = line_rt_prefix(line, item)
         machine = sched_machine_of(line)
-        log("info", "工作开启：%s / %s，目录 %s/%s" % (
-            line["name"], item["short_name"] or item["name"], line["rt_bucket"] or "(默认桶)", prefix))
+        log("info", "工作开启：%s / %s / %s，目录 %s/%s/%s" % (
+            line["name"], item["short_name"] or item["name"], face["face_name"],
+            line["rt_bucket"] or "(默认桶)", prefix, face["raw_name"]))
         # 开关式：开启后持续工作 —— 每轮扫目录处理新图，处理完歇 15 秒再扫；关闭则退出
         total_an = 0
         while is_on():
@@ -2894,6 +2923,8 @@ def _analysis_worker(line_id, item_id):
                     face = faces.get(raw_face)
                     if not face:
                         no_face += 1
+                        continue
+                    if face["id"] != face_id:        # 只处理本相机的图，其余面跳过(不计数)
                         continue
                     brand = resolve_brand(db, machine, date, shift, key_shot_time(key))
                     if not brand:
@@ -2965,30 +2996,33 @@ def _analysis_worker(line_id, item_id):
 @app.route("/config/lines/analyze/toggle", methods=["POST"])
 @login_required
 def line_analyze_toggle():
-    """工作状态开关（按 机台 × 检测项目）：开=起后台线程持续工作；关=置 enabled=0 自行退出。"""
+    """工作状态开关（按 机台 × 检测项目 × 相机面）：开=起后台线程持续工作；关=置 enabled=0。"""
     db = get_db()
     line_id = request.form.get("line_id", type=int)
     item_id = request.form.get("item_id", type=int) or 0
+    face_id = request.form.get("face_id", type=int) or 0
     on = request.form.get("on") == "1"
     l = db.execute("SELECT * FROM prod_lines WHERE id=?", (line_id,)).fetchone()
-    if not l or not item_id:
+    f = db.execute("SELECT * FROM camera_faces WHERE id=?", (face_id,)).fetchone()
+    if not l or not item_id or not f:
         abort(404)
     if on:
         if not (l["rt_type"] and (l["rt_bucket"] or l["rt_path"] or l["rt_type"] == "ftp")):
             flash("该机台未配置实时图像目录", "error")
             return redirect(url_for("config", tab="lines"))
-        db.execute("INSERT INTO analysis_jobs(line_id,item_id,status,enabled,msg) VALUES(?,?,?,1,?) "
-                   "ON DUPLICATE KEY UPDATE enabled=1,status='running',msg=VALUES(msg)",
-                   (line_id, item_id, "running", "启动中…"))
+        db.execute("INSERT INTO analysis_jobs(line_id,item_id,face_id,status,enabled,msg) "
+                   "VALUES(?,?,?,?,1,?) ON DUPLICATE KEY UPDATE enabled=1,status='running',msg=VALUES(msg)",
+                   (line_id, item_id, face_id, "running", "启动中…"))
         db.commit()
         import threading
-        threading.Thread(target=_analysis_worker, args=(line_id, item_id), daemon=True).start()
-        app.logger.info("开启实时分析 line=%s item=%s by=%s", l["name"], item_id,
-                        session.get("username", ""))
-        flash("已开启工作：%s" % l["name"], "success")
+        threading.Thread(target=_analysis_worker, args=(line_id, item_id, face_id),
+                         daemon=True).start()
+        app.logger.info("开启实时分析 line=%s item=%s face=%s by=%s", l["name"], item_id,
+                        face_id, session.get("username", ""))
+        flash("已开启：%s · %s" % (l["name"], f["face_name"]), "success")
     else:
-        db.execute("UPDATE analysis_jobs SET enabled=0 WHERE line_id=? AND item_id=?",
-                   (line_id, item_id))
+        db.execute("UPDATE analysis_jobs SET enabled=0 WHERE line_id=? AND item_id=? "
+                   "AND face_id=?", (line_id, item_id, face_id))
         db.commit()
         flash("已关闭工作（正在停止当前轮次）", "success")
     return redirect(url_for("config", tab="lines"))
@@ -2997,36 +3031,43 @@ def line_analyze_toggle():
 @app.route("/api/lines/analyze/status")
 @login_required
 def api_line_analyze_status():
-    """轮询：返回当前检测项目下各机台的工作状态与分析进度。"""
-    ids = request.args.get("lines", "")
-    item_id = request.args.get("item", type=int) or 0
-    line_ids = [int(x) for x in ids.split(",") if x.strip().isdigit()]
-    if not line_ids or not item_id:
+    """轮询：返回各 (机台 × 检测项目 × 相机面) 的工作状态与分析进度。
+    请求 keys 参数 = "line_item_face,line_item_face,..."。"""
+    keys = request.args.get("keys", "")
+    if not keys:
         return jsonify({})
-    ph = ",".join(["?"] * len(line_ids))
-    rows = get_db().execute("SELECT * FROM analysis_jobs WHERE item_id=? AND line_id IN (%s)" % ph,
-                            [item_id] + line_ids).fetchall()
-    return jsonify({str(r["line_id"]): {"status": r["status"], "enabled": r["enabled"],
-                    "total": r["total"], "read": r["read_cnt"], "analyzed": r["analyzed"],
-                    "skipped": r["skipped"], "msg": r["msg"]} for r in rows})
+    tuples = [x.split("_") for x in keys.split(",") if len(x.split("_")) == 3]
+    ph = ",".join(["(?,?,?)"] * len(tuples))
+    flat = []
+    for t in tuples:
+        flat += [int(t[0]), int(t[1]), int(t[2])]
+    rows = get_db().execute(
+        "SELECT * FROM analysis_jobs WHERE (line_id,item_id,face_id) IN (%s)" % ph, flat).fetchall()
+    return jsonify({"%s_%s_%s" % (r["line_id"], r["item_id"], r["face_id"]): {
+        "status": r["status"], "enabled": r["enabled"], "total": r["total"],
+        "read": r["read_cnt"], "analyzed": r["analyzed"], "skipped": r["skipped"],
+        "msg": r["msg"]} for r in rows})
 
 
 @app.route("/config/lines/logs/<int:line_id>")
 @login_required
 def line_analyze_logs(line_id):
-    """审计日志：某机台在当前检测项目下的分析调用过程/结果。"""
+    """审计日志：某机台·检测项目·相机面的分析调用过程/结果。"""
     db = get_db()
     _, cur_det = detect_item_ctx(db)
     item_id = request.args.get("item", type=int) or cur_det
+    face_id = request.args.get("face", type=int) or 0
     l = db.execute("SELECT * FROM prod_lines WHERE id=?", (line_id,)).fetchone()
     if not l:
         abort(404)
     item = db.execute("SELECT * FROM detect_items WHERE id=?", (item_id,)).fetchone()
+    face = db.execute("SELECT * FROM camera_faces WHERE id=?", (face_id,)).fetchone()
     logs, pg = paginate(db, "SELECT * FROM analysis_logs WHERE line_id=%d AND item_id=%d "
-                        "ORDER BY id DESC" % (line_id, item_id),
+                        "AND face_id=%d ORDER BY id DESC" % (line_id, item_id, face_id),
                         page=request.args.get("page"), size=30)
     return render_template("analyze_logs.html", line=dict(l),
                            item=dict(item) if item else None,
+                           face=dict(face) if face else None,
                            logs=[dict(r) for r in logs], pg=pg, active="config")
 
 
