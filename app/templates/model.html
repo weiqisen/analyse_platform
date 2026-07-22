@@ -26,71 +26,58 @@
 </div>
 
 <style>
-  .unit-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:14px}
-  .unit-card{background:#fff;border:1px solid var(--split,#eee);border-radius:10px;
-    box-shadow:var(--shadow);display:flex;flex-direction:column;overflow:hidden}
-  .uc-head{display:flex;align-items:center;justify-content:space-between;
-    padding:12px 15px;border-bottom:1px solid var(--split,#eee)}
-  .uc-face{font-size:15px;font-weight:600}
-  .uc-key{font-size:11px;color:var(--text-secondary);font-family:monospace;margin-top:2px;word-break:break-all}
-  .uc-infer{text-align:right;white-space:nowrap}
-  .uc-infer b{font-size:18px;font-weight:600}
-  .uc-infer span{display:block;font-size:11px;color:var(--text-secondary)}
-  .uc-sec{padding:11px 15px}
-  .uc-sec + .uc-sec{border-top:1px dashed var(--split,#eee)}
-  .uc-label{font-size:11.5px;color:var(--text-secondary);margin-bottom:6px;letter-spacing:.02em}
-  .uc-kv{display:flex;font-size:12.5px;line-height:1.9}
-  .uc-kv .k{width:64px;color:var(--text-secondary);flex-shrink:0}
-  .uc-kv .v{flex:1;word-break:break-all}
-  .uc-kv .v code{font-size:11.5px}
-  .svc-online{border-left:3px solid #52c41a}
-  .svc-off{border-left:3px solid #faad14}
+  .mdl-tbl td{vertical-align:top}
+  .mdl-face{font-weight:600}
+  .mdl-key{font-size:11px;color:var(--text-secondary);font-family:monospace;margin-top:2px;word-break:break-all}
+  .svc-line{display:flex;font-size:12.5px;line-height:1.8}
+  .svc-line .k{width:52px;color:var(--text-secondary);flex-shrink:0}
+  .svc-line .v{flex:1;word-break:break-all}
+  .svc-line .v code{font-size:11.5px}
 </style>
-<div class="unit-grid">
+<div class="card tbl-card"><div class="card-body" style="padding:0">
+<table class="table mdl-tbl">
+  <thead><tr>
+    <th style="width:180px">相机面 / 单元</th>
+    <th style="width:120px">已绑定模型</th>
+    <th>推理服务（CubeStudio 下发）</th>
+    <th style="width:200px">CubeStudio 可用模型</th>
+    <th style="width:80px">推理结果</th>
+  </tr></thead>
+  <tbody>
   {% for r in rows %}
-  <div class="unit-card {{ 'svc-online' if r.svc and r.svc.model_status=='online' else ('svc-off' if r.svc else '') }}">
-    <div class="uc-head">
-      <div>
-        <div class="uc-face">{{ r.face_name }}</div>
-        <div class="uc-key">{{ r.unit_key }}</div>
-      </div>
-      <div class="uc-infer"><b style="color:{{ '#00923f' if r.infer_cnt else 'var(--text-secondary)' }}">{{ r.infer_cnt }}</b>
-        <span>推理结果</span></div>
-    </div>
+  <tr>
+    <td><div class="mdl-face">{{ r.face_name }}</div>
+      <div class="mdl-key">{{ r.unit_key }}</div></td>
 
-    {# —— 已绑定模型 / 推理服务 —— #}
-    <div class="uc-sec">
-      <div class="uc-label">已绑定模型</div>
-      {% if r.bound_version %}
-      <div style="font-size:14px"><span style="color:#52c41a">●</span> <b>{{ r.bound_version }}</b>
-        {% if r.bound_endpoint %}<span class="tag" style="margin-left:4px">已上线</span>{% endif %}</div>
-      {% else %}<div style="color:var(--text-secondary);font-size:13px">未绑定</div>{% endif %}
+    <td>
+      {% if r.bound_version %}<span style="color:#52c41a">●</span> <b>{{ r.bound_version }}</b>
+        {% if r.bound_endpoint %}<div><span class="tag">已上线</span></div>{% endif %}
+      {% else %}<span style="color:var(--text-secondary)">未绑定</span>{% endif %}
+    </td>
 
+    <td>
       {% if r.svc %}
-      <div style="margin-top:8px">
-        <div style="margin-bottom:5px">
-          <span class="tag {{ '' if r.svc.model_status=='online' else 'tag-orange' }}">{{ r.svc.model_status or '未知' }}</span>
-          <span style="font-size:11.5px;color:var(--text-secondary)">{{ r.svc.task_type or '—' }} · CubeStudio 下发</span>
-          {% if not r.svc.acked %}<span class="tag tag-orange">回执未送达</span>{% endif %}
-        </div>
-        <div class="uc-kv"><span class="k">服务</span><span class="v">{{ r.svc.service_name or r.svc.model_name }}
-          <span style="color:var(--text-secondary)">· 项目 {{ r.svc.project_id }}{% if r.svc.service_id %} · svc#{{ r.svc.service_id }}{% endif %}</span></span></div>
-        <div class="uc-kv"><span class="k">推理地址</span><span class="v"><code>{{ r.svc.endpoint }}</code></span></div>
-        <div style="margin-top:6px">
-          <a class="btn-link" href="javascript:;" onclick="chkHealth('{{ r.unit_key_str }}', this)">测在线</a>
-          <span class="hl-msg" style="font-size:12px;color:var(--text-secondary)"></span>
-          <a class="btn-link" href="javascript:;" onclick='svcDetail({{ r.svc|tojson }})' style="margin-left:10px">全部字段 ›</a>
-        </div>
+      <div style="margin-bottom:4px">
+        <span class="tag {{ '' if r.svc.model_status=='online' else 'tag-orange' }}">{{ r.svc.model_status or '未知' }}</span>
+        <b>{{ r.svc.model_version }}</b>
+        <span style="font-size:11.5px;color:var(--text-secondary)">· {{ r.svc.task_type or '—' }}</span>
+        {% if not r.svc.acked %}<span class="tag tag-orange">回执未送达</span>{% endif %}
       </div>
-      {% endif %}
-    </div>
+      <div class="svc-line"><span class="k">服务</span><span class="v">{{ r.svc.service_name or r.svc.model_name }}
+        <span style="color:var(--text-secondary)">· 项目 {{ r.svc.project_id }}{% if r.svc.service_id %} · svc#{{ r.svc.service_id }}{% endif %}</span></span></div>
+      <div class="svc-line"><span class="k">地址</span><span class="v"><code>{{ r.svc.endpoint }}</code></span></div>
+      <div style="margin-top:4px">
+        <a class="btn-link" href="javascript:;" onclick="chkHealth('{{ r.unit_key_str }}', this)">测在线</a>
+        <span class="hl-msg" style="font-size:12px;color:var(--text-secondary)"></span>
+        <a class="btn-link" href="javascript:;" onclick='svcDetail({{ r.svc|tojson }})' style="margin-left:8px">全部字段 ›</a>
+      </div>
+      {% else %}<span style="color:var(--text-secondary);font-size:12.5px">未收到下发</span>{% endif %}
+    </td>
 
-    {# —— CubeStudio 可用模型（可绑定） —— #}
-    <div class="uc-sec">
-      <div class="uc-label">CubeStudio 可用模型</div>
+    <td>
       {% if r.models %}
         {% for m in r.models %}
-        <div style="display:flex;align-items:center;gap:6px;margin:3px 0;font-size:13px">
+        <div style="display:flex;align-items:center;gap:5px;margin:2px 0;font-size:13px">
           <b>{{ m.model_version }}</b>
           <span class="tag {{ 'tag-orange' if m.model_status in ('test','debug') else '' }} {{ 'tag-gray' if m.model_status=='offline' }}">{{ m.model_status }}</span>
           {% if m.metrics %}<span style="color:var(--text-secondary);font-size:12px">mAP {{ m.metrics.map }}</span>{% endif %}
@@ -106,16 +93,18 @@
           </span>
         </div>
         {% endfor %}
-      {% else %}
-        <span style="color:var(--text-secondary);font-size:12.5px">暂无 —— 需在标注页训练</span>
-      {% endif %}
-    </div>
-  </div>
+      {% else %}<span style="color:var(--text-secondary);font-size:12.5px">暂无 · 需训练</span>{% endif %}
+    </td>
+
+    <td><b style="color:{{ '#00923f' if r.infer_cnt else 'var(--text-secondary)' }}">{{ r.infer_cnt }}</b> 条</td>
+  </tr>
   {% else %}
-  <div class="empty" style="grid-column:1/-1">该牌号暂无建模单元，请先到「缺陷标注」为相机面建模</div>
+  <tr><td colspan="5" class="empty">该牌号暂无建模单元，请先到「缺陷标注」为相机面建模</td></tr>
   {% endfor %}
-</div>
+  </tbody>
+</table>
 {% if pg %}<div class="pager" data-page="{{ pg.page }}" data-pages="{{ pg.pages }}" data-total="{{ pg.total }}"></div>{% endif %}
+</div></div>
 
 <div class="modal-mask" id="svcModal">
   <div class="modal" style="width:640px;max-width:94vw">
