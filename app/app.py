@@ -2927,9 +2927,12 @@ def _analysis_worker(line_id, item_id, face_id):
 
             keys, s3, bucket, _ = _rtdir_list_images(db, line["rt_type"], line_id,
                                                      line["rt_bucket"], prefix)
-            # 每轮重载模型绑定
+            # 每轮重载：建模单元(含绑定endpoint) + 推理服务配置(model_path/class_names)
             units = {(u["brand"], u["face_id"]): dict(u) for u in db.execute(
                 "SELECT * FROM model_units WHERE model_endpoint<>''").fetchall()}
+            svc_row = db.execute("SELECT * FROM inference_services WHERE unit_key=?",
+                                 (unit_key_of(db, brand, face),)).fetchone()
+            svc = dict(svc_row) if svc_row else {}
             done = {r["src_key"] for r in db.execute(
                 "SELECT src_key FROM inference_results WHERE src_key<>''").fetchall()}
             upd(status="running", total=len(keys), read_cnt=0, analyzed=0, skipped=0,
@@ -2960,7 +2963,9 @@ def _analysis_worker(line_id, item_id, face_id):
                                 ExpiresIn=1800)
                         except Exception:
                             img_url = ""
-                    res = infer_call(unit["model_endpoint"], key, img_url)
+                    cls_names = (svc.get("class_names") or "").split(",") if svc else []
+                    res = infer_call(unit["model_endpoint"], key, img_url,
+                                     svc.get("model_path", ""), cls_names)
                     if res:
                         db.execute("INSERT INTO inference_results(src_key,unit_id,machine,line_name,brand,"
                                    "face_name,img_date,shift,is_defect,class_name,confidence,model_version) "
@@ -3166,9 +3171,18 @@ def analysis(tab):
                            today=datetime.now().strftime("%Y/%m/%d"))
 
 
+LS_LABEL_CONFIG = """<View>
+  <Image name="image" value="$image"/>
+  <RectangleLabels name="label" toName="image">
+    {labels}
+  </RectangleLabels>
+</View>"""
+
+
 def _parse_ls_predict(d):
-    """解析 Label Studio ML Backend 的预测响应（CubeStudio 部署的推理服务用这个协议）。
-    没有任何标注框 = 没检出缺陷，记为正常，而不是丢弃。"""
+    """解析 Label Studio ML Backend 的预测响应（CubeStudio 推理服务用此协议）。
+    框的 x/y/width/height 是百分比(0-100)，有 original_width/height 可供换算像素。
+    没有任何标注框 = 没检出缺陷 → 记为正常(不丢弃)。"""
     res = (d.get("results") or [{}])[0]
     items = res.get("result") or []
     ver = d.get("model_version") or res.get("model_version") or ""
@@ -3184,29 +3198,54 @@ def _parse_ls_predict(d):
             "model_version": ver}
 
 
-def infer_call(endpoint, src_key, image_url=""):
-    """调建模单元绑定的推理服务；失败返回 None（跳过，不编造）。
+def infer_call(endpoint, src_key, image_url="", model_path="", class_names=None):
+    """调 CubeStudio 推理服务（参考 docs/inference-predict-api.md v1.0）。
 
-    endpoint 由 inference.ready 下发绑定。predict_url(含 /predict)走 Label Studio ML
-    Backend 协议(图片以 URL 传给对方，对方自己拉图)；其它 endpoint 走 {src_key} 简易协议。"""
+    请求随 model_path + label_config，响应为 Label Studio ML Backend 格式。
+    超时 300s（首次加载模型慢）。图片以 MinIO presigned URL 传给对方，
+    对方自己拉图、画框、写 defect-outputs（upload_output=false 可跳过）。"""
+    import urllib.request
+    is_ls = "/predict" in (endpoint or "")
+    if not is_ls:
+        # 非 /predict 的旧版简易协议 — 仅兜底兼容
+        try:
+            payload = {"src_key": src_key}
+            req = urllib.request.Request(endpoint, data=json.dumps(payload).encode("utf-8"),
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                d = json.loads(r.read().decode("utf-8"))
+            if isinstance(d, dict) and "result" in d and "status" in d:
+                d = d["result"]
+            return {"is_defect": int(d.get("is_defect", 1)),
+                    "class_name": d.get("class_name", ""),
+                    "confidence": float(d.get("confidence", 0)),
+                    "model_version": d.get("model_version", "")}
+        except Exception as e:
+            app.logger.warning("推理调用失败 %s：%s", src_key, e)
+            return None
+
+    # CubeStudio /labelstudio/predict 协议
     try:
-        import urllib.request
-        is_ls = "/predict" in (endpoint or "")
-        payload = ({"tasks": [{"id": 1, "data": {"image": image_url or src_key}}]}
-                   if is_ls else {"src_key": src_key})
+        # 组装 label_config XML（从 inference.ready 的 class_names）
+        names = class_names or []
+        label_xml = "\n    ".join('<Label value="%s"/>' % n for n in names if n)
+        label_config = LS_LABEL_CONFIG.replace("{labels}", label_xml) if label_xml else ""
+
+        payload = {
+            "model_path": model_path or "",
+            "tasks": [{"data": {"image": image_url or src_key}}],
+            "upload_output": False,   # 不往对方 defect-outputs 写结果图(平台自己存)
+        }
+        if label_config:
+            payload["label_config"] = label_config
+
         req = urllib.request.Request(endpoint, data=json.dumps(payload).encode("utf-8"),
                                      headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=30) as r:
+        with urllib.request.urlopen(req, timeout=300) as r:
             d = json.loads(r.read().decode("utf-8"))
-        if is_ls or (isinstance(d, dict) and "results" in d):
-            return _parse_ls_predict(d)
-        # 兼容对方 {status,result,message} 包裹
-        if isinstance(d, dict) and "result" in d and "status" in d:
-            d = d["result"]
-        return {"is_defect": int(d.get("is_defect", 1)), "class_name": d.get("class_name", ""),
-                "confidence": float(d.get("confidence", 0)), "model_version": d.get("model_version", "")}
+        return _parse_ls_predict(d)
     except Exception as e:
-        app.logger.warning("推理服务调用失败，跳过（%s）：%s", src_key, e)
+        app.logger.warning("推理调用失败 %s：%s", src_key, e)
         return None
 
 
@@ -3344,7 +3383,12 @@ def analysis_infer():
                     "get_object", Params={"Bucket": cfg["in_bucket"], "Key": key}, ExpiresIn=1800)
             except Exception:
                 img_url = ""
-            res = infer_call(unit["model_endpoint"], key, img_url)
+            uk = unit_key_of(db, brand, face)
+            svc = db.execute("SELECT model_path, class_names FROM inference_services WHERE unit_key=?",
+                             (uk,)).fetchone()
+            cls_names = (svc["class_names"] or "").split(",") if svc else []
+            mp = svc["model_path"] if svc else ""
+            res = infer_call(unit["model_endpoint"], key, img_url, mp, cls_names)
             if res is None:
                 skipped += 1
                 continue
