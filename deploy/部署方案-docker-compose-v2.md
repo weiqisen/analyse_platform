@@ -1,9 +1,9 @@
 # 缺陷图片分析平台 · docker-compose 部署方案 v2
 
 **面向：现场新服务器（内网、离线）。**
-一句话流程：在有网机器把镜像和数据打包进 `deploy/` → 整包拷到新服务器 → 填强口令 → 一条命令起服务。
+一句话流程：在有网机器把镜像和数据打包进 `deploy/` → 整包拷到新服务器 → 一条命令起服务。
 
-> v2 相对 v1：强口令强制化（未设口令直接启动失败）、默认收敛对外端口、新增「生产环境安全」章节。
+> v2 相对 v1：强口令直接内置在 compose 默认值里（开箱即用，无需额外配置），口令说明见第 8 节。
 
 ---
 
@@ -13,7 +13,7 @@
 |---|---|---|
 | **app**（本平台） | 本编排自建镜像 | Flask，端口 9573 |
 | **mysql** | 本编排（mysql:8.0.33） | 容器内自建，首启自动导入 65 的数据 |
-| **rabbitmq** | 本编排（rabbitmq:3.13-management） | 5672/15672，CubeStudio 也连它 |
+| **rabbitmq** | 本编排（rabbitmq:3.12-management） | 5672/15672，CubeStudio 也连它 |
 | **MinIO** | 现场已有 | 不在编排内，地址存数据库随 dump 带过来 |
 | **CubeStudio** | 另一台机器 | 外部，用 `CS_URL`/`WORKFLOW_URL` 指过去 |
 
@@ -67,7 +67,7 @@ bash load-and-up.sh          # 导入镜像 + docker compose up -d
 ```
 
 - 口令已内置强口令（见第 8 节），不建 `.env` 也能直接起。
-- 访问 `http://<新服务器IP>:9573/`，登录 `admin / Wqs@Defect2026`（用 65 dump 则沿用原口令）。
+- 访问 `http://<新服务器IP>:9573/`，登录 `admin / Analyse@2026`（用 65 dump 则沿用原口令）。
 
 ## 6. 起来之后
 
@@ -94,9 +94,9 @@ docker compose up -d                   # 起
 
 | 项 | 默认（强口令） | 说明 |
 |---|---|---|
-| MySQL root（`DB_PASSWORD`） | `Wqs@Defect2026#Db` | 容器内自建 |
-| RabbitMQ（`MQ_USER`/`MQ_PASS`） | `defect` / `Wqs@Defect2026#Mq` | **CubeStudio 要用同一套**，改了同步告知对方 |
-| 平台登录 | `admin` / `Wqs@Defect2026` | 空库首启建号；可在「用户管理」改 |
+| MySQL root（`DB_PASSWORD`） | `Analyse@2026#Db` | 容器内自建 |
+| RabbitMQ（`MQ_USER`/`MQ_PASS`） | `defect` / `Analyse@2026#Mq` | **CubeStudio 要用同一套**，改了同步告知对方 |
+| 平台登录 | `admin` / `Analyse@2026` | 空库首启建号；可在「用户管理」改 |
 | 工控机 SFTP（`WS_*`） | `root` / `hlxd@123` | 由现场工控机决定，非我方设定 |
 | MinIO 密钥 | —— | 在「采集配置 → 数据源」里配现场 MinIO 的密钥 |
 

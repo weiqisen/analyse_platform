@@ -666,7 +666,7 @@ def init_db():
     if db.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"] == 0:
         # 初始管理员，强口令；上线后可在「用户管理」自行修改
         db.execute("INSERT INTO users(username,password,realname,role) VALUES(?,?,?,?)",
-                   ("admin", md5("Wqs@Defect2026"), "管理员", "admin"))
+                   ("admin", md5("Analyse@2026"), "管理员", "admin"))
         # 检测项目
         for i, (name, short) in enumerate([("烟支外观检测", "烟支外观"), ("五轮成像检测", "五轮成像"),
                                            ("小包CCD检测", "小包CCD"), ("散包检测", "散包检测"),

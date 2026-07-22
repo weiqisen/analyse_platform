@@ -14,7 +14,7 @@ services:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
     environment:
-      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-Wqs@Defect2026#Db}
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-Analyse@2026#Db}
       MYSQL_DATABASE: ${DB_NAME:-analyse_platform}
     ports:
       - "${DB_PUBLISH_PORT:-3307}:3306"
@@ -22,7 +22,7 @@ services:
       - mysql-data:/var/lib/mysql
       - ./mysql-init:/docker-entrypoint-initdb.d:ro   # 首次启动(空库)自动导入 10-data.sql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${DB_PASSWORD:-Wqs@Defect2026#Db}"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${DB_PASSWORD:-Analyse@2026#Db}"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -35,7 +35,7 @@ services:
     environment:
       # 注意：CubeStudio 也用这套账号连 MQ，改了要同步告诉对方
       RABBITMQ_DEFAULT_USER: ${MQ_USER:-defect}
-      RABBITMQ_DEFAULT_PASS: ${MQ_PASS:-Wqs@Defect2026#Mq}
+      RABBITMQ_DEFAULT_PASS: ${MQ_PASS:-Analyse@2026#Mq}
     ports:
       - "${MQ_PUBLISH_PORT:-5672}:5672"        # AMQP（CubeStudio 也连这个）
       - "${MQ_MGMT_PORT:-15672}:15672"         # 管理面板
@@ -63,12 +63,12 @@ services:
       DB_HOST: mysql
       DB_PORT: 3306
       DB_USER: root
-      DB_PASSWORD: ${DB_PASSWORD:-Wqs@Defect2026#Db}
+      DB_PASSWORD: ${DB_PASSWORD:-Analyse@2026#Db}
       DB_NAME: ${DB_NAME:-analyse_platform}
       MQ_HOST: rabbitmq
       MQ_PORT: 5672
       MQ_USER: ${MQ_USER:-defect}
-      MQ_PASS: ${MQ_PASS:-Wqs@Defect2026#Mq}
+      MQ_PASS: ${MQ_PASS:-Analyse@2026#Mq}
       CS_URL: ${CS_URL:-}
       WORKFLOW_URL: ${WORKFLOW_URL:-}
       SAMPLE_BUCKET: ${SAMPLE_BUCKET:-defect-samples}
