@@ -2887,25 +2887,51 @@ def _analysis_worker(line_id, item_id, face_id):
         line = dict(db.execute("SELECT * FROM prod_lines WHERE id=?", (line_id,)).fetchone())
         item = dict(db.execute("SELECT * FROM detect_items WHERE id=?", (item_id,)).fetchone())
         face = dict(db.execute("SELECT * FROM camera_faces WHERE id=?", (face_id,)).fetchone())
-        prefix = line_rt_prefix(line, item)
+        base = line_rt_prefix(line, item)           # 车间/机台/检测项目
         machine = sched_machine_of(line)
-        log("info", "工作开启：%s / %s / %s，目录 %s/%s/%s" % (
-            line["name"], item["short_name"] or item["name"], face["face_name"],
-            line["rt_bucket"] or "(默认桶)", prefix, face["raw_name"]))
-        # 开关式：开启后持续工作 —— 每轮扫目录处理新图，处理完歇 15 秒再扫；关闭则退出
+        log("info", "工作开启：%s / %s / %s" % (
+            line["name"], item["short_name"] or item["name"], face["face_name"]))
         total_an = 0
         while is_on():
+            # 每轮重载工单：机台可能换牌号，新牌号=新目录，过期牌号的图不扫。
+            # 工单的 date/team/shift 决定实际子目录，只在对应的具体路径下扫图。
+            wo = db.execute(
+                "SELECT * FROM work_order WHERE equipment_self_code=? AND start_time IS NOT NULL "
+                "AND start_time<=NOW() AND (end_time IS NULL OR end_time>NOW()) "
+                "ORDER BY start_time DESC LIMIT 1", (machine,)).fetchone()
+            if not wo:
+                upd(status="running", msg="当前无运行工单，等待…")
+                # 歇 30 秒再看（工单出现前频繁扫没用）
+                for _ in range(30):
+                    if not is_on():
+                        break
+                    time.sleep(1)
+                continue
+            brand = mes_brand(db, wo["pro_name"])
+            if not brand:
+                upd(status="running", msg="工单牌号无法匹配平台牌号字典，等待…")
+                for _ in range(15):
+                    if not is_on():
+                        break
+                    time.sleep(1)
+                continue
+            # 完整目录前缀 = base + 工单日期/班组/班次 → 只扫这个子目录
+            d = wo.get("pro_date") or wo.get("start_time")
+            segs = [str(d)[:10].replace("-", "") if d else "",
+                    wo.get("team_name") or "", wo.get("shift_name") or ""]
+            prefix = "/".join(x for x in [base] + segs if x)
+            log("info", "扫描目录 %s/%s 牌号=%s" % (line["rt_bucket"] or "(默认桶)", prefix, brand))
+
             keys, s3, bucket, _ = _rtdir_list_images(db, line["rt_type"], line_id,
                                                      line["rt_bucket"], prefix)
-            # 每轮重载：中途绑了模型/改了相机面，下一轮就生效
-            faces = {f["raw_name"]: dict(f) for f in db.execute(
-                "SELECT * FROM camera_faces WHERE item_id=? AND status=1", (item_id,)).fetchall()}
+            # 每轮重载模型绑定
             units = {(u["brand"], u["face_id"]): dict(u) for u in db.execute(
                 "SELECT * FROM model_units WHERE model_endpoint<>''").fetchall()}
             done = {r["src_key"] for r in db.execute(
                 "SELECT src_key FROM inference_results WHERE src_key<>''").fetchall()}
-            upd(status="running", total=len(keys), read_cnt=0, analyzed=0, skipped=0, msg="扫描目录…")
-            read = an = sk = no_face = no_sched = no_model = 0
+            upd(status="running", total=len(keys), read_cnt=0, analyzed=0, skipped=0,
+                msg="扫描 %s · %s (%s)" % (brand, face["face_name"], prefix[-30:]))
+            read = an = sk = no_unit = no_model = 0
             for key in keys:
                 if not is_on():
                     break
@@ -2913,26 +2939,14 @@ def _analysis_worker(line_id, item_id, face_id):
                 if key in done:
                     sk += 1
                 else:
-                    # 相对前缀的路径：日期/班组/班次/相机面/文件
+                    # 目录已限定到 date/team/shift，图名=相机面/文件，相机面段就是 raw_name
                     rel = key[len(prefix):].strip("/") if prefix else key.strip("/")
-                    p = rel.split("/")
-                    if len(p) < 5:
-                        no_face += 1
-                        continue
-                    date, shift, raw_face = p[0], p[2], p[3]
-                    face = faces.get(raw_face)
-                    if not face:
-                        no_face += 1
-                        continue
-                    if face["id"] != face_id:        # 只处理本相机的图，其余面跳过(不计数)
-                        continue
-                    brand = resolve_brand(db, machine, date, shift, key_shot_time(key))
-                    if not brand:
-                        no_sched += 1
+                    raw = rel.split("/")[0] if "/" in rel else ""
+                    if raw != face["raw_name"]:       # 限定本face，不扫其他相机面
                         continue
                     unit = units.get((brand, face["id"]))
                     if not unit:
-                        no_model += 1
+                        no_unit += 1
                         continue
                     # 对方推理服务在别的机器上，进不来平台的 /media 代理，给它临时直链
                     img_url = ""
@@ -2949,8 +2963,9 @@ def _analysis_worker(line_id, item_id, face_id):
                                    "face_name,img_date,shift,is_defect,class_name,confidence,model_version) "
                                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                                    (key, unit["id"], machine, line["name"], brand,
-                                    face["face_name"], date, shift, res["is_defect"],
-                                    res["class_name"], res["confidence"], res["model_version"]))
+                                    face["face_name"], segs[0], segs[2],
+                                    res["is_defect"], res["class_name"], res["confidence"],
+                                    res["model_version"]))
                         db.commit()
                         an += 1
                         total_an += 1
@@ -2965,13 +2980,9 @@ def _analysis_worker(line_id, item_id, face_id):
             if not is_on():
                 break
             tip = "本轮完成(新%d/跳%d" % (an, sk)
-            if no_sched:
-                tip += "/无排程%d" % no_sched
-            if no_model:
-                tip += "/无模型%d" % no_model
-            if no_face:
-                tip += "/面未映射%d" % no_face
-            tip += ")，累计%d，等待新图…" % total_an
+            if no_unit:
+                tip += "/无模型单元%d" % no_unit
+            tip += ")，累计%d，等待…" % total_an
             upd(status="running", read_cnt=read, analyzed=an, skipped=sk, msg=tip)
             if no_sched or no_model or no_face:
                 log("warn", tip)
