@@ -61,21 +61,23 @@
     {% elif tab == 'lines' %}
       <td>{{ r.code }}</td><td>{{ r.name }}</td><td><code>{{ r.path_alias or '—' }}</code></td>
       <td>{{ r.workshop }}{% if r.area %} / {{ r.area }}{% endif %}</td>
-      {# 实时图像目录：前缀/检测项目/日期/班组/班次/相机面 #}
+      {# 实时图像目录：前缀 + 检测项目 + 工单段，按牌号展开到相机面级 #}
       <td>
         {% if r.rt_type %}
-          {% set wo_segs = [r.cur_wo.seg_date if r.cur_wo else '',
-                            r.cur_wo.seg_team if r.cur_wo else '',
-                            r.cur_wo.seg_shift if r.cur_wo else ''] %}
-          {% set wo_trail = '/' + wo_segs|reject('eq','')|join('/') %}
           <div style="font-size:12px"><span class="tag {{ 'tag-orange' if r.rt_type=='ftp' else '' }}">{{ 'FTP' if r.rt_type=='ftp' else 'MinIO' }}</span>
-            {% if r.rt_bucket %}<code style="font-size:11px;color:var(--text-secondary)">{{ r.rt_bucket }}/</code>{% endif %}</div>
-          {% for it in r['items'] %}
-          <div style="font-size:11.5px;margin-top:3px;line-height:1.5">
-            <span style="color:var(--text-secondary)">{{ it.name }}</span>
-            <code style="color:var(--text);word-break:break-all">{{ r.rt_path }}/{{ it.rt_full.rsplit('/', 1)[-1] }}{{ wo_trail }}/相机面/</code>
-          </div>
-          {% endfor %}
+            {% if r.rt_bucket %}<code style="font-size:11px;color:var(--text-secondary)">{{ r.rt_bucket }}/</code>{% endif %}
+            <code style="font-size:11.5px;color:var(--text)">{{ r.rt_path }}</code></div>
+          {% if r.wo_brand and r.wo_faces %}
+            {% set bound_faces = r.wo_faces|selectattr('online','eq',True)|list %}
+            <div style="margin-top:4px">
+              <a class="btn-link" href="javascript:;" onclick='openWoFaces({{ r.id }})' style="font-size:13px">
+                {{ r.wo_brand }} · {{ r.wo_faces|length }} 面（{{ bound_faces|length }} 上线）</a>
+            </div>
+          {% elif r.wo_brand %}
+            <div style="margin-top:4px;font-size:12px;color:#faad14">{{ r.wo_brand }} · 当前检测项目无相机面</div>
+          {% else %}
+            <div style="margin-top:4px;font-size:12px;color:var(--text-secondary)">当前无运行工单</div>
+          {% endif %}
         {% else %}<span style="color:var(--text-secondary)">未配置</span>{% endif %}
       </td>
       {# 工作状态：本机台每个检测项目一行开关（一对多） #}
@@ -232,6 +234,18 @@
     <div class="modal-foot">
       <a class="btn" href="{{ url_for('config', tab='schedule') }}">去维护排程</a>
       <button type="button" class="btn btn-primary" onclick="closeModal('woModal')">关闭</button>
+    </div>
+  </div>
+</div>
+
+{# 相机面目录列表：当前工单牌号下每个相机面的完整路径与模型状态 #}
+<div class="modal-mask" id="wfModal">
+  <div class="modal" style="width:640px;max-width:94vw">
+    <div class="modal-head"><span id="wfTitle">相机面目录</span>
+      <span class="close" onclick="closeModal('wfModal')">×</span></div>
+    <div class="modal-body" id="wfBody"></div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn-primary" onclick="closeModal('wfModal')">关闭</button>
     </div>
   </div>
 </div>
@@ -513,6 +527,25 @@ function openWo(lineId){
       body.innerHTML = h;
     })
     .catch(function(){ body.textContent = '加载失败'; });
+}
+
+/* 各机台当前工单牌号下的相机面目录（后端拼好，前端渲染弹窗） */
+var WOFACES = {{ wo_faces_json|safe }};
+function openWoFaces(lineId){
+  var fs = WOFACES[String(lineId)] || [];
+  var body = document.getElementById('wfBody');
+  document.getElementById('wfTitle').textContent = '相机面目录 — 当前工单牌号';
+  var h = '<table class="wo-tbl"><tr><th>相机面</th><th>目录名</th><th>模型</th><th>读取路径</th></tr>';
+  fs.forEach(function(f){
+    h += '<tr><td>' + f.face_name + '</td><td><code>' + f.raw_name + '</code></td><td>' +
+         (f.online ? '<span style="color:#52c41a">● ' + (f.version || '已上线') + '</span>'
+                   : '<span style="color:var(--text-secondary)">未上线</span>') + '</td>' +
+         '<td><code style="font-size:11.5px;word-break:break-all">' + f.path + '</code></td></tr>';
+  });
+  h += '</table>';
+  if(!fs.length) h = '<div style="color:var(--text-secondary)">暂无相机面数据</div>';
+  body.innerHTML = h;
+  openModal('wfModal');
 }
 
 /* ---------------- 工作进度轮询（每个 机台×检测项目 一条） ---------------- */

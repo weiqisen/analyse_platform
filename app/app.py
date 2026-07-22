@@ -983,6 +983,61 @@ def config(tab):
             bound = [i["item_id"] for i in db.execute(
                 "SELECT item_id FROM line_items WHERE line_id=?", (r["id"],)).fetchall()]
             r["item_ids"] = bound
+
+            # 当前工单(按时刻) → 牌号 → 该牌号当前检测项目下所有相机面 → 拼完整路径
+            wo = db.execute(
+                "SELECT * FROM work_order WHERE equipment_self_code=? AND start_time IS NOT NULL "
+                "AND start_time<=? AND (end_time IS NULL OR end_time>?) "
+                "ORDER BY start_time DESC LIMIT 1",
+                (sched_machine_of(r), now, now)).fetchone()
+            wo_faces = []  # 当前工单牌号下该检测项目的所有相机面路径
+            wo_brand = ""
+            wo_seg = {"date": "", "team": "", "shift": ""}
+            if wo:
+                w = dict(wo)
+                wo_brand = mes_brand(db, w.get("pro_name"))
+                d = w.get("pro_date") or w.get("start_time")
+                wo_seg = {"date": str(d)[:10].replace("-", "") if d else "",
+                          "team": w.get("team_name") or "",
+                          "shift": w.get("shift_name") or ""}
+                w["brand"] = wo_brand
+                w["seg_date"] = wo_seg["date"]
+                w["seg_team"] = wo_seg["team"]
+                w["seg_shift"] = wo_seg["shift"]
+                w["end_at"] = str(w["end_time"])[:16] if w.get("end_time") else ""
+                w["shift"] = w.get("shift_name") or ""
+                for k in ("pro_date", "start_time", "end_time", "plan_start_time",
+                          "plan_end_time", "create_time", "update_time"):
+                    if w.get(k) is not None:
+                        w[k] = str(w[k])[:19]
+                r["cur_wo"] = w
+                r["cur_brand"] = wo_brand
+
+                # 当前牌号 × 检测项目 → 每个相机面的完整目录路径
+                if wo_brand:
+                    for f in db.execute(
+                            "SELECT cf.*, mu.model_version, mu.model_endpoint FROM camera_faces cf "
+                            "LEFT JOIN model_units mu ON mu.brand=? AND mu.face_id=cf.id "
+                            "WHERE cf.item_id=? AND cf.status=1 ORDER BY cf.sort_order, cf.id",
+                            (wo_brand, cur_det)).fetchall():
+                        # rt_path 已含 车间别名/机台别名（如 jb1/a01），再拼检测项目+
+                        q = "/".join(x for x in [(r["rt_path"] or "").strip("/"),
+                                                 (cur_det_item["path_alias"] or cur_det_item["code"]).strip("/") if cur_det_item else "",
+                                                 wo_seg["date"], wo_seg["team"],
+                                                 wo_seg["shift"], f["raw_name"], ""] if x)
+                        wo_faces.append({"face_name": f["face_name"],
+                                         "raw_name": f["raw_name"],
+                                         "path": q,
+                                         "version": f["model_version"] or "",
+                                         "online": bool(f["model_endpoint"])})
+            else:
+                r["cur_wo"] = None
+                r["cur_brand"] = ""
+
+            r["wo_faces"] = wo_faces
+            r["wo_seg"] = wo_seg
+            r["wo_brand"] = wo_brand
+
             r["items"] = []
             for it in det_items:
                 if it["id"] not in bound:
@@ -992,34 +1047,10 @@ def config(tab):
                 r["items"].append({"id": it["id"], "name": it["short_name"] or it["name"],
                                    "rt_full": line_rt_prefix(r, it),
                                    "job": dict(job) if job else None})
-            wo = db.execute(
-                "SELECT * FROM work_order WHERE equipment_self_code=? AND start_time IS NOT NULL "
-                "AND start_time<=? AND (end_time IS NULL OR end_time>?) "
-                "ORDER BY start_time DESC LIMIT 1",
-                (sched_machine_of(r), now, now)).fetchone()
-            if wo:
-                w = dict(wo)
-                w["brand"] = mes_brand(db, w.get("pro_name"))
-                w["end_at"] = str(w["end_time"])[:16] if w.get("end_time") else ""
-                w["shift"] = w.get("shift_name") or ""
-                # 实时目录里 日期/班组/班次 三段的真实值(现场结构:
-                # 车间/机台/检测项目/日期/班组/班次/相机面/文件)，供弹窗拼完整路径
-                d = w.get("pro_date") or w.get("start_time")
-                w["seg_date"] = str(d)[:10].replace("-", "") if d else ""
-                w["seg_team"] = w.get("team_name") or ""
-                w["seg_shift"] = w.get("shift_name") or ""
-                # 其余 datetime 字段转字符串，避免 dict(r)|tojson 输出 RFC822 难解析
-                for k in ("pro_date", "start_time", "end_time", "plan_start_time",
-                          "plan_end_time", "create_time", "update_time"):
-                    if w.get(k) is not None:
-                        w[k] = str(w[k])[:19]
-                r["cur_wo"] = w
-                r["cur_brand"] = w["brand"]
-            else:
-                r["cur_wo"] = None
-                r["cur_brand"] = ""
+        wo_faces_data = {str(r["id"]): r.get("wo_faces", []) for r in data}
         extra = {"det_items": det_items, "cur_det": cur_det, "cur_det_item": cur_det_item,
-                 "today": today, "cur_shift_name": shift}
+                 "today": today, "cur_shift_name": shift,
+                 "wo_faces_json": json.dumps(wo_faces_data, ensure_ascii=False)}
     return render_template("config.html", tab=tab, tabs=CONFIG_TABS, rows=data, pg=pg,
                            workshops=workshops, areas=areas, sched_brands=sched_brands,
                            active="config", **extra)
